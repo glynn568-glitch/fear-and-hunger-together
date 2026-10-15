@@ -1,0 +1,15 @@
+node_modules/
+data/saves/
+test/out/
+*.log
+tools/cloudflared.exe
+dist/
+tools/node/
+data/partners/
+data/partner-key.txt
+/Fear & Hunger Together.exe
+data/window/
+data/usage.json
+data/scripts.json
+data/selfswitches.json
+client/mapnames.json

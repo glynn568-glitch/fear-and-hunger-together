@@ -1,0 +1,27 @@
+name: Bug report
+description: Something went wrong in the game or the mod.
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got. One or two sentences is plenty.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Bug report from the game
+      description: In the game press Ctrl+Shift+B (or Copy a bug report in the Together panel), then paste here.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: players
+    attributes:
+      label: Who was playing
+      options:
+        - Just me
+        - Me and an AI partner
+        - Friends (hosting)
+        - Friends (I joined)

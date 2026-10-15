@@ -1,0 +1,381 @@
+//=============================================================================
+// fh-coop: the shared world. Switches, variables and self switches marked
+// "world" in the census are mirrored between players; the rest stay local.
+//=============================================================================
+(function () {
+    const census = JSON.parse(Coop.fetchSync('GET', 'coop/census.json').text);
+    const worldSw = new Set(census.sw);
+    const worldVa = new Set(census.va);
+    const privateSs = new Set(census.ssPrivate);
+    const START = census.start;
+
+    const World = Coop.world = {
+        live: false, // true once this player is in the dungeon and synced
+        runId: '',
+        demoted: new Set(), // keys that turned out to flap; kept local from then on
+        _out: [],
+        _remote: false,
+        _flap: new Map(),
+        _entering: false,
+        census,
+    };
+
+    World.isShared = function (kind, key) {
+        if (World.demoted.has(kind + key)) return false;
+        if (kind === 'sw') return worldSw.has(key);
+        if (kind === 'va') return worldVa.has(key);
+        return !privateSs.has(key);
+    };
+
+    // A world key that changes many times in a few seconds is some script's
+    // scratch flag the census missed. Stop sharing it and say so.
+    function flapping(kind, key) {
+        const now = Date.now();
+        const k = kind + key;
+        let f = World._flap.get(k);
+        if (!f || now - f.since > 5000) { f = { since: now, n: 0 }; World._flap.set(k, f); }
+        if (++f.n <= 10) return false;
+        World.demoted.add(k);
+        Coop.note('stopped sharing ' + k + ' (it changes too often)');
+        Coop.send({ t: 'demote', key: k });
+        return true;
+    }
+
+    function queue(kind, key, value) {
+        if (!World.live || World._remote) return;
+        if (!World.isShared(kind, key)) return;
+        if (flapping(kind, key)) return;
+        World._out.push([kind, key, value]);
+    }
+
+    World.flush = function () {
+        if (!World._out.length) return;
+        Coop.send({ t: 'w', w: World._out });
+        World._out = [];
+    };
+
+    //--- outgoing: watch every write ----------------------------------------
+
+    const _swSet = Game_Switches.prototype.setValue;
+    Game_Switches.prototype.setValue = function (id, value) {
+        const before = !!this._data[id];
+        _swSet.call(this, id, value);
+        const after = !!this._data[id];
+        if (before !== after) {
+            queue('sw', id, after ? 1 : 0);
+            if (id === START && after && !World._remote) World.enter();
+        }
+    };
+
+    const _vaSet = Game_Variables.prototype.setValue;
+    Game_Variables.prototype.setValue = function (id, value) {
+        const before = this._data[id] || 0;
+        _vaSet.call(this, id, value);
+        const after = this._data[id] || 0;
+        if (before !== after && (typeof after === 'number' || typeof after === 'string')) queue('va', id, after);
+    };
+
+    const _ssSet = Game_SelfSwitches.prototype.setValue;
+    Game_SelfSwitches.prototype.setValue = function (key, value) {
+        const k = String(key);
+        const before = !!this._data[k];
+        _ssSet.call(this, key, value);
+        if (before !== !!value) queue('ss', k, value ? 1 : 0);
+    };
+
+    //--- incoming -----------------------------------------------------------
+
+    function apply(kind, key, value) {
+        if (kind === 'sw') {
+            if (!worldSw.has(key) || World.demoted.has('sw' + key)) return false;
+            if (!!$gameSwitches._data[key] === !!value) return false;
+            $gameSwitches._data[key] = !!value;
+        } else if (kind === 'va') {
+            if (!worldVa.has(key) || World.demoted.has('va' + key)) return false;
+            if (($gameVariables._data[key] || 0) === value) return false;
+            $gameVariables._data[key] = value;
+        } else {
+            if (privateSs.has(key) || World.demoted.has('ss' + key)) return false;
+            key = String(key);
+            if (!!$gameSelfSwitches._data[key] === !!value) return false;
+            if (value) $gameSelfSwitches._data[key] = true; else delete $gameSelfSwitches._data[key];
+        }
+        return true;
+    }
+
+    Coop.on('w', function (msg) {
+        if (!World.live || !window.$gameSwitches) return;
+        let changed = false;
+        for (const [kind, key, value] of msg.w) changed = apply(kind, key, value) || changed;
+        if (changed) $gameMap.requestRefresh();
+    });
+
+    Coop.on('demote', function (msg) {
+        World.demoted.add(msg.key);
+    });
+
+    //--- entering the world -------------------------------------------------
+    // Until the game's own START switch turns on, the player is in the title
+    // screen or the intro and nothing is shared. At that moment this machine
+    // either founds the world (first one in) or adopts the one already there.
+
+    // The game keeps a character's body, hunger and death in flags named
+    // after the character. Two players as the same protagonist would be
+    // writing over each other, so the second one stays out of the shared world.
+    const STARTED_AS = [661, 662, 663, 664];
+    function sameCharacterAs() {
+        const mine = STARTED_AS.filter((id) => $gameSwitches.value(id));
+        if (!mine.length) return '';
+        for (const peer of Coop.others()) {
+            if (peer.st && peer.st !== 'title' && peer.ini && peer.ini.some((id) => mine.indexOf(id) >= 0)) return peer.name;
+        }
+        return '';
+    }
+
+    // How this player comes to the world, which decides what the server allows:
+    //   new   a new game (or a save from before the dungeon)
+    //   load  a save file
+    //   park  carrying on after a dropped connection
+    //   again the same session reconnecting
+    World._how = 'new';
+
+    // This player's save slots from one run, by the moment each was saved.
+    World.slotsOf = function (runId) {
+        const out = {};
+        if (!runId) return out;
+        const all = DataManager.loadGlobalInfo() || [];
+        let learned = false;
+        all.forEach(function (info, slot) {
+            if (!info || info.coopRun !== runId) return;
+            if (info.coopStamp === undefined) {
+                // Saved before slots were labelled with their moment; the file itself knows.
+                let json = '';
+                try { json = StorageManager.load(slot) || ''; } catch (e) { /* unreadable: leave it out */ }
+                const m = /"coop":\{[^{}]*"stamp":(\d+)/.exec(json);
+                info.coopStamp = m ? Number(m[1]) : 0;
+                learned = true;
+            }
+            if (info.coopStamp) out[info.coopStamp] = slot;
+        });
+        if (learned) DataManager.saveGlobalInfo(all);
+        return out;
+    };
+
+    World.when = function (stamp) {
+        return new Date(stamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    };
+
+    // The run someone else is playing right now, while this player is still at the title.
+    World.on = null;
+    Coop.on('online', function () { World.on = null; });
+    Coop.on('nameok', function (msg) { World.on = msg.run || null; });
+    Coop.on('run', function (msg) { World.on = msg.run || null; });
+
+    World.enter = function () {
+        if (World.live || World._entering) return;
+        const clash = sameCharacterAs();
+        World.sameAs = clash;
+        if (clash) {
+            Coop.note('not joining the shared world: same character as ' + clash);
+            if (Coop.toast) Coop.toast(clash + ' is already playing this character, so you are on your own in this game. Start again as someone else to play together.', 14000);
+            return;
+        }
+        World._entering = true;
+        Coop.send({
+            t: 'world?', runId: World.runId, stamp: World.loadedStamp || 0, how: World._how,
+            ini: STARTED_AS.filter((id) => $gameSwitches.value(id)),
+            have: World._how === 'load' ? Object.keys(World.slotsOf(World.runId)).map(Number) : [],
+            dead: !!Coop.deadFromSave,
+        });
+        if (!Coop.connected) World._entering = false; // offline: play alone, sync on reconnect
+    };
+
+    function localShared() {
+        const out = [];
+        const sw = $gameSwitches._data, va = $gameVariables._data, ss = $gameSelfSwitches._data;
+        for (const id of worldSw) if (sw[id]) out.push(['sw', id, 1]);
+        for (const id of worldVa) if (va[id]) out.push(['va', id, va[id]]);
+        for (const k in ss) if (ss[k] && !privateSs.has(k)) out.push(['ss', k, 1]);
+        return out;
+    }
+
+    Coop.on('worldbusy', function () {
+        World._entering = false;
+        World.otherRun = true;
+        if (Coop.toast) Coop.toast('The others are in a different run, so you are playing this save alone. Load the save you share with them, or start a new game, to join.', 12000);
+    });
+
+    // The server took someone else as this protagonist a moment earlier.
+    Coop.on('worldclash', function (msg) {
+        World._entering = false;
+        World.sameAs = msg.name;
+        if (Coop.toast) Coop.toast(msg.name + ' is already playing this character, so you are on your own in this game. Start again as someone else to play together.', 14000);
+    });
+
+    // Loading a save into a run this player has already been part of would
+    // bring back a body from the past: alive again, holding things they have
+    // since handed over. The run has to end, or they come back as someone new.
+    Coop.on('worldstale', function (msg) {
+        World._entering = false;
+        const others = (msg.others || []).join(' and ') || 'the others';
+        if (Coop.toast) Coop.toast('That save is from earlier in a run ' + others + ' still ' + ((msg.others || []).length === 1 ? 'is' : 'are') + ' playing, so it cannot be loaded into it. Start a new character to rejoin them, or load it together once everyone has stopped.', 16000);
+        World._bounce = true; // back to the title, once the scene now loading has settled
+    });
+
+    // Loaded dead, with nobody alive in the run yet: ask again until someone is.
+    Coop.on('worldwait', function () {
+        World._entering = false;
+        World.waiting = true;
+        clearTimeout(World._waitTimer);
+        World._waitTimer = setTimeout(function () {
+            if (World.waiting && !World.live && Coop.deadFromSave && Coop.connected) World.enter();
+        }, 2500);
+    });
+
+    // The others carried this run on from a different save than the one just
+    // loaded. If this player has theirs from that same moment it is loaded
+    // in its place; if all they have is from later, they cannot come in.
+    Coop.on('worldwhen', function (msg) {
+        World._entering = false;
+        const slot = msg.swap && !World._swapped ? World.slotsOf(msg.runId)[msg.stamp] : 0;
+        if (slot) {
+            World._swapped = true;
+            World._reload = slot;
+            // Said now, and again once the right save is in, so it is not talked over.
+            World._resumeNote = msg.by + ' has carried this run on from the save of ' + World.when(msg.stamp) + '.\nYou are on yours from that same moment (slot ' + slot + ').';
+            if (Coop.toast) Coop.toast(World._resumeNote, 9000);
+            return;
+        }
+        if (Coop.toast) Coop.toast(msg.by + ' has carried this run on from an earlier save (' + World.when(msg.stamp) + ') than yours, and you have none from then.\nAsk them to load the later one, or start a new character to join.', 16000);
+        World._bounce = true;
+    });
+
+    // The run the others were in has ended; a player who was shut out of it tries again.
+    Coop.on('runover', function () {
+        World.on = null;
+        if (World.otherRun && window.$gameSwitches && $gameSwitches.value(START)) {
+            World.otherRun = false;
+            World.enter();
+        }
+    });
+
+    Coop.on('world', function (msg) {
+        World._entering = false;
+        World.otherRun = false;
+        if (!window.$gameSwitches) return;
+        World.runId = msg.runId;
+        World._how = 'again';
+        World.loadedStamp = 0; // from here on the world is the live one, not a save's
+        World.waiting = false;
+        World._swapped = false;
+        World.on = null; // in it now; nothing to be pointed at
+        const server = msg.world;
+        let changed = false;
+        for (const kind of ['sw', 'va', 'ss']) {
+            const table = server[kind] || {};
+            for (const key in table) {
+                const k = kind === 'ss' ? key : Number(key);
+                changed = apply(kind, k, table[key]) || changed;
+            }
+        }
+        let mine = [];
+        if (msg.mode === 'join') {
+            // Arriving in someone else's world: it is exactly what the server
+            // says it is. Anything this machine believed beyond that is dropped.
+            for (const [kind, key] of localShared()) {
+                if (server[kind] && key in server[kind]) continue;
+                changed = apply(kind, key, 0) || changed;
+            }
+        } else {
+            // Founding it, or back after a dropped line: what this machine
+            // knows and the server does not is contributed.
+            mine = localShared().filter(([kind, key]) => !(server[kind] && key in server[kind]));
+            if (mine.length) Coop.send({ t: 'w', w: mine });
+        }
+        World.live = true;
+        if (changed) $gameMap.requestRefresh();
+        Coop.note((msg.founded ? 'founded the world' : 'joined the world') + ' (' + mine.length + ' facts contributed)');
+        Coop.emit('entered', msg);
+    });
+
+    Coop.on('online', function () {
+        // Reconnected mid-game: resync from the server's copy.
+        if (window.$gameSwitches && $gameSwitches.value(START) && !World.otherRun) {
+            World.live = false;
+            World._entering = false;
+            World.enter();
+        }
+    });
+
+    Coop.on('offline', function () {
+        World.live = false;
+    });
+
+    World.leave = function () {
+        World.otherRun = false;
+        World.sameAs = '';
+        if (World.live) Coop.send({ t: 'leftworld' });
+        World.live = false;
+        World.waiting = false;
+        World._entering = false;
+        World._out = [];
+    };
+
+    // A fresh game or a loaded one starts unsynced.
+    const _setupNewGame = DataManager.setupNewGame;
+    DataManager.setupNewGame = function () {
+        World.leave();
+        World.runId = '';
+        World._how = 'new';
+        World._swapped = false;
+        _setupNewGame.call(this);
+    };
+
+    const _makeSaveContents = DataManager.makeSaveContents;
+    DataManager.makeSaveContents = function () {
+        const contents = _makeSaveContents.call(this);
+        contents.coop = { runId: World.runId, stamp: World.saveStamp || 0, name: Coop.name, dead: !!Coop.dead };
+        return contents;
+    };
+
+    const _extractSaveContents = DataManager.extractSaveContents;
+    DataManager.extractSaveContents = function (contents) {
+        World.leave();
+        _extractSaveContents.call(this, contents);
+        World.runId = contents.coop ? contents.coop.runId : '';
+        World.loadedStamp = contents.coop ? contents.coop.stamp : 0;
+        World._how = World._nextHow || 'load';
+        World._nextHow = '';
+        if ($gameSwitches.value(START)) World.enter();
+    };
+
+    const _sceneUpdate = SceneManager.updateScene;
+    SceneManager.updateScene = function () {
+        _sceneUpdate.call(this);
+        World.flush();
+        if (World._bounce && this.isCurrentSceneStarted() && !this.isSceneChanging()) {
+            World._bounce = false;
+            if (!(this._scene instanceof Scene_Title)) this.goto(Scene_Title);
+        }
+        if (World._reload && this.isCurrentSceneStarted() && !this.isSceneChanging()) {
+            const slot = World._reload;
+            World._reload = 0;
+            if (DataManager.loadGame(slot)) {
+                this.goto(Scene_Map);
+                $gameSystem.onAfterLoad();
+            } else {
+                this.goto(Scene_Title);
+            }
+        }
+    };
+
+    // Used by the tests and the desync check: a short fingerprint of the
+    // shared state as this machine sees it.
+    World.fingerprint = function () {
+        const parts = [];
+        for (const id of worldSw) if ($gameSwitches._data[id] && !World.demoted.has('sw' + id)) parts.push('s' + id);
+        for (const id of worldVa) if ($gameVariables._data[id] && !World.demoted.has('va' + id)) parts.push('v' + id + '=' + $gameVariables._data[id]);
+        for (const k of Object.keys($gameSelfSwitches._data).sort()) if (!privateSs.has(k) && !World.demoted.has('ss' + k)) parts.push('x' + k);
+        return parts.join(';');
+    };
+})();

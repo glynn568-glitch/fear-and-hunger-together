@@ -1,0 +1,72 @@
+<!-- Fear & Hunger Together: two candles, ink on paper. Drawn for 48 px and up; icon-small.svg is the same mark for 32 px and below. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<defs>
+  <filter id="ink" x="-10%" y="-10%" width="120%" height="120%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="5" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="2.8" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+  <filter id="paper" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="3" seed="2" result="g"/>
+    <feColorMatrix in="g" type="matrix" values="0 0 0 0 0.35  0 0 0 0 0.28  0 0 0 0 0.18  0 0 0 0.16 0" result="d"/>
+    <feComposite in="d" in2="SourceGraphic" operator="in" result="dg"/>
+    <feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="dg"/></feMerge>
+  </filter>
+  <pattern id="h1" patternUnits="userSpaceOnUse" width="4.6" height="4.6" patternTransform="rotate(40)"><line x1="0" y1="0" x2="0" y2="4.6" stroke="#0c0908" stroke-width="1.9"/></pattern>
+  <pattern id="h2" patternUnits="userSpaceOnUse" width="4.6" height="4.6" patternTransform="rotate(-48)"><line x1="0" y1="0" x2="0" y2="4.6" stroke="#0c0908" stroke-width="1.6"/></pattern>
+  <radialGradient id="pool" cx="50%" cy="50%" r="50%">
+    <stop offset="0" stop-color="#000"/><stop offset="0.62" stop-color="#000"/><stop offset="0.78" stop-color="#fff"/><stop offset="1" stop-color="#fff"/>
+  </radialGradient>
+  <radialGradient id="ring" cx="50%" cy="50%" r="50%">
+    <stop offset="0.38" stop-color="#000"/><stop offset="0.52" stop-color="#fff"/><stop offset="0.66" stop-color="#fff"/><stop offset="0.8" stop-color="#000"/>
+  </radialGradient>
+  <radialGradient id="ring2" cx="50%" cy="50%" r="50%">
+    <stop offset="0.46" stop-color="#000"/><stop offset="0.6" stop-color="#fff"/><stop offset="0.7" stop-color="#000"/>
+  </radialGradient>
+  <mask id="dark"><rect width="256" height="256" fill="#fff"/><ellipse cx="127" cy="134" rx="140" ry="146" fill="url(#pool)"/></mask>
+  <mask id="hatchRing"><rect width="256" height="256" fill="#000"/><ellipse cx="127" cy="134" rx="140" ry="146" fill="url(#ring)"/></mask>
+  <mask id="hatchRing2"><rect width="256" height="256" fill="#000"/><ellipse cx="127" cy="134" rx="140" ry="146" fill="url(#ring2)"/></mask>
+  <linearGradient id="red" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#dd4a33"/><stop offset="0.5" stop-color="#b01d17"/><stop offset="1" stop-color="#5e0c0a"/></linearGradient>
+  <radialGradient id="warmth" cx="50%" cy="38%" r="45%"><stop offset="0" stop-color="#fff7e2" stop-opacity="0.9"/><stop offset="1" stop-color="#fff7e2" stop-opacity="0"/></radialGradient>
+  <clipPath id="tile"><rect x="6" y="6" width="244" height="244" rx="40"/></clipPath>
+</defs>
+<g clip-path="url(#tile)">
+  <rect x="0" y="0" width="256" height="256" fill="#ece0c4" filter="url(#paper)"/>
+  <ellipse cx="128" cy="104" rx="96" ry="90" fill="url(#warmth)"/>
+  <!-- the dark, closing in: solid black, then a band of crosshatching at its edge -->
+  <rect width="256" height="256" fill="#0c0908" mask="url(#dark)"/>
+  <g mask="url(#hatchRing)"><rect width="256" height="256" fill="url(#h1)"/></g>
+  <g mask="url(#hatchRing2)"><rect width="256" height="256" fill="url(#h2)"/></g>
+  <g filter="url(#ink)">
+    <!-- floor -->
+    <path d="M 46 214 Q 128 207 210 214" fill="none" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 60 222 L 82 219 M 96 224 L 124 220 M 150 223 L 178 220 M 188 226 L 204 222" fill="none" stroke="#0c0908" stroke-width="2" stroke-linecap="round"/>
+    <!-- left candle: body, shade hatched on the far side, crater, one long drip -->
+    <path d="M 64 127 Q 65 119 72 120 Q 86 129 100 120 Q 107 119 108 127 Q 109.5 170 109 212 L 63 212 Q 62.5 170 64 127 Z" fill="#f7efdc"/>
+    <path d="M 64 127 Q 82 156 79 212 L 63 212 Q 62.5 170 64 127 Z" fill="url(#h1)"/>
+    <path d="M 64 140 Q 71 170 69 212 L 63 212 Z" fill="url(#h2)"/>
+    <path d="M 64 127 Q 65 119 72 120 Q 86 129 100 120 Q 107 119 108 127 Q 109.5 170 109 212 M 63 212 Q 62.5 170 64 127" fill="none" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 70 124 Q 86 132 102 124" fill="none" stroke="#0c0908" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 108 126 Q 115 146 113 166 Q 110 175 106 166 L 106 132" fill="#f7efdc" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 82 129 Q 79 146 84 152 Q 90 155 90 146 L 91 130" fill="#f7efdc" stroke="#0c0908" stroke-width="2.2" stroke-linejoin="round"/>
+    <!-- right candle, shorter; its near side catches the red -->
+    <path d="M 148 149 Q 149 141 156 142 Q 169 151 182 142 Q 189 141 190 149 Q 191.5 180 191 212 L 147 212 Q 146.5 180 148 149 Z" fill="#f7efdc"/>
+    <path d="M 190 149 Q 174 176 177 212 L 191 212 Q 191.5 180 190 149 Z" fill="url(#h1)"/>
+    <path d="M 190 162 Q 184 186 186 212 L 191 212 Z" fill="url(#h2)"/>
+    <path d="M 149 152 Q 147.5 182 148.5 208" fill="none" stroke="#dd4a33" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 148 149 Q 149 141 156 142 Q 169 151 182 142 Q 189 141 190 149 Q 191.5 180 191 212 M 147 212 Q 146.5 180 148 149" fill="none" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 154 146 Q 169 154 184 146" fill="none" stroke="#0c0908" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M 148 148 Q 141 164 143 180 Q 146 188 150 180 L 151 154" fill="#f7efdc" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- wicks -->
+    <path d="M 87 126 Q 88 118 92 113" fill="none" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 168 148 Q 167 140 163 135" fill="none" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- the white flame: paper left bare inside a black brush line, one inked flicker -->
+    <path d="M 92 114 C 72 106 72 84 88 68 C 98 58 106 50 113 34 C 117 50 122 62 121 78 C 120 98 108 112 92 114 Z" fill="#fffaee" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 95 106 C 86 98 88 86 96 77 C 101 71 104 65 107 58" fill="none" stroke="#0c0908" stroke-width="2" stroke-linecap="round"/>
+    <!-- the red flame -->
+    <path d="M 163 137 C 182 127 181 105 167 90 C 157 80 148 71 141 53 C 138 69 133 81 134 97 C 135 117 146 133 163 137 Z" fill="url(#red)" stroke="#0c0908" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 161 130 C 167 123 165 113 159 106 C 155 102 152 98 150 93 C 148 101 147 107 149 114 C 151 122 155 127 161 130 Z" fill="#dd4a33"/>
+    <!-- smoke out of the gap, into the dark -->
+    <path d="M 127 40 C 120 32 134 26 127 18" fill="none" stroke="#0c0908" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</g>
+<rect x="6" y="6" width="244" height="244" rx="40" fill="none" stroke="#0c0908" stroke-width="3"/></svg>

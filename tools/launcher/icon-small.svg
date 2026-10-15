@@ -1,0 +1,19 @@
+<!-- The icon for 32 px and below: no hatching, a heavier brush, bigger flames. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<defs>
+  <radialGradient id="pool" cx="50%" cy="52%" r="54%">
+    <stop offset="0" stop-color="#fff8e6"/><stop offset="0.5" stop-color="#efe4ca"/><stop offset="0.74" stop-color="#7a705c"/><stop offset="0.9" stop-color="#0c0908"/>
+  </radialGradient>
+  <clipPath id="tile"><rect x="4" y="4" width="248" height="248" rx="40"/></clipPath>
+</defs>
+<g clip-path="url(#tile)">
+  <rect width="256" height="256" fill="#0c0908"/>
+  <ellipse cx="128" cy="134" rx="146" ry="146" fill="url(#pool)"/>
+  <path d="M 50 224 L 206 224" fill="none" stroke="#0c0908" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 58 132 L 58 224 L 112 224 L 112 132 Q 85 142 58 132 Z" fill="#f8f0de" stroke="#0c0908" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 146 152 L 146 224 L 200 224 L 200 152 Q 173 162 146 152 Z" fill="#f8f0de" stroke="#0c0908" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 88 128 C 60 118 60 84 82 62 C 94 50 102 40 110 20 C 116 42 124 58 122 82 C 120 108 106 126 88 128 Z" fill="#fffbf0" stroke="#0c0908" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 168 148 C 196 138 196 104 174 82 C 162 70 154 60 146 40 C 140 62 132 78 134 102 C 136 128 150 146 168 148 Z" fill="#b51e17" stroke="#0c0908" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<rect x="4" y="4" width="248" height="248" rx="40" fill="none" stroke="#0c0908" stroke-width="6"/>
+</svg>

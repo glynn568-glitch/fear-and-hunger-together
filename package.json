@@ -1,0 +1,16 @@
+{
+  "name": "fh-coop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fear & Hunger co-op, played in the browser",
+  "scripts": {
+    "start": "node server.js",
+    "census": "node tools/census.js",
+    "test": "node test/run.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "puppeteer-core": "^25.13.0",
+    "ws": "^8.22.0"
+  }
+}

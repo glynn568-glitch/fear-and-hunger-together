@@ -1,0 +1,13 @@
+{
+    "game": "",
+    "partner": {
+        "name": "Claude",
+        "brain": "",
+        "model": "sonnet",
+        "effort": "low",
+        "character": "",
+        "follow": "",
+        "url": "",
+        "key": ""
+    }
+}
