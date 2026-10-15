@@ -1,0 +1,62 @@
+# Builds the launcher on GitHub's own runners and has SignPath sign it.
+# Pattern follows SignPath's GitHub guide:
+#   https://docs.signpath.io/trusted-build-systems/github
+# (upload with actions/upload-artifact v4+, then signpath/github-action-submit-signing-request
+#  with the uploaded artifact's id; every job must run on a GitHub-hosted runner).
+#
+# One-time SignPath setup (see docs/signpath-application.md): replace the three
+# placeholders below, add the repository secret SIGNPATH_API_TOKEN, and create an
+# artifact configuration whose root is <zip-file> containing the one <pe-file>.
+name: Build and sign launcher
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-and-sign:
+    runs-on: windows-latest
+    env:
+      # Signing runs once SignPath has approved the project and the token is set;
+      # until then the launcher is built and uploaded unsigned, and the run passes.
+      CAN_SIGN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build launcher (csc.exe from .NET Framework 4)
+        run: node tools/build-launcher.js "dist/Fear & Hunger Together.exe"
+
+      - name: Upload unsigned launcher
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-unsigned
+          path: 'dist/Fear & Hunger Together.exe'
+
+      - name: Sign with SignPath
+        if: env.CAN_SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 'SIGNPATH_ORGANIZATION_ID'          # placeholder: SignPath organization id
+          project-slug: 'SIGNPATH_PROJECT_SLUG'                # placeholder: e.g. fear-and-hunger-together
+          signing-policy-slug: 'SIGNPATH_SIGNING_POLICY_SLUG'  # placeholder: e.g. release-signing
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/signed
+
+      - name: Upload signed launcher
+        if: env.CAN_SIGN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-signed
+          path: dist/signed/*.exe

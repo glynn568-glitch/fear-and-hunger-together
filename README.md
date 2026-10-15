@@ -116,3 +116,5 @@ The same options work on the command line, which overrides the file: `node tools
 `npm test` runs the whole test suite with headless Chrome. `node test/ai-live.js` runs the AI partner against the real model (it spends model calls). `node tools/package.js` builds the zip for itch, Node and the launcher included (`node tools/build-launcher.js` builds the launcher alone, with the C# compiler Windows ships). `node test/tour.js` walks two players through every map in the game.
 
 Without the zip, from the source: `Play.cmd` fetches a private copy of Node.js the first time if it isn't installed, and installs the rest with npm.
+
+Code signing policy: https://github.com/glynn568-glitch/fear-and-hunger-together/blob/main/docs/code-signing.md

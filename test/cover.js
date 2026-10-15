@@ -31,7 +31,35 @@ const page = (w, h) => `<html><body style="margin:0;width:${w}px;height:${h}px;b
         await p.setViewport({ width: w, height: h, deviceScaleFactor: name === 'cover-itch' ? 2 : 1 });
         await p.setContent(page(w, h));
         await new Promise((r) => setTimeout(r, 400));
-        await p.screenshot({ path: path.join(PRESS, name + '.png') });
+        // A file held open by an image viewer is left as it is.
+        try { await p.screenshot({ path: path.join(PRESS, name + '.png') }); } catch (e) { console.log(name + ' skipped: ' + e.code); }
+        await p.close();
+        console.log(name);
+    }
+    // The itch page's banner (its column is 960 wide) and a background tile of
+    // faint crosshatching, like the dark around the icon's candles.
+    const font = '<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English&display=block" rel="stylesheet">';
+    const banner = `<html><head>${font}</head><body style="margin:0;width:960px;height:240px;background:transparent;overflow:hidden;font-family:'IM Fell English',Georgia,serif">
+      <div style="position:absolute;left:40px;top:30px;display:flex;align-items:center;gap:34px">
+        <img src="${icon}" style="width:180px;height:180px">
+        <div>
+          <div style="color:#f0e4c8;font-size:66px;line-height:1">Fear &amp; Hunger</div>
+          <div style="color:#d13a2a;font-size:66px;line-height:1.05">Together</div>
+          <div style="color:#b9ab8c;font-size:22px;margin-top:10px">Co-op for up to four. Friends or AI partners.</div>
+        </div>
+      </div></body></html>`;
+    const tile = `<html><body style="margin:0;width:192px;height:192px;background:#0c0908">
+      <svg width="192" height="192" xmlns="http://www.w3.org/2000/svg">
+        <defs><pattern id="a" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(40)"><line x1="0" y1="0" x2="0" y2="6" stroke="#2a201b" stroke-width="1.2"/></pattern>
+        <pattern id="b" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-48)"><line x1="0" y1="0" x2="0" y2="6" stroke="#1e1714" stroke-width="1"/></pattern></defs>
+        <rect width="192" height="192" fill="url(#a)"/><rect width="192" height="192" fill="url(#b)"/>
+      </svg></body></html>`;
+    for (const [name, html, w, h, transparent] of [['banner', banner, 960, 240, true], ['background-tile', tile, 192, 192, false]]) {
+        const p = await browser.newPage();
+        await p.setViewport({ width: w, height: h });
+        await p.setContent(html, { waitUntil: 'networkidle0' });
+        await p.evaluate(() => document.fonts.ready);
+        await p.screenshot({ path: path.join(PRESS, name + '.png'), omitBackground: transparent });
         await p.close();
         console.log(name);
     }
