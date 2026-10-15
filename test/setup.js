@@ -13,7 +13,7 @@ async function press(page, code) {
 
 (async () => {
     const check = checker();
-    const port = 8463;
+    const port = 8476;
     const server = await startServer(port);
     const browser = await launch();
     let a;

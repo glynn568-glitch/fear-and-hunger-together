@@ -1,6 +1,6 @@
 // A partner standing close by leaves the map (a hole, a teleport, a door):
 // the one left behind is offered a way after them, and is never dragged.
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 const { shot } = require('./lib');
 
 const offer = (page) => page.evaluate(() => { const b = document.getElementById('coop-follow'); return { shown: b.style.display !== 'none', text: b.textContent }; });
@@ -28,7 +28,7 @@ const onMap = (id) => $gameMap.mapId() === id && SceneManager._scene instanceof 
         const pos = await a.evaluate(() => $gamePlayer.x + ',' + $gamePlayer.y);
         check('pressing F brings A to where B is', pos === await b.evaluate(() => $gamePlayer.x + ',' + $gamePlayer.y), pos);
         await sleep(800);
-        check('they see each other there', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('they see each other there', (await sees(a, 1)) && (await sees(b, 1)));
         check('the offer is gone once taken', !(await offer(a)).shown);
 
         // Far apart: no offer. A walks off, B leaves.

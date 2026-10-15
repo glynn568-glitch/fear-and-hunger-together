@@ -23,7 +23,8 @@
         '#coop-name input.need { border-color: #b0483a; }',
         '#coop-toast { position: fixed; left: 50%; top: 14%; transform: translateX(-50%); z-index: 60; pointer-events: none;',
         '  font: 17px Georgia, "Times New Roman", serif; color: #e8dcc0; text-shadow: 0 0 4px #000, 0 0 4px #000;',
-        '  opacity: 0; transition: opacity 0.4s; text-align: center; white-space: pre-line; }',
+        // Narrow enough to stay clear of the corner list at the top right.
+        '  opacity: 0; transition: opacity 0.4s; text-align: center; white-space: pre-line; max-width: 48%; }',
         // The panels along the top share one column, so none is drawn over another.
         '#coop-top { position: fixed; left: 0; right: 0; top: 1.5%; z-index: 60; pointer-events: none;',
         '  display: flex; flex-direction: column; align-items: center; gap: 6px; }',

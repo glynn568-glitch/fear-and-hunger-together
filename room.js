@@ -398,7 +398,9 @@ class Room {
             fs.writeFile(this.parkFile(peer.name), JSON.stringify({ at: Date.now(), runId: String(msg.runId || ''), blob: msg.blob }), () => {});
             break;
         case 'park?': {
-            const parked = peer.named ? this.readParked(peer.name) : null;
+            // Before the name is in, "nothing" would be a wrong answer; it asks again on nameok.
+            if (!peer.named) break;
+            const parked = this.readParked(peer.name);
             this.send(peer, { t: 'parked', has: !!parked, ageSec: parked ? Math.round((Date.now() - parked.at) / 1000) : 0 });
             break;
         }

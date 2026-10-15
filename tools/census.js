@@ -52,6 +52,11 @@ const SW_PRIVATE_IDS = new Set([
 // Shared, a fresh partner taking the same character came in with the last
 // one's missing legs.
 for (const id of [36, 37, 38, 39, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 817, 819, 820, 821]) SW_PRIVATE_IDS.add(id);
+// Set from inside move routes (seen by the scan since 0.1.2) but each player's
+// own: an ambush walk-in that arms a chase (the bloody men 2-5, the miner
+// ghost) and the library door, whose parallel event re-runs Enki's rejoin.
+// Shared, one player's ambush or rejoin would play out on the other's screen.
+for (const id of [2271, 2282, 2294, 2311, 2638, 1643]) SW_PRIVATE_IDS.add(id);
 // The game mode is chosen once and has to match for everyone.
 const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480]);
 

@@ -90,10 +90,11 @@ async function press(page, code, ms) {
         await bot.evaluate(() => { BOT.mode = 'wait'; });
         await a.evaluate(() => { $gamePlayer.locate(27, 61); });
         await sleep(1500);
-        // Too far for the offer (more than 8 tiles): she leaves, then calls it after her.
-        await bot.evaluate(() => { $gamePlayer.locate(27, 72); });
+        // Too far for the offer (more than 8 tiles): she leaves from the door, the
+        // bot back in the first room, then she calls it after her.
+        await bot.evaluate(() => { $gamePlayer.locate(27, 68); });
         await sleep(800);
-        await a.evaluate((d) => { $gamePlayer.reserveTransfer(4, d.tx, d.ty, 2, 0); }, door);
+        await a.evaluate((d) => { $gamePlayer.locate(d.x, d.y); $gamePlayer.reserveTransfer(4, d.tx, d.ty, 2, 0); }, door);
         await waitFor(a, () => $gameMap.mapId() === 4 && T.onMap(), 20000, 'Ann on the next map again');
         await a.evaluate(() => { $gamePlayer.locate($gamePlayer.x, $gamePlayer.y - 2); });
         await bot.evaluate(() => { BOT.mode = 'follow'; });
@@ -108,8 +109,11 @@ async function press(page, code, ms) {
         let jumped = 0;
         for (let i = 1; i < trail.length; i++) if (trail[i].map === trail[i - 1].map && Math.abs(trail[i].x - trail[i - 1].x) + Math.abs(trail[i].y - trail[i - 1].y) > 8) jumped++;
         const arrived = trail[trail.length - 1];
-        check('far off when she went, it walks to that door and comes through after her', arrived.map === 4 && jumped === 0 && trail.some((t) => t.errand && t.errand.kind === 'follow'),
-            'arrived on map ' + arrived.map + ' at ' + arrived.x + ',' + arrived.y + ' in ' + Math.round((Date.now() - tDoor) / 1000) + ' s, jumps ' + jumped);
+        // Walked, not caught up the quick way: last seen on this side close to the door.
+        const last = trail.filter((t) => t.map !== 4).pop();
+        const atDoor = last ? Math.abs(last.x - door.x) + Math.abs(last.y - door.y) : 99;
+        check('far off when she went, it walks to that door and comes through after her', arrived.map === 4 && jumped === 0 && atDoor <= 4 && trail.some((t) => t.errand && t.errand.kind === 'follow'),
+            'arrived on map ' + arrived.map + ' at ' + arrived.x + ',' + arrived.y + ' in ' + Math.round((Date.now() - tDoor) / 1000) + ' s, jumps ' + jumped + ', last seen ' + atDoor + ' tiles from the door');
 
         //--- Tab shows what the partner wears and carries ----------------------
         await a.keyboard.down('Tab');
@@ -200,13 +204,16 @@ async function press(page, code, ms) {
             const st = await a.evaluate(() => { const s = SceneManager._scene; const w = {}; for (const k in s) if (s[k] && s[k].active !== undefined && s[k].isOpen) w[k] = (s[k].active ? 'A' : '') + (s[k].isOpen() ? 'O' : '') + (s[k].visible ? 'V' : ''); return { phase: BattleManager._phase, windows: w, busy: s.isAnyInputWindowActive(), log: s._logWindow && s._logWindow.isBusy(), msg: $gameMessage.isBusy() }; });
             check('the round plays out after its move', false, JSON.stringify(st));
         }
+        // Now and then the round itself kills the guard; then "won" is the true report.
+        const wonInRound = await a.evaluate(() => BattleManager._phase === 'battleEnd' && $gameTroop.isAllDead());
         await a.evaluate(() => { if (BattleManager._phase !== 'battleEnd') BattleManager.abort(); });
         // A won fight ends on its own text; Ann reads through it.
         for (let i = 0; i < 30 && !(await a.evaluate(() => SceneManager._scene instanceof Scene_Map)); i++) await press(a, 'KeyZ');
         await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'Ann back on the map');
         await waitFor(bot, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'the bot back on the map');
         const told = asked.map((q) => q.text).concat(await bot.evaluate(() => BOT.notes.slice())).join('\n').split('\n').filter((t) => /fight is over/.test(t));
-        check('a fight that only broke off is not reported as a kill', told.some((t) => /nobody won: it broke off, and Guard.* is still alive/.test(t)), told.join(' | '));
+        if (wonInRound) check('a fight won in the round is reported as won', told.some((t) => /won: Guard.* is dead/.test(t)), told.join(' | '));
+        else check('a fight that only broke off is not reported as a kill', told.some((t) => /nobody won: it broke off, and Guard.* is still alive/.test(t)), told.join(' | '));
 
         //--- busy when Ann's fight starts: it joins once free ------------------
         await bot.evaluate(() => { $gameMessage.add('Something holds your attention.'); });

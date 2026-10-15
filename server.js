@@ -9,8 +9,12 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const { findGame, SETTINGS } = require('./tools/find-game');
 const GAME = findGame();
-if (!GAME || !fs.existsSync(path.join(GAME, 'index.html'))) {
-    console.error('Fear & Hunger was not found' + (GAME ? ' at ' + GAME : '') + '.\n'
+// The first game only: Termina, or any other RPG Maker game in the folder picked, is not it.
+let gameTitle = '';
+try { gameTitle = String(JSON.parse(fs.readFileSync(path.join(GAME, 'data', 'System.json'), 'utf8')).gameTitle || ''); } catch (e) { /* no game there */ }
+const otherGame = gameTitle && (!/fear\s*&?\s*hunger/i.test(gameTitle) || /termina|\b2\b/i.test(gameTitle));
+if (!GAME || !fs.existsSync(path.join(GAME, 'index.html')) || otherGame) {
+    console.error('Fear & Hunger was not found' + (GAME ? ' at ' + GAME : '') + (otherGame ? ' (that folder holds "' + gameTitle + '")' : '') + '.\n'
         + 'Put its folder in settings.json, for example:  "game": "D:\\\\SteamLibrary\\\\steamapps\\\\common\\\\Fear & Hunger"');
     process.exit(1);
 }
@@ -110,8 +114,10 @@ function joinPage(req, url) {
         <li>Press the button below, or pick <b>Together</b> on the title screen and paste this link:</li>
         </ol>
         <input readonly value="${link}" onclick="this.select()">
-        <p style="margin-top:22px"><a href="fhtogether://join?link=${encodeURIComponent(link)}" style="display:inline-block;background:#5a2018;border:1px solid #a0533c;color:#f0e4d2;padding:10px 18px;text-decoration:none">Open in Fear &amp; Hunger Together</a></p>
+        <p style="margin-top:22px"><a id="open" href="fhtogether://join?link=${encodeURIComponent(link)}" style="display:inline-block;background:#5a2018;border:1px solid #a0533c;color:#f0e4d2;padding:10px 18px;text-decoration:none">Open in Fear &amp; Hunger Together</a></p>
         <p style="color:#9d8f7a;font-size:15px">Already have it? The button opens it and offers to join.</p>
+        <p id="hint" style="display:none;color:#e0a27a;font-size:15px">Nothing opened, or Windows asked which app to use? Then Fear &amp; Hunger Together isn't installed yet: <a href="${DOWNLOAD}" style="color:#e0a27a">get it here</a> (free), start it once, then press the button again.</p>
+        <script>document.getElementById('open').addEventListener('click', function () { setTimeout(function () { document.getElementById('hint').style.display = 'block'; }, 3000); });</script>
         </main></body></html>`;
 }
 

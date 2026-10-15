@@ -11,7 +11,7 @@ const SECONDS = Number(process.argv[2] || 150);
     let s;
     let code = 1;
     try {
-        s = await twoPlayers(8444, { ax: 49, ay: 60, bx: 48, by: 60 });
+        s = await twoPlayers(8477, { ax: 49, ay: 60, bx: 48, by: 60 });
         const { a, b } = s;
         const seen = { A: new Set(), B: new Set() };
         const started = Date.now();

@@ -1,8 +1,8 @@
 # Code signing policy
 
-**Status:** not signed yet. The project is applying to SignPath Foundation; until it is approved, releases are not signed, and Windows may say "Windows protected your PC" the first time (click **More info**, then **Run anyway**).
+**Status:** not signed. An application to SignPath Foundation was declined in October 2026 (the project was new); releases are not signed, and Windows may say "Windows protected your PC" the first time (click **More info**, then **Run anyway**).
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+The rest of this page is the policy that would apply if signing is set up later (free code signing by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org)).
 
 Only one file in a release is signed: the launcher, `Fear & Hunger Together.exe`. The rest of the release zip is JavaScript source, data, and an unmodified Node.js runtime downloaded from nodejs.org (signed by the Node.js project, not by us).
 

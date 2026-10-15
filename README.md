@@ -117,4 +117,3 @@ The same options work on the command line, which overrides the file: `node tools
 
 Without the zip, from the source: `Play.cmd` fetches a private copy of Node.js the first time if it isn't installed, and installs the rest with npm.
 
-Code signing policy: https://github.com/glynn568-glitch/fear-and-hunger-together/blob/main/docs/code-signing.md

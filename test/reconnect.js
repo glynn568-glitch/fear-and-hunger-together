@@ -1,12 +1,12 @@
 // A dropped connection: the player keeps playing, reconnects, and catches up
 // on what changed while they were away.
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 
 (async () => {
     const check = checker();
     let s;
     try {
-        s = await twoPlayers(8446);
+        s = await twoPlayers(8466);
         const { a, b } = s;
         await b.evaluate(() => Coop._ws.close());
         await waitFor(a, () => Coop.peers.size === 0, 5000, 'A notices B is gone');
@@ -18,7 +18,7 @@ const { twoPlayers, checker, sleep, waitFor } = require('./common');
         await sleep(1200);
         check('B caught up on what A did meanwhile', await b.evaluate(() => $gameSwitches.value(25)));
         check('what B did offline reached A', await a.evaluate(() => $gameSwitches.value(27)));
-        check('they see each other again', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('they see each other again', (await sees(a, 1)) && (await sees(b, 1)));
         const pos = await a.evaluate(() => { const p = Coop.others()[0]; return p.x + ',' + p.y; });
         check('A has the position B walked to while offline', pos === '28,66', pos);
         check('one owner', (await a.evaluate(() => Coop.events.amOwner())) !== (await b.evaluate(() => Coop.events.amOwner())));

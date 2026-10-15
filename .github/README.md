@@ -46,4 +46,4 @@ Node.js server, the game's own RPG Maker engine in Edge or Chrome, and a small C
 
 MIT licensed. Fear & Hunger and everything in it belong to Miro Haverinen.
 
-Code signing: the launcher is being set up for free code signing provided by SignPath.io, certificate by SignPath Foundation. Until that is approved, releases are unsigned. [Code signing policy](../docs/code-signing.md).
+The launcher isn't code-signed, so Windows may say "Windows protected your PC" the first time: click **More info**, then **Run anyway**. Installing through the itch app avoids it.

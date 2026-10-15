@@ -39,11 +39,15 @@ async function launch() {
         try { fs.rmSync(path.join(OUT, name), { recursive: true, force: true }); } catch (e) { /* in use after all */ }
     }
     const profile = path.join(OUT, 'chrome-profile-' + process.pid);
+    // The real GPU by default; FH_TEST_GPU=0 renders in software (leaves the card to a game).
+    const gl = process.env.FH_TEST_GPU === '0'
+        ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+        : ['--use-angle=d3d11'];
     const browser = await puppeteer.launch({
         executablePath: CHROME,
         headless: 'new',
         args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio', '--window-size=900,700',
-            '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
+            ...gl, '--ignore-gpu-blocklist',
             '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
         userDataDir: profile,
     });

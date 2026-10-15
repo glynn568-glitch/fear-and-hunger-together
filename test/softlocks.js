@@ -2,7 +2,7 @@
 // (mattieFM/FearAndHungerModManager issues #27, #32, #37, #38, #48, #49),
 // played through here with two players: whoever is involved must be able to
 // move again afterwards, and the other player must not be caught up in it.
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 
 async function press(page, code, ms) {
     await page.keyboard.down(code); await sleep(ms || 110); await page.keyboard.up(code); await sleep(160);
@@ -41,6 +41,27 @@ async function drive(page, answers, ms) {
             await sleep(250);
         }
     }
+    // Still held: say by what, so a failure reads without a rerun.
+    const stop0 = await page.evaluate(() => $gamePlayer._stopCount);
+    await sleep(300);
+    console.log(page.label + ' engine: ' + JSON.stringify(await page.evaluate((stop0) => {
+        const p = $gamePlayer, d = 6, x2 = $gameMap.roundXWithDirection(p.x, d), y2 = $gameMap.roundYWithDirection(p.y, d);
+        return { stopAdvanced: p._stopCount - stop0, pWait: p._waitCount, canPass: p.canPass(p.x, p.y, d), mapPass: p.isMapPassable(p.x, p.y, d),
+            collided: p.isCollidedWithCharacters(x2, y2), evs: $gameMap.eventsXyNt(x2, y2).map((e) => e.eventId() + ':' + e._priorityType + (e._erased ? 'erased' : '')),
+            through: p.isThrough(), ok: p.isMovementSucceeded(), idx: p._moveRouteIndex, followers: p._followers.visibleFollowers().map((f) => f.x + ',' + f.y),
+            avatars: [...Coop.avatars.values()].map((a) => a.x + ',' + a.y) };
+    }, stop0)));
+    console.log(page.label + ' still held: ' + JSON.stringify(await page.evaluate(() => {
+        const i = $gameMap._interpreter, ev = i && $gameMap.event(i.eventId());
+        const c = i && i._list && i._list[i._index];
+        return { scene: SceneManager._scene.constructor.name, running: $gameMap.isEventRunning(), event: i && i.eventId(), name: ev && ev.event().name,
+            index: i && i._index, code: c && c.code, params: c && JSON.stringify(c.parameters).slice(0, 120), wait: i && i._waitMode, count: i && i._waitCount,
+            child: !!(i && i._childInterpreter), msg: $gameMessage.isBusy(), moving: $gamePlayer.isMoving(), transferring: $gamePlayer.isTransferring(),
+            route: $gamePlayer._moveRouteForcing, xy: [$gamePlayer.x, $gamePlayer.y],
+            step: $gamePlayer._moveRoute && $gamePlayer._moveRoute.list[$gamePlayer._moveRouteIndex],
+            near: $gameMap.events().filter((e) => Math.abs(e.x - $gamePlayer.x) + Math.abs(e.y - $gamePlayer.y) <= 1 && e.page())
+                .map((e) => e.eventId() + '@' + e.x + ',' + e.y + (e.isNormalPriority() ? ' solid' : '') + (e.isThrough() ? ' through' : '') + ' ' + e.characterName()) };
+    })));
     return false;
 }
 
@@ -108,11 +129,11 @@ const coinShown = (p) => p.evaluate(() => [14, 15, 16, 17].filter((n) => { const
         const bFell = await drive(b, [1], 60000);
         check('...and when they jump after, they land free too', bFell && await b.evaluate(() => $gameMap.mapId()) === 8 && await free(a));
         await sleep(800);
-        check('...in the same place as their partner', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('...in the same place as their partner', (await sees(a, 1)) && (await sees(b, 1)));
 
         //--- #27: the Nosramus scene in the mines, met by two players at once ---
-        await goTo(a, 11, 34, 63, 2);
-        await goTo(b, 11, 35, 64, 2);
+        await goTo(a, 11, 34, 64, 2); // on the step-on triggers, where walking in leaves them
+        await goTo(b, 11, 35, 65, 2);
         await sleep(500);
         await Promise.all([a.evaluate(() => $gameMap.event(350).start()), b.evaluate(() => $gameMap.event(351).start())]);
         const met = await Promise.all([drive(a, [1, 0], 90000), drive(b, [1, 0], 90000)]); // "Show yourself", "Nice to meet you too"
@@ -137,8 +158,8 @@ const coinShown = (p) => p.evaluate(() => [14, 15, 16, 17].filter((n) => { const
         while (Date.now() < until && turns.b < 4) {
             const st = await a.evaluate(() => ({ input: BattleManager.isInputting() && !!BattleManager.actor(), actor: BattleManager.actor() ? BattleManager.actor().actorId() : 0,
                 over: !(SceneManager._scene instanceof Scene_Battle), ex: !!(window.Galv && Galv.EXTURN && Galv.EXTURN.active) }));
-            if (st.over) break;
-            if (!st.input) { if (++stalled > 120) break; await sleep(250); continue; }
+            if (st.over) { turns.end = await a.evaluate(() => ($gameTroop.isAllDead() ? 'won' : $gameParty.isAllDead() ? 'lost' : 'over')); break; }
+            if (!st.input) { if (++stalled > 120) { turns.end = 'stalled'; break; } await sleep(250); continue; }
             stalled = 0;
             if (st.ex) turns.ex++;
             if (st.actor === 1) { turns.a++; await press(a, 'KeyZ'); await press(a, 'KeyZ'); await press(a, 'KeyZ'); }

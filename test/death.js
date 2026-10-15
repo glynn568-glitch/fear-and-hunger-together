@@ -2,7 +2,7 @@
 // the run ending when nobody is left, and reloading to the saved moment.
 const fs = require('fs');
 const path = require('path');
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 const { shot } = require('./lib');
 
 async function press(page, code) {
@@ -51,7 +51,7 @@ async function press(page, code) {
         check('the circle is spent for both players', back.sw && await a.evaluate(() => $gameSwitches.value(409)));
         await sleep(600);
         check('A stopped streaming once B was back', await a.evaluate(() => Coop.stream.watchers.size) === 0);
-        check('A sees B again', await a.evaluate(() => Coop.peersHere().length) === 1);
+        check('A sees B again', await sees(a, 1));
 
         // A spent circle makes no second offer.
         await b.evaluate(() => SceneManager.goto(Scene_Gameover));
@@ -82,7 +82,7 @@ async function press(page, code) {
         check('both are back where they saved, as themselves', ra.x === 27 && ra.y === 67 && ra.party === '1' && rb.x === 28 && rb.party === '3' && rb.hp > 1);
         const fa = await a.evaluate(() => Coop.world.fingerprint()), fb = await b.evaluate(() => Coop.world.fingerprint());
         check('shared state identical after the reload', fa === fb);
-        check('they see each other again', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('they see each other again', (await sees(a, 1)) && (await sees(b, 1)));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

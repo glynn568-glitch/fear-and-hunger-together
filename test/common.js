@@ -38,10 +38,14 @@ function checker() {
     };
     check.finish = (pages) => {
         for (const p of pages || []) {
-            const errs = p.errors.filter((e) => !/physical_attack_animation/.test(e));
+            // Not ours: the base game's missing animation file, and Chrome's notice that it
+            // tidied up a video frame itself (fight video between headless tabs under load).
+            const errs = p.errors.filter((e) => !/physical_attack_animation|VideoFrame was garbage collected/.test(e));
             check(p.label + ' has no script errors', errs.length === 0, errs.slice(0, 3).join(' || ').slice(0, 700));
         }
         const failed = results.filter((r) => !r).length;
+        // What each page was saying last, to see why without running it again.
+        if (failed) for (const p of pages || []) console.log(`--- ${p.label}, last lines\n` + p.logs.slice(process.env.FH_TEST_LOGS ? 0 : -15).map((l) => '  ' + l.slice(0, 240)).join('\n'));
         console.log(failed ? `${failed} FAILED` : `all ${results.length} passed`);
         return failed ? 1 : 0;
     };
@@ -66,4 +70,7 @@ const canRecruit = (page) => page.evaluate(() => {
     return { can: !!$gameSwitches._data[flag], counted: $gameVariables.value(34), stuck: interp.isRunning() };
 });
 
-module.exports = { twoPlayers, checker, sleep, waitFor, canRecruit };
+// True once this page sees n others here; presence takes a moment to cross.
+const sees = (page, n) => waitFor(page, (n) => Coop.peersHere().length === n, 10000, n + ' here', n).then(() => true, () => false);
+
+module.exports = { twoPlayers, checker, sleep, waitFor, canRecruit, sees };

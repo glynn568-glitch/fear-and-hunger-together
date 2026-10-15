@@ -105,6 +105,12 @@ static class Launcher
             if (server.HasExited && said.Contains("was not found"))
             {
                 // Not in Steam or the itch app: asked once, remembered in settings.json.
+                // First say what is missing, so someone without the game is not handed a bare folder picker.
+                if (attempt == 0 && MessageBox.Show(
+                        "Fear & Hunger wasn't found on this PC.\n\n"
+                        + "Fear & Hunger Together needs your own copy of the game (Fear & Hunger on Steam or itch.io). It looked in Steam and the itch app.\n\n"
+                        + "If the game is installed somewhere else, click OK and pick its folder (the one with Game.exe in it). Otherwise click Cancel, get the game, and start this again.",
+                        Title, MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return 1;
                 using (var pick = new FolderBrowserDialog())
                 {
                     pick.Description = attempt == 0 ? "Where is Fear & Hunger? Pick its folder (the one with Game.exe in it)."

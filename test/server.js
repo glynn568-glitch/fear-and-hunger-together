@@ -2,11 +2,13 @@
 // saves, or let one player take another's name.
 const http = require('http');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const WebSocket = require('ws');
 const { startServer, sleep } = require('./lib');
 const { checker } = require('./common');
 
-const PORT = 8447, OFFLINE = 8457;
+const PORT = 8473, OFFLINE = 8474;
 const KEY = 'srvtest';
 
 function get(pathname, headers, at) {
@@ -138,6 +140,17 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
         await sleep(200);
         check('a save from a different run is kept out', got(c, 'worldbusy').length === 1 && got(c, 'world').length === 0);
         for (const ws of [a2, b, c]) ws.close();
+
+        // A friend without the mod is told where to get it if the button opens nothing.
+        check('the join page says what to do when the button opens nothing', /id="hint"[^>]*display:none/.test(page) && /releases\/latest/.test(page) && /addEventListener\('click'/.test(page));
+
+        // A folder holding another game (Termina here) is refused with the reason, not run.
+        const notFh1 = path.join(__dirname, 'out', 'not-fh1');
+        fs.mkdirSync(path.join(notFh1, 'www', 'data'), { recursive: true });
+        fs.writeFileSync(path.join(notFh1, 'www', 'index.html'), '<html></html>');
+        fs.writeFileSync(path.join(notFh1, 'www', 'data', 'System.json'), JSON.stringify({ gameTitle: 'Fear & Hunger 2: Termina' }));
+        const wrongGame = require('child_process').spawnSync(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: Object.assign({}, process.env, { FH_GAME: notFh1, PORT: '8475' }), encoding: 'utf8', timeout: 15000 });
+        check('a folder with another game in it is refused, saying which', wrongGame.status === 1 && /was not found at .*holds "Fear & Hunger 2: Termina"/.test(wrongGame.stderr), (wrongGame.stderr || '').split('\n')[0]);
 
         // Only this PC reaches the server at all: other machines on the network get no answer.
         const lan = Object.values(os.networkInterfaces()).flat().find((n) => n.family === 'IPv4' && !n.internal);

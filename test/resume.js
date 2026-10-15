@@ -1,7 +1,7 @@
 // Carrying a run on another day: whoever loads first decides the moment, and
 // everyone after them ends up on their own save from that same moment,
 // whichever one they picked. Someone who was dead at that save comes back dead.
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 
 const titleReady = () => window.SceneManager && SceneManager._scene instanceof Scene_Title && !SceneManager.isSceneChanging() && window.Coop && Coop.connected;
 const onMapLive = () => SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive() && Coop.world.live;
@@ -121,7 +121,7 @@ async function bothToTitle(a, b) {
         await load(b, 1);
         await waitFor(b, onMapLive, 30000, 'B joins from the first bed');
         check('someone who was not there for the later save joins as they last were, and is told', /later save than any of yours/.test(await toast(b)), await toast(b));
-        check('they see each other', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('they see each other', (await sees(a, 1)) && (await sees(b, 1)));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

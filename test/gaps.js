@@ -2,7 +2,7 @@
 // two players cannot be the same protagonist, saving alongside never eats a
 // save from another game, and the keys are explained.
 const { startServer, launch, openPlayer, waitFor, sleep } = require('./lib');
-const { twoPlayers, checker } = require('./common');
+const { twoPlayers, checker, sees } = require('./common');
 const install = require('./helpers');
 
 const titleReady = () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected;
@@ -33,7 +33,7 @@ const resumeOffer = (page) => page.evaluate(() => { const b = document.getElemen
         const back = await a2.evaluate(() => ({ x: $gamePlayer.x, y: $gamePlayer.y, items: $gameParty.numItems($dataItems[1]), party: $gameParty._actors.join(), map: $gameMap.mapId() }));
         check('A is where they were, with what they had', back.x === 27 && back.y === 66 && back.items === 4 && back.party === '1' && back.map === 1, JSON.stringify(back));
         await sleep(800);
-        check('B sees A again', await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('B sees A again', await sees(b, 1));
 
         // Dropping out mid-fight.
         await a2.evaluate(() => Coop.parkNow());

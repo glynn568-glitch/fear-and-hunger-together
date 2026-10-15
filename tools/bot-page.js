@@ -355,6 +355,8 @@ module.exports = function installBot(options) {
     //   the run goes on another day   Continue, on its own save from that run
     // Only with neither does it turn up as somebody new.
     Coop.on('parked', function (msg) { BOT.parked = !!msg.has; BOT.parkKnown = true; });
+    // This is put in once the title is up, so the title's own question may already have been answered.
+    if (Coop.connected && Coop.name) Coop.send({ t: 'park?' });
     BOT.comeBack = function () {
         if (BOT.parked) {
             BOT.parked = false;
@@ -697,11 +699,47 @@ module.exports = function installBot(options) {
         return null;
     };
 
+    // A shut door: solid, opened with the action key, drawn as a door, and its
+    // page only swings it open (a move route, no text and no question: a cell
+    // door asking to use a lockpick or a key is not opened for anyone). One
+    // that would not open lately counts as a wall for a while.
+    function shutDoor(ev) {
+        const page = ev.page();
+        return !!page && ev.isNormalPriority() && ev.isTriggerIn([0]) && /door|gate/i.test(ev.characterName())
+            && page.list.some((c) => c.code === 205) && !page.list.some((c) => c.code === 101 || c.code === 102)
+            && !((Nav.banned.get('door' + $gameMap.mapId() + ':' + ev.eventId()) || 0) > Date.now());
+    }
+
     // Anything standing there; when careful, also floor tiles that do something
-    // when stepped on (traps, doors, scenes).
+    // when stepped on (traps, doors, scenes). A shut door is not in the way:
+    // it gets opened on the way through.
     function blockedByEvent(x, y, except, careful) {
         if (!window.$dataMap) return true; // between maps: stand still
-        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && (ev.isNormalPriority() || (careful && ev.page() && ev.isTriggerIn([1, 2]))));
+        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev)) || (careful && ev.page() && ev.isTriggerIn([1, 2]))));
+    }
+
+    // A step was blocked: if a shut door is what stands there, face it and
+    // press the action key, as a player would. True while that is under way.
+    // A door that stays shut after a few tries (locked) is left for a while.
+    function openDoorAhead(player, dir) {
+        if (!dir || !window.$dataMap) return false;
+        const x = $gameMap.roundXWithDirection(player.x, dir), y = $gameMap.roundYWithDirection(player.y, dir);
+        const door = $gameMap.eventsXyNt(x, y).find(shutDoor);
+        if (!door) return false;
+        const key = 'door' + $gameMap.mapId() + ':' + door.eventId();
+        const now = Date.now();
+        const d = BOT.door && BOT.door.key === key ? BOT.door : (BOT.door = { key, tries: 0, at: 0 });
+        if (now - d.at < 1500) return true; // its swing takes a moment
+        if (++d.tries > 3) {
+            Nav.banned.set(key, now + 60000);
+            BOT.door = null;
+            log('a door here will not open for me');
+            return false;
+        }
+        player.setDirection(dir);
+        press('ok');
+        d.at = now;
+        return true;
     }
 
     // Tile by tile on this map, around walls and anything standing in the way.
@@ -851,6 +889,7 @@ module.exports = function installBot(options) {
             else { player.executeMove(10 - player.direction()); } // off and on again
             if (++e.tries > 12) {
                 // This will not open for us. Another way, for a while.
+                log('the way at ' + t.x + ',' + t.y + ' did not take me; trying another');
                 giveUpOn(t);
                 e.tries = 0;
                 replan();
@@ -860,6 +899,7 @@ module.exports = function installBot(options) {
         if (!e.steps || !e.steps.length) {
             e.steps = Nav.path(t.x, t.y, t.ev.eventId(), solid);
             if (!e.steps) {
+                log('no path from ' + player.x + ',' + player.y + ' to ' + t.x + ',' + t.y + '; trying another way');
                 giveUpOn(t);
                 replan();
                 return;
@@ -869,6 +909,7 @@ module.exports = function installBot(options) {
         const x = player.x, y = player.y;
         player.executeMove(dirTo(next.x, next.y));
         if (player.x === next.x && player.y === next.y) { e.steps.shift(); BOT.stuck = 0; return; }
+        if (player.x === x && player.y === y && openDoorAhead(player, dirTo(next.x, next.y))) { BOT.stuck = 0; return; }
         if (player.x === x && player.y === y && ++BOT.stuck > 6) {
             // Something is standing there. Around it.
             Nav.banned.set(next.x + ',' + next.y, Date.now() + 4000);
@@ -900,10 +941,10 @@ module.exports = function installBot(options) {
         }
         if (dist <= 2) { BOT.stuck = 0; BOT.trail = null; return; }
         let dir;
-        if (dist <= 6) dir = this.findDirectionTo(who.x, who.y);
-        else {
-            // Further off, round corners and through rooms: a proper path,
-            // worked out again whenever they have moved on.
+        {
+            // Round corners, through rooms and shut doors: a proper path,
+            // worked out again whenever they have moved on. (The engine's own
+            // short-range step treats a shut door as a wall.)
             const t = BOT.trail;
             if (!t || t.x !== who.x || t.y !== who.y || !t.steps.length) {
                 const steps = Nav.path(who.x, who.y, 0, true);
@@ -915,6 +956,7 @@ module.exports = function installBot(options) {
         const x = this.x, y = this.y;
         if (dir > 0) this.executeMove(dir);
         if (BOT.trail && BOT.trail.steps.length && this.x === BOT.trail.steps[0].x && this.y === BOT.trail.steps[0].y) BOT.trail.steps.shift();
+        if (this.x === x && this.y === y && openDoorAhead(this, dir)) { BOT.stuck = 0; return; }
         if (this.x === x && this.y === y) { BOT.stuck++; BOT.trail = null; } else BOT.stuck = 0;
     };
     //--- exploring alone --------------------------------------------------------
@@ -989,6 +1031,7 @@ module.exports = function installBot(options) {
         const bx = player.x, by = player.y;
         player.executeMove(dirTo(next.x, next.y));
         if (player.x === next.x && player.y === next.y) { x.steps.shift(); BOT.stuck = 0; return; }
+        if (player.x === bx && player.y === by && openDoorAhead(player, dirTo(next.x, next.y))) { BOT.stuck = 0; return; }
         if (player.x === bx && player.y === by && ++BOT.stuck > 6) {
             Nav.banned.set(next.x + ',' + next.y, Date.now() + 4000);
             x.steps = null;

@@ -61,6 +61,13 @@ function scanScript(text, ctx) {
     while ((m = reEsc.exec(text))) read('va', Number(m[1]), ctx, 'text');
 }
 
+// The switches a move route turns on (route command 27) or off (28).
+function routeSwitches(route) {
+    const out = [];
+    for (const r of (route && route.list) || []) if (r.code === 27 || r.code === 28) out.push({ id: r.parameters[0], on: r.code === 27 });
+    return out;
+}
+
 const selfSw = {}; // 'map,event,letter' -> 1 on, 2 off, 3 both
 const stats = { commands: {}, scripts: [], plugin: {}, gameovers: [], battles: [], transfers: 0 };
 function scanList(list, ctx) {
@@ -68,6 +75,8 @@ function scanList(list, ctx) {
     const dirs = {}; // switch id -> bitmask (1 = on, 2 = off) written by this list
     for (const c of list) {
         if (c.code === 121) for (let id = c.parameters[0]; id <= c.parameters[1]; id++) dirs[id] = (dirs[id] || 0) | (c.parameters[2] === 0 ? 1 : 2);
+        // Switches flipped inside a move route (a door's opening swing ends with "Switch ON").
+        if (c.code === 205) for (const r of routeSwitches(c.parameters[1])) dirs[r.id] = (dirs[r.id] || 0) | (r.on ? 1 : 2);
     }
     for (const id in dirs) {
         const s = slot('sw', Number(id));
@@ -103,6 +112,10 @@ function scanList(list, ctx) {
                 const key = ctx.mapId + ',' + ctx.eventId + ',' + p[0];
                 selfSw[key] = (selfSw[key] || 0) | (p[1] === 0 ? 1 : 2);
             } else stats.selfSwElsewhere = (stats.selfSwElsewhere || 0) + 1;
+            break;
+        case 205: // set move route: its Switch ON/OFF and scripts are writes like any other
+            for (const r of routeSwitches(p[1])) write('sw', r.id, ctx, r.on ? 'on' : 'off');
+            for (const r of (p[1] && p[1].list) || []) if (r.code === 45) scanScript(String(r.parameters[0]), ctx);
             break;
         case 103: write('va', p[0], ctx, 'input'); break; // input number
         case 104: write('va', p[0], ctx, 'input'); break; // select item
@@ -153,6 +166,8 @@ for (const info of infos) {
             if (cd.variableValid) { read('va', cd.variableId, ctx, 'page'); slot('va', cd.variableId).cond++; }
             if (page.moveType !== 0) summary.moving++;
             scanList(page.list, ctx);
+            // A page's own custom movement can flip switches too.
+            if (page.moveType === 3) for (const r of routeSwitches(page.moveRoute)) write('sw', r.id, ctx, r.on ? 'on' : 'off');
             if (page.list.some((c) => c.code === 301)) summary.battle++;
             if (page.list.some((c) => c.code === 353)) summary.gameover++;
         });

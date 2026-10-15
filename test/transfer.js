@@ -1,6 +1,6 @@
 // Splitting up and meeting again: one player leaves for another map and
 // comes back to find events where the other player's machine put them.
-const { twoPlayers, checker, sleep, waitFor } = require('./common');
+const { twoPlayers, checker, sleep, waitFor, sees } = require('./common');
 
 (async () => {
     const check = checker();
@@ -33,7 +33,7 @@ const { twoPlayers, checker, sleep, waitFor } = require('./common');
         const gb = await b.evaluate((id) => { const e = $gameMap.event(id); return { x: e.x, y: e.y }; }, guard.id);
         const ga = await a.evaluate((id) => { const e = $gameMap.event(id); return { x: e.x, y: e.y }; }, guard.id);
         check('on return B sees the guard where A has it now', gb.x === ga.x && gb.y === ga.y, JSON.stringify(guard) + ' A ' + JSON.stringify(ga) + ' B ' + JSON.stringify(gb));
-        check('they see each other again', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        check('they see each other again', (await sees(a, 1)) && (await sees(b, 1)));
         check('one owner', (await a.evaluate(() => Coop.events.amOwner())) !== (await b.evaluate(() => Coop.events.amOwner())));
         const ea = await a.evaluate(() => T.events()), eb = await b.evaluate(() => T.events());
         const la = ea.split(';'), lb = eb.split(';');
