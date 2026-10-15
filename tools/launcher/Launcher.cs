@@ -225,11 +225,25 @@ static class Launcher
     {
         string url = "http://localhost:" + Port + "/";
         if (browser == null) { Process.Start(url); return; }
+        // A new profile is not signed in to the player's Microsoft or Google account:
+        // Edge would otherwise sign it in on its own and announce that it is syncing.
+        string prefs = Path.Combine(Profile, "Default", "Preferences");
+        if (!File.Exists(prefs))
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(prefs));
+                File.WriteAllText(prefs, "{\"signin\":{\"allowed\":false,\"allowed_on_next_startup\":false},\"sync\":{\"requested\":false}}");
+            }
+            catch (Exception e) { Note("could not set up the window profile: " + e.Message); }
+        }
         Process.Start(browser, "--app=" + url + " --user-data-dir=\"" + Profile + "\" --window-size=1280,1000"
             + " --no-first-run --no-default-browser-check --disable-features=Translate --autoplay-policy=no-user-gesture-required"
             // No extensions: some are copied into every new profile and open windows of their own,
             // which would also keep this launcher waiting after the game window closed.
-            + " --disable-extensions");
+            + " --disable-extensions"
+            // Nothing of this window is synced to the player's account.
+            + " --disable-sync");
     }
 
     // The browser may hand the window to a process of its own and exit at once,
