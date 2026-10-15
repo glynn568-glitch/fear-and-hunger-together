@@ -14,5 +14,6 @@ const args = ['/nologo', '/target:winexe', '/optimize+', '/out:' + out,
     '/r:System.Windows.Forms.dll', '/r:System.Management.dll', '/r:Microsoft.VisualBasic.dll'];
 if (fs.existsSync(icon)) args.push('/win32icon:' + icon);
 args.push(path.join(__dirname, 'launcher', 'Launcher.cs'));
+fs.mkdirSync(path.dirname(out), { recursive: true }); // a fresh checkout has no dist folder yet
 execFileSync(CSC, args, { stdio: 'inherit' });
 console.log('built ' + out);
