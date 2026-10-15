@@ -44,4 +44,6 @@ Forks are welcome, and so are bug reports. Pull requests aren't accepted.
 
 Node.js server, the game's own RPG Maker engine in Edge or Chrome, and a small C# launcher. `npm test` runs the suite with headless Chrome. The [player README](../README.md) has the rest.
 
-MIT licensed. Fear & Hunger and everything in it belong to Miro Haverinen. [Code signing policy](../docs/code-signing.md).
+MIT licensed. Fear & Hunger and everything in it belong to Miro Haverinen.
+
+Code signing: the launcher is being set up for free code signing provided by SignPath.io, certificate by SignPath Foundation. Until that is approved, releases are unsigned. [Code signing policy](../docs/code-signing.md).
