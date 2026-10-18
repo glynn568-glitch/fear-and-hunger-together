@@ -109,6 +109,24 @@
         if (window.Coop && Coop.toast) Coop.toast('Unstuck: the running script was dropped.');
     });
 
+    // The engine's error line is an empty strip across the middle of the
+    // screen, above everything, even with no error in it: it ate the clicks
+    // meant for any box beneath it (the link box in Together). Only what is
+    // printed in it (a Retry button) takes the mouse now.
+    const strip = document.createElement('style');
+    strip.textContent = '#ErrorPrinter { pointer-events: none; } #ErrorPrinter * { pointer-events: auto; }';
+    document.head.appendChild(strip);
+
+    // The engine turns off the right-click menu on every element on the page,
+    // the mod's text boxes too, so a link could not be pasted with the mouse.
+    // A box being typed in gets its menu back.
+    const RIGHT_CLICK = function (e) {
+        const el = e.target;
+        if (el && /^(INPUT|TEXTAREA)$/.test(el.tagName)) el.oncontextmenu = null;
+    };
+    document.addEventListener('focusin', RIGHT_CLICK, true);
+    document.addEventListener('mousedown', RIGHT_CLICK, true);
+
     // The game is played on the keyboard; its own plugin turns off mouse
     // clicks, but the battle plugin still picks a target wherever the mouse
     // rests, and the keyboard cannot move off it. The mouse is off here too.
