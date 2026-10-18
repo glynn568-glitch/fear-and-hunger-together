@@ -2,7 +2,7 @@
 
 # Fear & Hunger Together
 
-Co-op for **Fear & Hunger** (the first game). Up to four players share one dungeon as separate characters: split up or stick together, fight side by side, and drag each other back from death at the ritual circles. Play with friends, with AI partners, or both.
+Co-op for **Fear & Hunger** (the first game). Up to four players share one dungeon as separate characters: split up or stick together, fight side by side, and drag each other back from death at the ritual circles. Made for playing with friends, with an AI partner on call when nobody's free.
 
 Free, and a fan mod: not made or endorsed by Miro Haverinen. None of the game's files are included: every player plays from their own copy (Steam or itch), and nothing in the game's folder is changed. The screenshots show Fear & Hunger, which belongs to Miro Haverinen.
 
