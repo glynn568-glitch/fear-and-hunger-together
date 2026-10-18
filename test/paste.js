@@ -23,6 +23,19 @@ const { checker } = require('./common');
             return { x, y, top: top && (top.getAttribute('data-field') || top.id || top.tagName) };
         });
         check('nothing covers the link box', at.top === 'join', JSON.stringify(at));
+        // Every control in the panel, not just the one that broke, at two window sizes:
+        // whatever sits under a control's own centre must be that control.
+        const covered = async () => page.evaluate(() => [...document.querySelectorAll('#coop-together button, #coop-together input, #coop-together select')]
+            .filter((el) => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+            .map((el) => { const r = el.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return top === el || el.contains(top) || (top && top.control === el) ? null : (el.getAttribute('data-do') || el.getAttribute('data-field') || el.tagName) + ' under ' + (top ? top.id || top.tagName : 'nothing'); })
+            .filter(Boolean));
+        const small = await covered();
+        await page.setViewport({ width: 1600, height: 1000 });
+        await sleep(500);
+        const large = await covered();
+        await page.setViewport({ width: 900, height: 700 });
+        await sleep(500);
+        check('every control in the Together panel takes the mouse, at two window sizes', !small.length && !large.length, JSON.stringify({ small, large }));
         await page.evaluate(() => navigator.clipboard.writeText('https://abc.trycloudflare.com/?k=xyz'));
         await page.mouse.click(at.x, at.y);
         await sleep(200);

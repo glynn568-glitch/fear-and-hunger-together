@@ -10,6 +10,9 @@
     // Per protagonist: the game's "killed" and "body lies here" switches.
     const KILLED_FLAGS = { 1: [274, 281], 3: [275, 282], 4: [276, 283], 5: [277, 284] };
     const HUNGRY_BUT_ALIVE = 100; // "weak from hunger" starts at 108, "ill" at 88
+    // Every ending plays out on this map (its event 4 picks the page by the ending's switch).
+    const ENDING_MAP = 86;
+    const ENDINGS = [1889, 1890, 1891, 1892, 2249, 2647]; // D, C, B, A, S, C2; none = E
 
     Coop.dead = false;
     let realGameover = false;
@@ -27,7 +30,9 @@
 
     const _goto = SceneManager.goto;
     SceneManager.goto = function (sceneClass) {
-        if (sceneClass === Scene_Gameover && Coop.world.live && !realGameover && !Coop.dead && living().length > 0) {
+        // The Game Over that closes an ending is the real one.
+        const ended = window.$gameMap && $gameMap.mapId() === ENDING_MAP;
+        if (sceneClass === Scene_Gameover && Coop.world.live && !realGameover && !Coop.dead && !ended && living().length > 0) {
             Coop.dead = true;
             Coop.reportPresence(true);
             _goto.call(this, Scene_CoopDead);
@@ -100,6 +105,7 @@
 
     Scene_CoopDead.prototype.update = function () {
         Scene_Base.prototype.update.call(this);
+        if (playEnding()) return;
         if (!Coop.dead) return; // being revived; the scene is on its way out
         if (!Coop.connected) {
             // Cut off, not abandoned: wait for the line to come back.
@@ -231,6 +237,7 @@
     const _mapUpdateInherit = Scene_Map.prototype.update;
     Scene_Map.prototype.update = function () {
         _mapUpdateInherit.call(this);
+        playEnding();
         if (!inherited.length || Coop.battle || Coop.dead || !Coop.world.live) return;
         const msg = inherited.shift();
         let n = 0;
@@ -330,6 +337,47 @@
         Coop.reportPresence(true);
     });
 
+    //--- endings -----------------------------------------------------------
+
+    // His ruling (10/18): the ending plays for everyone. Whoever heads into it
+    // takes the others along, the dead too, with the same ending switches.
+    let ending = null; // { sw, x, y }: the ending to play on this machine
+    let endingSent = false;
+
+    const _reserveTransfer = Game_Player.prototype.reserveTransfer;
+    Game_Player.prototype.reserveTransfer = function (mapId, x, y) {
+        _reserveTransfer.apply(this, arguments);
+        if (mapId !== ENDING_MAP || endingSent || !Coop.world.live) return;
+        endingSent = true;
+        const sw = ENDINGS.filter((id) => $gameSwitches.value(id));
+        for (const p of Coop.others()) if (p.st && p.st !== 'title') Coop.sendTo(p.id, 'ending', { sw, x, y });
+    };
+    Coop.on('to:ending', function (msg) { if (!endingSent && Coop.world.live) ending = msg; });
+
+    // Taken along once out of any fight. True when it happens.
+    function playEnding() {
+        const scene = SceneManager._scene;
+        if (!ending || SceneManager.isSceneChanging() || $gameParty.inBattle() || $gamePlayer.isTransferring()) return false;
+        const e = ending;
+        ending = null;
+        endingSent = true;
+        for (const id of e.sw || []) $gameSwitches.setValue(id, true);
+        Coop.dead = false;
+        Coop.deadFromSave = false;
+        const leader = $gameParty.leader();
+        if (leader && leader.isDead()) { leader.removeState(leader.deathStateId()); leader.setHp(1); }
+        // Whatever was under way here does not carry on into the ending.
+        $gameMap._interpreter.clear();
+        $gameTemp.clearCommonEvent();
+        $gameMessage.clear();
+        $gameScreen.clear();
+        $gameTimer.stop();
+        $gamePlayer.reserveTransfer(ENDING_MAP, e.x, e.y, 2, 0);
+        if (!(scene instanceof Scene_Map)) SceneManager.goto(Scene_Map);
+        Coop.reportPresence(true);
+        return true;
+    }
+
     //--- housekeeping -------------------------------------------------------
 
     // Back at the title screen, this player is out of the world.
@@ -340,6 +388,8 @@
         Coop.deadFromSave = false;
         Coop.afterSpectate = null;
         Coop.battle = null;
+        ending = null;
+        endingSent = false;
         Coop.world.leave();
         Coop.viewer.hide();
         Coop.reportPresence(true);

@@ -1,6 +1,6 @@
 {
   "name": "fh-coop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Fear & Hunger co-op, played in the browser",
   "scripts": {
