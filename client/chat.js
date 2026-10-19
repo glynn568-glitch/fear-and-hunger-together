@@ -118,7 +118,8 @@
         if (closingKey && e.code === closingKey) { e.stopImmediatePropagation(); return; }
         if (e.code !== 'KeyY' || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
         const typing = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
-        if (typing || !Coop.connected || !window.SceneManager || SceneManager._scene instanceof Scene_Title) return;
+        // At the title too: players waiting there still talk to each other.
+        if (typing || !Coop.connected || !window.SceneManager) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         open();

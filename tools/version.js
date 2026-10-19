@@ -11,22 +11,38 @@ const { spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const CENSUS = path.join(ROOT, 'client', 'census.json');
 
+// One data file as it is compared between players.
+function dataText(data, name) {
+    // Line ends ignored: the same data unpacked on another system is the same game.
+    let text = fs.readFileSync(path.join(data, name), 'latin1').replace(/\r\n/g, '\n');
+    // A copy decrypted for another mod (Mattie's asks for it) is still the same game.
+    if (name === 'System.json') {
+        try {
+            const sys = JSON.parse(text);
+            delete sys.hasEncryptedImages; delete sys.hasEncryptedAudio; delete sys.encryptionKey;
+            text = JSON.stringify(sys);
+        } catch (e) { /* hashed as it is */ }
+    }
+    return text;
+}
+
+// Each data file's own short hash: players whose copies differ compare these
+// to see which maps they cannot share enemies on.
+function fileHashes(game) {
+    const data = path.join(game, 'data');
+    const out = {};
+    for (const name of fs.readdirSync(data).filter((n) => n.endsWith('.json')).sort()) {
+        try { out[name] = crypto.createHash('sha256').update(dataText(data, name), 'latin1').digest('hex').slice(0, 10); } catch (e) { /* unreadable */ }
+    }
+    return out;
+}
+
 function fingerprint(game) {
     const hash = crypto.createHash('sha256');
     const data = path.join(game, 'data');
     for (const name of fs.readdirSync(data).filter((n) => n.endsWith('.json')).sort()) {
         hash.update(name + '\0');
-        // Line ends ignored: the same data unpacked on another system is the same game.
-        let text = fs.readFileSync(path.join(data, name), 'latin1').replace(/\r\n/g, '\n');
-        // A copy decrypted for another mod (Mattie's asks for it) is still the same game.
-        if (name === 'System.json') {
-            try {
-                const sys = JSON.parse(text);
-                delete sys.hasEncryptedImages; delete sys.hasEncryptedAudio; delete sys.encryptionKey;
-                text = JSON.stringify(sys);
-            } catch (e) { /* hashed as it is */ }
-        }
-        hash.update(text, 'latin1');
+        hash.update(dataText(data, name), 'latin1');
     }
     // Not plugins.js: a Steam copy lists Steam-only plugins an itch copy of the
     // same version may not have. Any real update changes the data anyway
@@ -73,7 +89,7 @@ function modPrint() {
     return { mod: hash.digest('hex').slice(0, 12), version };
 }
 
-module.exports = { fingerprint, ensureCensus, modPrint };
+module.exports = { fingerprint, fileHashes, ensureCensus, modPrint };
 
 if (require.main === module) {
     const game = require('./find-game').findGame();

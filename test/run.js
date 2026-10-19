@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'transfer', 'follow', 'paste', 'differs', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'trade', 'cast', 'talk', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'bot', 'ai', 'ai-resume', 'partner', 'setup', 'soak'];
+const ALL = ['lint', 'server', 'join', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'trade', 'cast', 'talk', 'chat', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'bot', 'ai', 'ai-resume', 'partner', 'setup', 'soak'];
 const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL;
 const jobs = Math.max(1, Number(process.env.FH_TEST_JOBS) || Math.min(6, Math.floor(os.cpus().length / 2)));
 

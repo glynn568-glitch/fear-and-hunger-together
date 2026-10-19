@@ -65,6 +65,16 @@ function fakeGame(dir, release) {
         await a.evaluate(() => $gameSwitches.setValue(25, true));
         await waitFor(b, () => $gameSwitches.value(25), 8000, 'the shared switch crosses');
         check('they play in one world: a shared switch crosses', true);
+        // Map 1 differs between the copies, map 74 does not.
+        await waitFor(a, () => Coop.mapDiffers(1), 8000, 'the host learns which maps differ').catch(() => {});
+        const maps = { a: await a.evaluate(() => [Coop.mapDiffers(1), Coop.mapDiffers(74), Coop.events.sharedMap()]), b: await b.evaluate(() => [Coop.mapDiffers(1), Coop.mapDiffers(74), Coop.events.sharedMap()]) };
+        check('on a map whose file differs, enemies are not shared (each side runs its own); the others still are', JSON.stringify(maps.a) === '[true,false,false]' && JSON.stringify(maps.b) === '[true,false,false]', JSON.stringify(maps));
+        check('self switches of that map stay apart too', await a.evaluate(() => !Coop.world.isShared('ss', '1,7,A') && Coop.world.isShared('ss', '74,7,A') !== undefined));
+        check('the difference is in the bug report', await a.evaluate(() => Coop.log.some((l) => /game files differ from Bo in \d+: .*Map001\.json/.test(l))));
+        for (const p of [a, b]) await p.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
+        for (const p of [a, b]) await waitFor(p, () => $gameMap.mapId() === 74 && T.onMap(), 30000, 'on map 74');
+        await sleep(800);
+        check('on a map both copies share, enemies are shared as before', await a.evaluate(() => Coop.events.sharedMap()) && await b.evaluate(() => Coop.events.sharedMap()));
         await browser.close(); browser = null; joiner.kill(); joiner = null;
 
         // A different release of the game is still kept apart, and says so.

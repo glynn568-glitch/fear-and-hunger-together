@@ -310,6 +310,11 @@
         if (b && b.role === 'guest' && b.owner === msg.from && Array.isArray(msg.actors)) b.backup = JSON.stringify({ actors: msg.actors, inv: msg.inv });
     });
 
+    Coop.on('to:bwait', function (msg) {
+        const b = Coop.battle;
+        if (b && b.role === 'guest' && b.owner === msg.from) Coop.toast('You join the fight at the start of the next turn.', 4000);
+    });
+
     Coop.on('to:bstart', function (msg) {
         const b = Coop.battle;
         if (b && b.role === 'guest' && b.owner === msg.from) b.mine = msg.actors;
@@ -459,6 +464,7 @@
             mapId: $gameMap.mapId(),
         };
         if (b.eventId) Coop.events.sendHold(b.eventId, 'battle');
+        Coop.note('fight: troop ' + troopId + (b.eventId ? ' from event ' + b.eventId : '') + ' on map ' + b.mapId);
         for (const peer of Coop.peersHere()) {
             if ((peer.st === 'map' || peer.st === 'event') && Coop.distanceTo(peer) <= JOIN_RANGE) {
                 b.invited.set(peer.id, Date.now() + JOIN_WAIT);
@@ -475,6 +481,13 @@
         }
         b.invited.delete(msg.from);
         b.pending.push(msg);
+        Coop.note(peerName(msg.from) + ' asks into this fight' + (b.started ? ' (under way: in at the next turn)' : ''));
+        // Someone who joins once the fight is under way comes in at the next
+        // turn. They watch from now, not a black screen until then.
+        if (b.started) {
+            Stream.add(msg.from);
+            Coop.sendTo(msg.from, 'bwait', {});
+        }
     });
 
     // A guest gave up on a frozen picture. Their characters fight on under
@@ -574,6 +587,7 @@
             for (const [id, deadline] of b.invited) if (now > deadline || !Coop.peers.has(id)) b.invited.delete(id);
             if (b.invited.size) return; // phase is unchanged, so this is asked again next frame
             integrate(b);
+            b.started = true;
         }
         _startInput.call(this);
     };
@@ -890,7 +904,7 @@
             }
         }
         for (const id of b.invited.keys()) Coop.sendTo(id, 'bend', { aborted: true });
-        for (const msg of b.pending) Coop.sendTo(msg.from, 'bend', { aborted: true });
+        for (const msg of b.pending) { Coop.sendTo(msg.from, 'bend', { aborted: true }); Stream.remove(msg.from); }
         if (lent.size) {
             $gameParty._actors = $gameParty._actors.filter((id) => !lent.has(id));
             $gamePlayer.refresh();

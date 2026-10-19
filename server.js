@@ -19,8 +19,10 @@ if (!GAME || !fs.existsSync(path.join(GAME, 'index.html')) || otherGame) {
     process.exit(1);
 }
 // Which build of the game this is; players on different builds are kept apart.
-const { fingerprint, ensureCensus, modPrint } = require('./tools/version');
+const { fingerprint, fileHashes, ensureCensus, modPrint } = require('./tools/version');
 const BUILD = Object.assign(fingerprint(GAME), modPrint());
+// Each data file's hash: players compare them to find the maps they cannot share enemies on.
+const FILE_HASHES = JSON.stringify(fileHashes(GAME));
 if (ensureCensus(GAME, BUILD.fp)) console.log('This copy of the game is a different build from the last one seen here; the census was rebuilt for it.');
 const { Room } = require('./room'); // reads the census
 const { Partners } = require('./partners');
@@ -289,6 +291,11 @@ const server = http.createServer((req, res) => {
     if (pathname === '/' || pathname === '/index.html') {
         res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
         res.end(indexHtml(req, url));
+        return;
+    }
+    if (pathname === '/coop/files.json') {
+        res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' });
+        res.end(FILE_HASHES);
         return;
     }
     if (pathname === '/coop/scripts.json') {

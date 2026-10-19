@@ -18,7 +18,8 @@
     });
 
     Ev.sharedMap = function () {
-        return Coop.world.live && Coop.peersHere().length > 0;
+        // A partner whose copy of this map differs has other events on it: not shared with them.
+        return Coop.world.live && Coop.peersHere().length > 0 && !Coop.peersHere().some((p) => Coop.mapDiffersWith(p, $gameMap.mapId()));
     };
 
     // True when this machine decides where the map's events wander.
@@ -70,7 +71,7 @@
         if (!Coop.world.live) return _updateSelfMovement.call(this);
         if (Ev.holdOf(this._eventId)) return;
         if (!Ev.amOwner()) return;
-        const target = Coop.peersHere().length ? remoteTarget(this) : null;
+        const target = Ev.sharedMap() ? remoteTarget(this) : null;
         if (!target) { _updateSelfMovement.call(this); return; }
         aimedAt(target, () => _updateSelfMovement.call(this));
         // On its way to them it may have walked into this player instead.
@@ -121,7 +122,9 @@
     };
 
     Coop.on('evh', function (msg) {
+        if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         const key = msg.m + ':' + msg.e;
+        if (msg.k === 'battle') Coop.note((Coop.peers.get(msg.from) || {}).name + ' is fighting event ' + msg.e + ' on map ' + msg.m);
         if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k });
         else if (Ev.holds.has(key) && Ev.holds.get(key).by === msg.from) Ev.holds.delete(key);
     });
@@ -191,19 +194,21 @@
 
     Coop.on('ev', function (msg) {
         if (!window.$gameMap || !Coop.world.live || msg.m !== $gameMap.mapId() || msg.m !== Ev._mapId) return;
+        if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         for (const row of msg.e) applyMove(row, false);
     });
 
     // The owner's full picture can land before this machine has run the new
     // map for a single frame; it is kept and applied on that first frame.
     Coop.on('to:evall', function (msg) {
-        if (!window.$gameMap) return;
+        if (!window.$gameMap || Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         if (msg.m === Ev._mapId && msg.m === $gameMap.mapId()) for (const row of msg.e) applyMove(row, true);
         else Ev._arrival = msg;
     });
 
     Coop.on('eve', function (msg) {
         if (!window.$gameMap || !Coop.world.live || msg.m !== $gameMap.mapId()) return;
+        if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         const ev = $gameMap.event(msg.e);
         if (ev && !ev._erased) { ev._erased = true; ev.refresh(); }
     });

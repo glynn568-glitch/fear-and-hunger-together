@@ -20,6 +20,35 @@
         census,
     };
 
+    // Each data file's hash, this copy's and every partner's. On a map whose
+    // file differs between two players, its events are different events: the
+    // enemies there are not shared with that player (events.js), nor are its
+    // self switches. The rest of the world is.
+    let myFiles = {};
+    try { myFiles = JSON.parse(Coop.fetchSync('GET', 'coop/files.json').text) || {}; } catch (e) { /* an older server: nothing to compare */ }
+    const mapFile = (mapId) => 'Map' + String(mapId).padStart(3, '0') + '.json';
+    Coop.mapDiffersWith = function (peer, mapId) {
+        if (!peer || !peer.files) return false;
+        const name = mapFile(mapId);
+        return peer.files[name] !== myFiles[name];
+    };
+    Coop.mapDiffers = function (mapId) {
+        return Coop.others().some((p) => Coop.mapDiffersWith(p, mapId));
+    };
+    function sendFiles(to) { if (Object.keys(myFiles).length) Coop.sendTo(to, 'files', { h: myFiles }); }
+    Coop.on('online', function () { for (const id of Coop.peers.keys()) sendFiles(id); });
+    Coop.on('join', function (peer) { if (peer && peer.id) sendFiles(peer.id); });
+    Coop.on('to:files', function (msg) {
+        const peer = Coop.peers.get(msg.from);
+        if (!peer || !msg.h || typeof msg.h !== 'object') return;
+        peer.files = msg.h;
+        const differ = Object.keys(Object.assign({}, msg.h, myFiles)).filter((n) => msg.h[n] !== myFiles[n]);
+        if (!differ.length) return;
+        Coop.note('game files differ from ' + peer.name + ' in ' + differ.length + ': ' + differ.slice(0, 12).join(', '));
+        const maps = differ.filter((n) => /^Map\d+\.json$/.test(n)).length;
+        if (maps && Coop.toast) Coop.toast('Your game files differ from ' + peer.name + '\'s on ' + maps + ' map' + (maps > 1 ? 's' : '') + '. On those, each of you meets your own enemies.', 9000);
+    });
+
     // Joining a host whose game files differ from this copy's (a mod, a
     // changed install): the host's census decides what is shared, so both
     // sides mirror exactly the same switches.
@@ -40,7 +69,7 @@
         if (World.demoted.has(kind + key)) return false;
         if (kind === 'sw') return worldSw.has(key);
         if (kind === 'va') return worldVa.has(key);
-        return !privateSs.has(key);
+        return !privateSs.has(key) && !Coop.mapDiffers(Number(String(key).split(',')[0]));
     };
 
     // A world key that changes many times in a few seconds is some script's
@@ -113,6 +142,7 @@
         } else {
             if (privateSs.has(key) || World.demoted.has('ss' + key)) return false;
             key = String(key);
+            if (Coop.mapDiffers(Number(key.split(',')[0]))) return false;
             if (!!$gameSelfSwitches._data[key] === !!value) return false;
             if (value) $gameSelfSwitches._data[key] = true; else delete $gameSelfSwitches._data[key];
         }
@@ -211,7 +241,7 @@
         const sw = $gameSwitches._data, va = $gameVariables._data, ss = $gameSelfSwitches._data;
         for (const id of worldSw) if (sw[id]) out.push(['sw', id, 1]);
         for (const id of worldVa) if (va[id]) out.push(['va', id, va[id]]);
-        for (const k in ss) if (ss[k] && !privateSs.has(k)) out.push(['ss', k, 1]);
+        for (const k in ss) if (ss[k] && World.isShared('ss', k)) out.push(['ss', k, 1]);
         return out;
     }
 
