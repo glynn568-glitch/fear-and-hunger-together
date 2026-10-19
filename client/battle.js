@@ -190,7 +190,9 @@
         for (const id of Clip.want) {
             if (!Stream.watchers.has(id) || (Stream.onVideo && Stream.onVideo.has(id))) continue;
             if (Clip.need.has(id) && !key) continue;
-            if (roomFor(id, now, clipAhead()) && send(CLIP, id, buf, now, 'c' + Clip.seq, !key)) Clip.need.delete(id); else Clip.need.add(id);
+            // Made when everyone had room, so it goes to everyone: holding one back
+            // for a fuller line would cost them a whole new picture, many times its size.
+            if (send(CLIP, id, buf, now, 'c' + Clip.seq, !key)) Clip.need.delete(id); else Clip.need.add(id);
         }
     }
 
@@ -628,6 +630,8 @@
     Coop.on('to:bend', function (msg) {
         const b = Coop.battle;
         if (!b || b.role !== 'guest' || !fromOwner(b, msg)) return;
+        // A late copy of an earlier fight's result never ends this one.
+        if (msg.fight && b.fight && msg.fight !== b.fight) return;
         if (msg.aborted) {
             settled.add(b.fight);
             restoreParty(JSON.parse(b.backup));
@@ -852,7 +856,13 @@
         const b = Coop.battle;
         const peer = Coop.peers.get(msg.from);
         if (!peer) return;
-        if (!b || b.role !== 'owner' || msg.fight !== b.fight) { Coop.sendTo(msg.from, 'bgone', { fight: msg.fight }); return; }
+        if (!b || b.role !== 'owner' || msg.fight !== b.fight) {
+            // It ended while they were on their way back: what it left them, from here,
+            // since the copy kept on the host reaches them only once they are back in the world.
+            const kept = handedOff.get(msg.fight + '|' + String(peer.name).toLowerCase());
+            if (kept) Coop.sendTo(msg.from, 'bend', kept.end); else Coop.sendTo(msg.from, 'bgone', { fight: msg.fight });
+            return;
+        }
         const was = guestNamed(b, peer.name);
         if (was) {
             rekey(b, was, msg.from);
@@ -1293,8 +1303,10 @@
         for (const [id, g] of b.guests) {
             if (g.quit) continue;
             const state = guestState(b, id, g);
-            if (Coop.peers.has(id)) Coop.sendTo(id, 'bend', Object.assign({ won: !!b.won, end: b.end || '', foes, by: Coop.name }, state));
+            const end = Object.assign({ won: !!b.won, end: b.end || '', foes, by: Coop.name, fight: b.fight }, state);
+            if (Coop.peers.has(id)) Coop.sendTo(id, 'bend', end);
             else {
+                keepHandedOff(b.fight, g.name, end);
                 // Kept for them, even if this line is down right now.
                 const owe = Object.assign({ t: 'owed', name: g.name, fight: b.fight }, state);
                 if (Coop.connected) Coop.send(owe); else unsentOwed.push(owe);
@@ -1323,6 +1335,14 @@
     };
 
     const unsentOwed = [];
+    // Results kept on the host for guests who were gone when the fight ended,
+    // by fight and name, for half an hour as on the host.
+    const handedOff = new Map();
+    function keepHandedOff(fight, name, end) {
+        const now = Date.now();
+        for (const [k, v] of handedOff) if (now - v.at > 30 * 60 * 1000) handedOff.delete(k);
+        handedOff.set(fight + '|' + String(name).toLowerCase(), { end, at: now });
+    }
     Coop.on('online', function () { for (const owe of unsentOwed.splice(0)) Coop.send(owe); });
 
     // A guest gone mid-fight (or this player's own line down) keeps their

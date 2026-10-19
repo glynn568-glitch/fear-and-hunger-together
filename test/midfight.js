@@ -10,11 +10,11 @@ const install = require('./helpers');
     const check = checker();
     let host, joiner, browser, pages = [];
     try {
-        host = await startServer(8491, { FH_RELAY: null }); // Hide my IP, as it is by default
-        joiner = await startServer(8591, { FH_JOIN: 'http://localhost:8491/' });
+        host = await startServer(8481, { FH_RELAY: null }); // Hide my IP, as it is by default
+        joiner = await startServer(8581, { FH_JOIN: 'http://localhost:8481/' });
         browser = await launch();
-        const a = await openPlayer(browser, 'http://localhost:8491/?name=Ann', 'host');
-        const b = await openPlayer(browser, 'http://localhost:8591/?name=Enki', 'joiner');
+        const a = await openPlayer(browser, 'http://localhost:8481/?name=Ann', 'host');
+        const b = await openPlayer(browser, 'http://localhost:8581/?name=Enki', 'joiner');
         pages = [a, b];
         for (const p of pages) { await waitFor(p, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'title'); await p.evaluate(install); }
         await a.evaluate(() => T.quickStart(1, 27, 67)); await waitFor(a, () => T.onMap(), 60000, 'host on the map'); await a.evaluate(() => { T.settle(); T.begin(); });

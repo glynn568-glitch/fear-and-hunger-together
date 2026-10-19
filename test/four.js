@@ -68,12 +68,13 @@ async function press(page, code) {
         // Live video straight from the owner, or (Hide my IP on) video through the host.
         for (const pg of [b, c, d]) await waitFor(pg, () => (Coop.relayOnly ? Coop.viewer.clip : Coop.viewer.video), 25000, pg.label + ' gets video');
         check('all three guests watch video', true);
+        const k0 = await a.evaluate(() => (Coop.stream.clip && Coop.stream.clip.keys) || 0);
         const f0 = await Promise.all([b, c, d].map((pg) => pg.evaluate(() => Coop.viewer.frames)));
         await sleep(3000);
         const f1 = await Promise.all([b, c, d].map((pg) => pg.evaluate(() => Coop.viewer.frames)));
         const rates = f1.map((f, i) => Math.round((f - f0[i]) / 3));
         // One machine here runs all four games in software rendering; this is a floor, not a promise.
-        const clip = await a.evaluate(() => Coop.stream.clip && { rate: Coop.stream.clip.rate, keys: Coop.stream.clip.keys || 0, need: Array.from(Coop.stream.clip.need), out: Array.from(Coop.stream._out.values()).map((o) => o.bytes) });
+        const clip = await a.evaluate((k0) => Coop.stream.clip && { rate: Coop.stream.clip.rate, keys: (Coop.stream.clip.keys || 0) - k0, need: Array.from(Coop.stream.clip.need), out: Array.from(Coop.stream._out.values()).map((o) => o.bytes) }, k0);
         check('the owner keeps three guests fed at a watchable rate', rates.every((r) => r >= 10), rates.join(', ') + ' frames a second; video ' + JSON.stringify(clip));
         console.log('screenshot', await shot(d, 'four-guest'), await shot(a, 'four-owner'));
 

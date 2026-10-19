@@ -167,7 +167,20 @@ class Room {
         if (RATE) start = peer.wire = Math.max(peer.wire || 0, start) + data.length / RATE * 1000;
         const due = Math.max(start + LAG * (0.67 + Math.random() * 0.66), (peer.lastDue || 0) + 1);
         peer.lastDue = due;
-        setTimeout(() => { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); }, due - Date.now());
+        // One queue per player, let out in order: separate timers can fire out of
+        // order, and a real line (one TCP stream) never reorders.
+        const q = peer.lagQ || (peer.lagQ = []);
+        q.push({ data, binary, due });
+        if (q.length === 1) this.drainLag(peer);
+    }
+
+    drainLag(peer) {
+        const q = peer.lagQ;
+        while (q.length && q[0].due <= Date.now()) {
+            const m = q.shift();
+            if (peer.ws.readyState === 1) peer.ws.send(m.data, { binary: !!m.binary });
+        }
+        if (q.length) setTimeout(() => this.drainLag(peer), q[0].due - Date.now());
     }
 
     send(peer, msg) {

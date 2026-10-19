@@ -126,6 +126,26 @@ async function backOnMap(p, what) {
         await sleep(1500);
         check('back during the victory, she still gets what the fight left her', await a.evaluate(() => $gameActors.actor(1).hp === 27), String(await a.evaluate(() => $gameActors.actor(1).hp)));
 
+        //--- 4c. Back only once it is over: her "let me back in" beats the copy the host keeps
+        await waitFor(b, () => Coop.peersHere().some((p) => p.name === 'Ann' && p.st === 'map'), 5000, 'Bo sees Ann back again');
+        await a.evaluate(() => $gameParty.gainItem($dataItems[1], 3));
+        const bag4c = await a.evaluate(() => JSON.stringify([$gameParty._items, $gameParty._weapons, $gameParty._armors]));
+        await b.evaluate(() => { BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
+        await waitFor(a, () => SceneManager._scene instanceof Scene_CoopSpectate, 10000, 'Ann pulled in a last time');
+        await inputFor(b, 3);
+        await cut(a);
+        await waitFor(b, () => Array.from(Coop.battle.guests.values()).some((g) => g.away), 5000, 'Bo sees Ann gone again');
+        await b.evaluate(() => { $gameActors.actor(1).setHp(19); for (const e of $gameTroop.members()) e.addState(e.deathStateId()); const w = SceneManager._scene._actorCommandWindow; w.deactivate(); w.close(); BattleManager.processVictory(); });
+        await backOnMap(b, 'Bo home from the win without her');
+        // Her way back into the world is slow (a busy host): her ask to rejoin the fight gets there first.
+        await a.evaluate(() => { const send = Coop.send; Coop.send = function (m) { if (m && m.t === 'world?') { Coop.send = send; setTimeout(() => send.call(Coop, m), 3000); return; } return send.call(this, m); }; });
+        await mend(a);
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 20000, 'Ann home after the win without her');
+        await sleep(1500);
+        check('back after it was won, she gets what the fight left her', await a.evaluate(() => $gameActors.actor(1).hp === 19), String(await a.evaluate(() => $gameActors.actor(1).hp)));
+        const bagAfter = await a.evaluate(() => JSON.stringify([$gameParty._items, $gameParty._weapons, $gameParty._armors]));
+        check('and her bag, once, neither lost nor doubled', bagAfter === bag4c, bagAfter + ' vs ' + bag4c);
+
         //--- 5. A real enemy: its fighter's line drops mid-fight
         const spot = await enemy(b, 'guard1');
         check('found the guard', !!spot, JSON.stringify(spot));

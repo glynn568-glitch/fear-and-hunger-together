@@ -79,9 +79,9 @@ function fakeGame(dir, release) {
 
         // A different release of the game is still kept apart, and says so.
         const other = fakeGame(path.join(OUT, 'fake-game-2'), 99999999);
-        joiner = await startServer(8589, { FH_JOIN: 'http://localhost:8488/', FH_GAME: other });
+        joiner = await startServer(8579, { FH_JOIN: 'http://localhost:8488/', FH_GAME: other });
         browser = await launch();
-        const c = await openPlayer(browser, 'http://localhost:8589/?name=Cy', 'other release');
+        const c = await openPlayer(browser, 'http://localhost:8579/?name=Cy', 'other release');
         pages = [c];
         await waitFor(c, () => !!(window.Coop && Coop.refused), 60000, 'turned away');
         check('a different release of the game is turned away, with the reason', await c.evaluate(() => /different version/.test(Coop.refused)), await c.evaluate(() => Coop.refused));
