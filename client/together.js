@@ -47,6 +47,7 @@
     const why = $('.why');
     let state = { mode: 'local' };
     let busy = false;
+    let copyWhenReady = false;
 
     function api(pathname, body) {
         return fetch('coop/app' + pathname, {
@@ -59,14 +60,14 @@
     function show(s) {
         state = s;
         const joined = s.mode === 'joined', online = s.mode === 'online';
-        $('.status').textContent = joined ? 'You are in a friend\'s game.' : online ? 'Online. Send your friends the link.' : 'Just you, on this PC.';
+        $('.status').textContent = joined ? 'You are in a friend\'s game.' : online ? (s.ready ? 'Online. Send your friends the link.' : 'Online. Your link is being published; it is copied as soon as it works.') : 'Just you, on this PC.';
         $('[data-part=host]').hidden = joined;
         $('[data-part=join]').hidden = joined || online;
         $('[data-part=leave]').hidden = !joined;
         $('[data-part=partner]').hidden = joined;
         $('[data-do=online]').hidden = online;
         $('[data-do=offline]').hidden = !online;
-        $('[data-part=link]').hidden = !online;
+        $('[data-part=link]').hidden = !online || !s.ready;
         $('[data-field=link]').value = s.link || '';
         $('[data-do=private]').checked = !!s.private;
         $('[data-do=private]').disabled = online;
@@ -82,7 +83,7 @@
                 .catch((e) => { busy = false; why.textContent = e.message; why.classList.add('bad'); });
         };
         if (what === 'online') {
-            run('Going online... (the first time takes a little longer)', api('/online', { on: true, private: $('[data-do=private]').checked }), (s) => copy(s.link, 'Online. The link is copied: send it to your friends.'));
+            run('Going online... (the first time takes a little longer)', api('/online', { on: true, private: $('[data-do=private]').checked }), (s) => { if (s.ready) copy(s.link, 'Online. The link is copied: send it to your friends.'); else copyWhenReady = true; });
         } else if (what === 'offline') {
             run('', api('/online', { on: false, private: $('[data-do=private]').checked }));
         } else if (what === 'copy') {
@@ -153,6 +154,13 @@
         api('').then(function (s) {
             // The open panel follows what the server became (a tunnel that dropped, say).
             if (box.classList.contains('open') && !busy) show(s);
+            // The link Cloudflare was slow to publish works now.
+            if (copyWhenReady && s.mode === 'online' && s.ready) {
+                copyWhenReady = false;
+                writeClipboard(s.link).then(() => { why.textContent = 'Your link works now and is copied: send it to your friends.'; Coop.toast('Your link works now and is copied: send it to your friends.', 8000); },
+                    () => { why.textContent = 'Your link works now. Press Copy, then send it to your friends.'; Coop.toast('Your link works now. Open Together and press Copy.', 10000); });
+            }
+            if (s.mode !== 'online') copyWhenReady = false;
             if (!s.offer || s.offerAt === offered) return;
             offered = s.offerAt;
             if (!onTitle()) { Coop.toast('A link to join a friend arrived. Go back to the title screen to join.', 8000); return; }

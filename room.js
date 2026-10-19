@@ -5,6 +5,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 const LAG = Number(process.env.FH_LAG || 0);
+const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
+const RATE = Number(process.env.FH_RATE || 0);
 let ONCE = [];
 try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once || []; } catch (e) { /* no census yet */ }
 
@@ -13,16 +15,17 @@ class Room {
         this.saveDir = saveDir;
         this.peers = new Map(); // id -> peer
         this.nextId = 1;
+        this.freedAt = new Map(); // player id -> when its connection closed
         this.runId = '';
         this.world = { sw: {}, va: {}, ss: {} };
         this.founded = false; // a run is in progress with at least one player in it
         this.entered = new Set(); // names that have been in the current run since it was founded
         this.baseStamp = 0; // the save the run was carried on from, if it was
         this.baseBy = '';
-        this.owed = new Map(); // name -> fight results waiting for a player who dropped out
+        this.owed = new Map(); // name -> fight results waiting for a player who dropped out, oldest first
         this.mapOwners = new Map(); // mapId -> peer id simulating that map's events
         this.dirty = false;
-        this.relayOnly = !!process.env.FH_RELAY; // private hosting: no direct browser-to-browser video
+        this.relayOnly = process.env.FH_RELAY !== '0'; // private hosting (the default): no direct browser-to-browser video
         setInterval(() => this.persist(), 5000).unref();
         // A machine that went to sleep or lost its network never says
         // goodbye; one that misses a ping is dropped so the rest move on.
@@ -60,13 +63,12 @@ class Room {
 
     // host: the connection is the host's own browser (this PC, not the tunnel).
     accept(ws, host) {
-        if (this.nextId > 250) this.nextId = 1; // ids travel in one byte
-        while (this.peers.has(this.nextId)) this.nextId++;
-        const id = this.nextId++;
+        const id = this.freshId();
+        if (!id) { ws.close(1013, 'full'); return; }
         const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host };
         this.peers.set(id, peer);
         this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly });
-        this.broadcast({ t: 'join', id, name: peer.name }, id);
+        this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
             if (isBinary) { this.onBinary(peer, raw); return; }
             let msg;
@@ -80,12 +82,38 @@ class Room {
         ws.on('error', () => this.drop(peer));
     }
 
+    // Ids travel in one byte (1-250). A free one not used for ten minutes is
+    // preferred; failing that, the one freed longest ago.
+    freshId() {
+        let id = 0, oldest = Infinity;
+        for (let i = 0; i < 250; i++) {
+            if (this.nextId > 250) this.nextId = 1;
+            const n = this.nextId++;
+            if (this.peers.has(n)) continue;
+            const freed = this.freedAt.get(n) || 0;
+            if (Date.now() - freed > 600000) return n;
+            if (freed < oldest) { oldest = freed; id = n; }
+        }
+        return id;
+    }
+
     // Whether the tab holding this token is the player of this name, here now.
     ownsName(name, token) {
         const want = String(name || '').trim().toLowerCase();
         if (!token || !want) return false;
         for (const p of this.peers.values()) if (p.named && p.token === String(token) && p.name.toLowerCase() === want) return true;
         return false;
+    }
+
+    // The person hosting (their own browser on this PC), not an AI partner run from here.
+    hostPerson() {
+        return [...this.peers.values()].find((p) => p.host && p.named && !p.deadWait && !this.isBot(p)) || null;
+    }
+
+    // An AI partner: one this server started, or any that says so itself.
+    isBot(peer) {
+        if (peer.last && peer.last.bot) return true;
+        return !!(this.partners && peer.named && this.partners.allNames().some((n) => n.toLowerCase() === peer.name.toLowerCase()));
     }
 
     // The run being played, for someone at the title deciding what to load.
@@ -125,15 +153,19 @@ class Room {
     }
 
     roster() {
-        return [...this.peers.values()].map((p) => ({ id: p.id, name: p.name, mapId: p.mapId, last: p.last || null }));
+        return [...this.peers.values()].map((p) => ({ id: p.id, name: p.name, mapId: p.mapId, last: p.last || null, host: p.host }));
     }
 
     // Everything leaves through here. FH_LAG (ms) holds each message back by
     // that long, give or take a third, in order: a slow link for the tests.
+    // FH_RATE (bytes a second) narrows it: each message also waits for the ones
+    // ahead of it, while the socket's own buffer stays empty, as behind a tunnel.
     deliver(peer, data, binary) {
         const ws = peer.ws;
-        if (!LAG) { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); return; }
-        const due = Math.max(Date.now() + LAG * (0.67 + Math.random() * 0.66), (peer.lastDue || 0) + 1);
+        if (!LAG && !RATE) { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); return; }
+        let start = Date.now();
+        if (RATE) start = peer.wire = Math.max(peer.wire || 0, start) + data.length / RATE * 1000;
+        const due = Math.max(start + LAG * (0.67 + Math.random() * 0.66), (peer.lastDue || 0) + 1);
         peer.lastDue = due;
         setTimeout(() => { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); }, due - Date.now());
     }
@@ -173,10 +205,10 @@ class Room {
 
     deliverOwed(peer) {
         const key = peer.name.toLowerCase();
-        const owed = this.owed.get(key);
-        if (!owed) return;
+        const list = this.owed.get(key);
+        if (!list) return;
         this.owed.delete(key);
-        if (Date.now() - owed.at < 30 * 60 * 1000) this.send(peer, { t: 'owed', actors: owed.actors, inv: owed.inv });
+        for (const owed of list) if (Date.now() - owed.at < 30 * 60 * 1000) this.send(peer, { t: 'owed', fight: owed.fight, actors: owed.actors, inv: owed.inv });
     }
 
     unpark(name) {
@@ -194,6 +226,7 @@ class Room {
 
     drop(peer) {
         if (!this.peers.delete(peer.id)) return;
+        this.freedAt.set(peer.id, Date.now());
         // Vanishing mid-fight or while dead does not get to undo either:
         // the parked state remembers it, and carrying on picks up from there.
         const st = peer.last && peer.last.st;
@@ -303,7 +336,20 @@ class Room {
             }
             // Someone loading a save they were dead in does not decide the
             // moment either: they wait for a living player to carry the run on.
-            if (!this.founded && how === 'load' && msg.dead) { this.send(peer, { t: 'worldwait' }); break; }
+            // (A host waiting like that does not hold anyone else up.)
+            if (!this.founded && how === 'load' && msg.dead) { peer.deadWait = true; this.send(peer, { t: 'worldwait' }); break; }
+            // The host's game says which run this is (a new one, or the save they
+            // continue): anyone else in first, an AI partner too, waits for them
+            // instead of starting a run of their own that the host's then cannot
+            // join. Not for ever: a host who has not started after two minutes is
+            // not coming, and the one waiting goes on alone.
+            const host = this.hostPerson();
+            if (!this.founded && host && peer !== host && (!peer.host || this.isBot(peer))) {
+                const now = Date.now();
+                if (!peer.hostWaitSince || now - (peer.hostWaitLast || 0) > 15000) peer.hostWaitSince = now; // a fresh try starts a fresh wait
+                peer.hostWaitLast = now;
+                if (now - peer.hostWaitSince < HOST_WAIT) { this.send(peer, { t: 'worldhost', by: host.name }); break; }
+            }
             let mode = 'join';
             let newer = 0;
             if (this.founded && how === 'again' && this.entered.has(who) && String(msg.runId || '') === this.runId) mode = 'again';
@@ -327,6 +373,8 @@ class Room {
             }
             peer.live = true;
             peer.ini = ini;
+            peer.deadWait = false;
+            peer.hostWaitSince = 0;
             this.entered.add(who);
             this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer });
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
@@ -413,7 +461,9 @@ class Room {
         case 'owed': { // a fight ended for a guest who is no longer there to be told
             const name = String(msg.name || '').toLowerCase();
             if (!name || !Array.isArray(msg.actors)) break;
-            this.owed.set(name, { actors: msg.actors, inv: msg.inv, at: Date.now() });
+            const list = this.owed.get(name) || [];
+            list.push({ fight: String(msg.fight || ''), actors: msg.actors, inv: msg.inv, at: Date.now() });
+            this.owed.set(name, list);
             const there = [...this.peers.values()].find((p) => p.live && p.name.toLowerCase() === name);
             if (there) this.deliverOwed(there);
             break;

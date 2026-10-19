@@ -218,6 +218,7 @@
         if (!Coop.connected) rows.push('<div class="row bad">co-op: reconnecting...</div>');
         if (Coop.world.sameAs) rows.push('<div class="row bad">playing alone: ' + esc(Coop.world.sameAs) + ' has this character</div>');
         if (Coop.world.otherRun) rows.push('<div class="row bad">playing alone: the others are in a different run</div>');
+        if (Coop.world.hostWait && !onTitle) rows.push('<div class="row bad">waiting for ' + esc(Coop.world.hostWait) + ' to start or continue a game</div>');
         for (const p of Coop.others()) {
             const here = window.$gameMap && Coop.world.live && p.m === $gameMap.mapId();
             let where = STATE_TEXT[p.st] || '';
@@ -233,6 +234,10 @@
         }
         const on = onTitle && Coop.world.on;
         if (on && Coop.world.slotsOf(on.runId)[on.stamp]) rows.push('<div class="row">' + esc(on.by) + ' has carried on a run you share. Continue opens on the matching save.</div>');
+        else if (onTitle) {
+            const host = Coop.others().find((p) => p.host && !p.bot);
+            if (host) rows.push('<div class="row">' + esc(host.name) + '\'s game sets the run. New Game joins it as a new character.</div>');
+        }
         if (onTitle && Coop.connected && !rows.length) rows.push('<div class="row dim">co-op: nobody else here yet</div>');
         if (onTitle || (enteredAt && Date.now() - enteredAt < 60000)) rows.push('<div class="row dim">F1: how playing together works</div>');
         const html = rows.join('');

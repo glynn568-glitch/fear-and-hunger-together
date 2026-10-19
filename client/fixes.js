@@ -159,4 +159,38 @@
         this._moveRouteForcing = false;
         try { return _canMove.call(this); } finally { this._moveRouteForcing = true; }
     };
+
+    // A minimised window (or one the system counts as hidden) gets no
+    // animation frames, and the game stops. Alone that is a pause; with others
+    // in the world it would freeze a fight they are in, so a timer runs the
+    // game instead. Each request supersedes the last, so a frame asked for
+    // before the window hid never runs as a second loop when it shows again.
+    let ticket = 0;
+    const othersHere = () => window.Coop && Coop.world && Coop.world.live && Coop.peers.size > 0;
+    // The beat comes from a worker: a hidden page's own timers are slowed to
+    // one a second (one a minute after five) unless the browser was started
+    // with the launcher's flags; a worker's are not.
+    let beat = null, onBeat = null;
+    function nextBeat(fn) {
+        if (beat === null) {
+            try {
+                beat = new Worker(URL.createObjectURL(new Blob(['onmessage = function () { setTimeout(function () { postMessage(0); }, 16); };'], { type: 'text/javascript' })));
+                beat.onmessage = function () { const f = onBeat; onBeat = null; if (f) f(); };
+            } catch (e) { beat = false; }
+        }
+        if (!beat) { setTimeout(fn, 1000 / 60); return; }
+        onBeat = fn;
+        beat.postMessage(0);
+    }
+    SceneManager.requestUpdate = function () {
+        if (this._stopped) return;
+        const mine = ++ticket;
+        const go = () => { if (mine === ticket) this.update(); };
+        if (document.hidden && othersHere()) nextBeat(go); else requestAnimationFrame(go);
+    };
+    // Shown or hidden, or others arriving while hidden: the loop is asked for again,
+    // on whichever clock now applies.
+    const again = function () { if (!SceneManager._stopped && SceneManager._scene) SceneManager.requestUpdate(); };
+    document.addEventListener('visibilitychange', again);
+    for (const t of ['join', 'online', 'entered']) Coop.on(t, function () { if (document.hidden) again(); });
 })();

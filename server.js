@@ -377,6 +377,7 @@ function appState() {
     return {
         mode: JOIN ? 'joined' : online ? 'online' : 'local',
         link: online && tunnel.url ? tunnel.url + '/?k=' + KEY : '',
+        ready: online && tunnel.ready, // the link works from a friend's PC yet
         joined: JOIN ? JOIN.link : '',
         private: !!room.relayOnly,
         offer: offer, // a join link that came from a clicked fhtogether:// link, for the panel
@@ -413,7 +414,11 @@ async function probeHost(j) {
     let res;
     try {
         res = await fetch(j.origin + '/coop/hello', { headers: joinHeaders(j), signal: AbortSignal.timeout(10000) });
-    } catch (e) { return 'Cannot reach that link. Is your friend still hosting?'; }
+    } catch (e) {
+        // A brand-new link Cloudflare has not published yet: not found, for now.
+        if (e && e.cause && (e.cause.code === 'ENOTFOUND' || e.cause.code === 'EAI_AGAIN')) return 'That link is not live yet, or no longer: a new one can take a minute to work. Try again in a minute; if it still fails, ask your friend for a new link.';
+        return 'Cannot reach that link. Is your friend still hosting?';
+    }
     if (res.status === 401 || res.status === 403) return 'That link is old or cut short. Ask your friend to copy it again.';
     if (res.status === 404 || res.status === 530 || res.status === 502) return 'Nobody is hosting at that link any more. Ask for a new one.';
     let hello = null;
@@ -461,6 +466,8 @@ async function handleApp(req, res, pathname) {
             try { await tunnel.start(); } catch (e) { KEY = process.env.FH_KEY || ''; reply(200, { error: 'Could not go online: ' + e.message }); return; }
             online = true;
             console.log('online at ' + tunnel.url + '/?k=' + KEY + (room.relayOnly ? ' (private)' : ''));
+            // Usually a few seconds; the panel follows on if Cloudflare is slower.
+            if (!(await tunnel.whenReady(8000))) console.log('the link is not published yet; waiting for Cloudflare');
         }
         reply(200, appState());
         return;

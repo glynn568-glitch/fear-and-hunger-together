@@ -71,7 +71,8 @@ const panel = (page) => page.evaluate(() => {
         await waitFor(b, () => Coop.connected && Array.from(Coop.peers.values()).some((p) => p.name === 'Ann'), 15000, 'connected to the host');
         const pb = await panel(b);
         check('pasting the link joins the host\'s game', pb.leaveShown && !pb.joinShown && /friend/.test(pb.status), JSON.stringify(pb));
-        check('the host sees the friend arrive', await a.evaluate(() => Array.from(Coop.peers.values()).some((p) => p.name === 'Bo')));
+        // Each side hears of the other in its own time over a slow line.
+        check('the host sees the friend arrive', await waitFor(a, () => Array.from(Coop.peers.values()).some((p) => p.name === 'Bo'), 15000, 'the host sees Bo').then(() => true, () => false));
 
         // A bug report: versions, the logs, what the game is doing; never the key.
         await a.evaluate(() => { navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });

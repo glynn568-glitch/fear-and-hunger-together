@@ -1,5 +1,5 @@
 // Joining a fight already under way, the way it happens online: the host plays
-// with "Hide my IP" (pictures only through the relay), a friend from their own
+// with "Hide my IP" on, as it is by default (pictures only through the relay), a friend from their own
 // PC owns the fight, and the host walks up and asks in. They see the fight at
 // once, come in at the next turn, and choose their own move.
 const { startServer, launch, openPlayer, waitFor, sleep } = require('./lib');
@@ -10,7 +10,7 @@ const install = require('./helpers');
     const check = checker();
     let host, joiner, browser, pages = [];
     try {
-        host = await startServer(8491, { FH_RELAY: '1' });
+        host = await startServer(8491, { FH_RELAY: null }); // Hide my IP, as it is by default
         joiner = await startServer(8591, { FH_JOIN: 'http://localhost:8491/' });
         browser = await launch();
         const a = await openPlayer(browser, 'http://localhost:8491/?name=Ann', 'host');

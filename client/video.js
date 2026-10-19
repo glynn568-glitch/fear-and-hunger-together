@@ -5,8 +5,8 @@
 // delay. The relay only carries the handshake.
 //
 // If the two browsers cannot reach each other directly (some routers refuse),
-// nothing here takes effect and the watcher keeps getting still pictures
-// through the relay, as before.
+// nothing here takes effect and the watcher keeps getting the picture
+// through the relay (battle.js).
 //=============================================================================
 (function () {
     const Stream = Coop.stream;
@@ -44,7 +44,7 @@
 
     function canSend() {
         // While this player is themselves watching someone, their own canvas
-        // is not what their watchers should see; those get relayed stills.
+        // is not what their watchers should see; those get it through the relay.
         return !Stream.noVideo && !Viewer.active && !!Graphics._canvas && !Coop.relayOnly;
     }
 
@@ -55,7 +55,7 @@
         if (tell) Coop.sendTo(id, 'rtco', { stop: true });
     }
 
-    // Private hosting switched on: any direct call already up is hung up; stills carry on.
+    // Private hosting switched on: any direct call already up is hung up; the relay carries on.
     Coop.on('relay', function (msg) {
         if (!msg.on) return;
         for (const id of Array.from(out.keys())) stopOut(id, true);
@@ -120,7 +120,7 @@
     });
 
     //--- receiving ----------------------------------------------------------
-    // Frames are painted onto the same canvas the relayed stills use. A bare
+    // Frames are painted onto the same canvas the relayed pictures use. A bare
     // <video> element is handed to the display's video path, which on an HDR
     // monitor comes out much darker than the rest of the page; a canvas is
     // ordinary page content and matches the game.
@@ -219,7 +219,7 @@
                 Coop.sendTo(msg.from, 'rtca', { sdp: pc.localDescription });
             }).catch(function () { if (incoming === link) giveUp(msg.from); });
             // No picture within a few seconds means the direct route is not
-            // happening; say so, and the stills carry on.
+            // happening; say so, and the relay carries on.
             setTimeout(function () { if (incoming === link && !Viewer.video) giveUp(msg.from); }, 8000);
         } else if (msg.c && incoming) {
             if (incoming.ready) incoming.pc.addIceCandidate(msg.c).catch(function () {}); else incoming.queue.push(msg.c);

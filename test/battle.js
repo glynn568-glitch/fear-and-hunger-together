@@ -34,16 +34,24 @@ const battle = (p) => p.evaluate(() => ({
         });
         check('the picture is not blank', lit > 20, 'bright samples ' + lit);
         console.log('screenshot', await shot(b, 'battle-guest'));
-        // The stills are only the opening act: the two browsers then connect
-        // directly and the picture becomes live video.
-        await waitFor(b, () => Coop.viewer.video, 15000, 'B switches to live video');
-        const v0 = await b.evaluate(() => Coop.viewer.frames);
+        // The stills are only the opening act. With Hide my IP off the two
+        // browsers then connect directly (live video); with it on (the default)
+        // the picture is video through the host.
+        const relayed = await b.evaluate(() => Coop.relayOnly);
+        if (relayed) await waitFor(b, () => Coop.viewer.clip, 15000, 'B switches to video through the host');
+        else await waitFor(b, () => Coop.viewer.video, 15000, 'B switches to live video');
         await sleep(2000);
-        const vid = await b.evaluate(() => { const c = document.createElement('canvas'); c.width = 204; c.height = 156; const x = c.getContext('2d'); x.drawImage(Coop.viewer.el, 0, 0, 204, 156); const d = x.getImageData(0, 0, 204, 156).data; let lit = 0; for (let i = 0; i < d.length; i += 400) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; return { size: Coop.viewer.videoSize, shown: Coop.viewer.el.style.display !== 'none', bareVideoShown: !!document.querySelector('video') && getComputedStyle(document.querySelector('video')).opacity > 0.5, lit, frames: Coop.viewer.frames }; });
-        check('B is watching live video of the fight, painted on the page canvas', vid.size && vid.size.w === 816 && vid.size.h === 624 && vid.shown && !vid.bareVideoShown && vid.lit > 20, JSON.stringify(vid));
-        // Measured here with software rendering: 24 to 33 a second depending on what else the PC is doing.
-        check('the video runs at a playable rate', (vid.frames - v0) / 2 >= 20, Math.round((vid.frames - v0) / 2) + ' frames a second');
-        check('A stopped sending stills to B once video was up', await a.evaluate((id) => Coop.stream.onVideo.has(id), s.idB));
+        const vid = await b.evaluate(() => { const c = document.createElement('canvas'); c.width = 204; c.height = 156; const x = c.getContext('2d'); x.drawImage(Coop.viewer.el, 0, 0, 204, 156); const d = x.getImageData(0, 0, 204, 156).data; let lit = 0; for (let i = 0; i < d.length; i += 400) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; return { size: Coop.viewer.videoSize, clip: Coop.viewer.clip, shown: Coop.viewer.el.style.display !== 'none', bareVideoShown: !!document.querySelector('video') && getComputedStyle(document.querySelector('video')).opacity > 0.5, lit, frames: Coop.viewer.frames }; });
+        if (relayed) check('B is watching video of the fight through the host, painted on the page canvas', vid.clip && vid.shown && !vid.bareVideoShown && vid.lit > 20, JSON.stringify(vid));
+        else check('B is watching live video of the fight, painted on the page canvas', vid.size && vid.size.w === 816 && vid.size.h === 624 && vid.shown && !vid.bareVideoShown && vid.lit > 20, JSON.stringify(vid));
+        // Once it has settled, not in the moment it starts. Measured here with software
+        // rendering: 24 to 50 a second depending on what else the PC is doing.
+        const r0 = await b.evaluate(() => Coop.viewer.frames);
+        await sleep(3000);
+        const rate = Math.round(((await b.evaluate(() => Coop.viewer.frames)) - r0) / 3);
+        check('the video runs at a playable rate', rate >= 20, rate + ' frames a second');
+        if (relayed) check('no direct connection between the browsers was made', await a.evaluate((id) => !Coop.stream.onVideo.has(id), s.idB));
+        else check('A stopped sending stills to B once video was up', await a.evaluate((id) => Coop.stream.onVideo.has(id), s.idB));
 
         // B's keys must not move A's cursor while A is choosing.
         await press(b, 'KeyZ');

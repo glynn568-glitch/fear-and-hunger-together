@@ -42,6 +42,8 @@ const MAP = 29, DOOR = 5, DOOR_SWITCH = 21; // EV005 "door1" at (15,49); its swi
         await a.keyboard.down('KeyZ'); await sleep(120); await a.keyboard.up('KeyZ');
         await waitFor(a, (sw) => $gameSwitches.value(sw), 8000, 'the door swings open for A', DOOR_SWITCH);
         await waitFor(b, (sw) => $gameSwitches.value(sw), 5000, 'and for B', DOOR_SWITCH);
+        // The door takes its new page on B's next map refresh.
+        await waitFor(b, (id) => $gameMap.event(id).isThrough(), 3000, 'the door open on B', DOOR).catch(() => {});
         const open = await b.evaluate((id) => ({ page: $gameMap.event(id).findProperPageIndex(), through: $gameMap.event(id).isThrough() }), DOOR);
         check('a door one player opens is open for everyone', shut.solid && !shut.sw && open.through, JSON.stringify({ shut, open }));
         await b.close(); b = null;

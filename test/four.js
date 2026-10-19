@@ -65,14 +65,16 @@ async function press(page, code) {
         await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor(), 30000, 'command input');
         const party = await a.evaluate(() => ({ party: $gameParty._actors.slice().sort(), guests: Coop.battle.guests.size, shown: $gameParty.battleMembers().length }));
         check('all four fight together', party.party.join() === '1,3,4,5' && party.guests === 3 && party.shown === 4, JSON.stringify(party));
-        for (const pg of [b, c, d]) await waitFor(pg, () => Coop.viewer.video, 25000, pg.label + ' gets live video');
-        check('all three guests watch live video', true);
+        // Live video straight from the owner, or (Hide my IP on) video through the host.
+        for (const pg of [b, c, d]) await waitFor(pg, () => (Coop.relayOnly ? Coop.viewer.clip : Coop.viewer.video), 25000, pg.label + ' gets video');
+        check('all three guests watch video', true);
         const f0 = await Promise.all([b, c, d].map((pg) => pg.evaluate(() => Coop.viewer.frames)));
         await sleep(3000);
         const f1 = await Promise.all([b, c, d].map((pg) => pg.evaluate(() => Coop.viewer.frames)));
         const rates = f1.map((f, i) => Math.round((f - f0[i]) / 3));
         // One machine here runs all four games in software rendering; this is a floor, not a promise.
-        check('the owner keeps three guests fed at a watchable rate', rates.every((r) => r >= 10), rates.join(', ') + ' frames a second');
+        const clip = await a.evaluate(() => Coop.stream.clip && { rate: Coop.stream.clip.rate, keys: Coop.stream.clip.keys || 0, need: Array.from(Coop.stream.clip.need), out: Array.from(Coop.stream._out.values()).map((o) => o.bytes) });
+        check('the owner keeps three guests fed at a watchable rate', rates.every((r) => r >= 10), rates.join(', ') + ' frames a second; video ' + JSON.stringify(clip));
         console.log('screenshot', await shot(d, 'four-guest'), await shot(a, 'four-owner'));
 
         // Each player picks for their own character, in the order the game asks.

@@ -11,6 +11,7 @@
 
     const World = Coop.world = {
         live: false, // true once this player is in the dungeon and synced
+        cut: false, // was live when the line dropped, and not back in yet
         runId: '',
         demoted: new Set(), // keys that turned out to flap; kept local from then on
         _out: [],
@@ -278,6 +279,20 @@
         }, 2500);
     });
 
+    // In before the host: their game decides which run this is. Asked again
+    // until they have started or continued one.
+    World.hostWait = '';
+    Coop.on('worldhost', function (msg) {
+        World._entering = false;
+        if (World.hostWait !== msg.by && Coop.toast) Coop.toast('Waiting for ' + msg.by + ' to start or continue a game. You join their run once they do.', 9000);
+        World.hostWait = msg.by;
+        clearTimeout(World._hostTimer);
+        World._hostTimer = setTimeout(function () {
+            if (World.hostWait && !World.live && Coop.connected) World.enter();
+        }, 2500);
+    });
+    Coop.on('run', function () { if (World.hostWait && !World.live && Coop.connected) World.enter(); });
+
     // The others carried this run on from a different save than the one just
     // loaded. If this player has theirs from that same moment it is loaded
     // in its place; if all they have is from later, they cannot come in.
@@ -313,6 +328,7 @@
         World._how = 'again';
         World.loadedStamp = 0; // from here on the world is the live one, not a save's
         World.waiting = false;
+        World.hostWait = '';
         World._swapped = false;
         World.on = null; // in it now; nothing to be pointed at
         const server = msg.world;
@@ -339,6 +355,7 @@
             if (mine.length) Coop.send({ t: 'w', w: mine });
         }
         World.live = true;
+        World.cut = false;
         if (changed) $gameMap.requestRefresh();
         Coop.note((msg.founded ? 'founded the world' : 'joined the world') + ' (' + mine.length + ' facts contributed)');
         Coop.emit('entered', msg);
@@ -353,11 +370,17 @@
         }
     });
 
+    // Back, but not into this world: fights from here on are this player's own.
+    for (const t of ['worldbusy', 'worldclash', 'worldstale', 'worldwait', 'worldwhen', 'worldhost']) Coop.on(t, function () { World.cut = false; if (t !== 'worldhost') World.hostWait = ''; });
+
     Coop.on('offline', function () {
+        World.cut = World.live || !!World.cut;
         World.live = false;
     });
 
     World.leave = function () {
+        World.cut = false;
+        World.hostWait = '';
         World.otherRun = false;
         World.sameAs = '';
         if (World.live) Coop.send({ t: 'leftworld' });

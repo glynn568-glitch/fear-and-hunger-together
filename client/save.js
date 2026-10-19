@@ -7,6 +7,7 @@
 //=============================================================================
 (function () {
     const cache = { name: null, exists: {}, data: {} };
+    let accepted = ''; // the name the host has taken from this tab, on this line
 
     function base() {
         return 'coop/store/' + encodeURIComponent(Coop.name) + '/';
@@ -22,6 +23,8 @@
 
     function ensureIndex() {
         if (cache.name === Coop.name) return;
+        // The host refuses until it has taken the name; nameok asks then.
+        if (accepted.toLowerCase() !== Coop.name.toLowerCase()) return;
         cache.name = Coop.name;
         cache.exists = {};
         cache.data = {};
@@ -91,6 +94,8 @@
         return routed(savefileId) ? false : _backupExists.call(this, savefileId);
     };
 
+    Coop.on('offline', function () { accepted = ''; });
+
     // A different name means a different set of save files.
     const _setName = Coop.setName;
     Coop.setName = function (name) {
@@ -102,9 +107,9 @@
         }
     };
 
-    // The host lets this tab at its saves once it has taken the name; asked
-    // before that (at the title), the answer was empty. Ask again.
-    Coop.on('nameok', function () {
+    // The host lets this tab at its saves once it has taken the name.
+    Coop.on('nameok', function (msg) {
+        accepted = String(msg.name || '');
         cache.name = null;
         const scene = SceneManager._scene;
         if (scene instanceof Scene_Title && scene._commandWindow) scene._commandWindow.refresh();

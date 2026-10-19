@@ -9,11 +9,12 @@
         const scene = SceneManager._scene;
         if (!scene || !window.$gameMap || !Coop.world.live) return 'title';
         if (Coop.dead || scene instanceof Scene_Gameover) return 'dead';
-        // A hidden tab is frozen by the browser; say so, so nobody waits on it.
-        if (document.hidden && !navigator.webdriver) return 'away';
-        if (scene instanceof Scene_Map) return $gameMap.isEventRunning() ? 'event' : 'map';
+        // A fight goes on with the window hidden (fixes.js keeps the game running).
         if (scene instanceof Scene_Battle) return 'battle';
         if (Coop.battle && Coop.battle.role === 'guest') return 'battle';
+        // Otherwise a hidden window means nobody is looking; say so, so nobody waits on them.
+        if (document.hidden && !navigator.webdriver) return 'away';
+        if (scene instanceof Scene_Map) return $gameMap.isEventRunning() ? 'event' : 'map';
         return 'menu';
     };
 

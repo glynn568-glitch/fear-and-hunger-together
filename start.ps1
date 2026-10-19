@@ -166,6 +166,16 @@ try {
         if ($hit) { $url = $hit.Matches[0].Value; break }
     }
     if (-not $url) { throw "No tunnel address after 30 seconds. See $log" }
+    # A new address takes Cloudflare a moment (on a bad day, minutes) to publish; a friend
+    # who tries it before then is told it does not exist. Handed out once it answers.
+    $name = ([Uri]$url).Host
+    Write-Host 'Waiting for Cloudflare to publish the link...'
+    foreach ($i in 1..45) {
+        $ok = $false
+        try { $j = Invoke-RestMethod -Uri "https://cloudflare-dns.com/dns-query?name=$name&type=A" -Headers @{ accept = 'application/dns-json' } -TimeoutSec 5; $ok = $j.Status -eq 0 -and $j.Answer } catch { }
+        if ($ok -and (Select-String -Path $log -Pattern 'Registered tunnel connection' -Quiet)) { break }
+        Start-Sleep -Seconds 2
+    }
     $link = "$url/?k=$key"
     Set-Clipboard $link
     Open-Game
@@ -174,7 +184,7 @@ try {
     Write-Host "Your friend: $link   (copied to the clipboard)"
     Write-Host '             They need the game too, and this mod: Play.cmd, "Join a friend", paste the link.'
     Write-Host ''
-    if ($Private) { Write-Host 'Private: your friend''s browser never learns your IP address. Fights you watch are a little less smooth.' }
+    if ($Private) { Write-Host 'Private: your friend''s browser never learns your IP address.' }
     Write-Host 'Both of you: use Chrome, Edge or Opera. Close this window, or press Ctrl+C, to stop; the link dies with it.'
     if ($Partner) { Write-Host 'Your AI partner joins once you are in the dungeon. Y talks to it, F8 sends it home.' }
     else { Write-Host 'F8 in the game (on your PC) calls an AI partner in.' }

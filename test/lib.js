@@ -13,7 +13,9 @@ async function startServer(port, env) {
     const saves = path.join(OUT, 'saves-' + port);
     fs.rmSync(saves, { recursive: true, force: true });
     const proc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-        env: { ...process.env, PORT: String(port), FH_SAVES: saves, ...(env || {}) }, stdio: ['ignore', 'pipe', 'pipe'],
+        // Direct fight video unless a suite asks otherwise (FH_TEST_RELAY=1: every suite with
+        // Hide my IP at its default); null leaves a setting at its default.
+        env: Object.fromEntries(Object.entries({ ...process.env, FH_RELAY: process.env.FH_TEST_RELAY ? null : '0', PORT: String(port), FH_SAVES: saves, ...(env || {}) }).filter(([, v]) => v !== null)), stdio: ['ignore', 'pipe', 'pipe'],
     });
     proc.saves = saves;
     proc.stderr.on('data', (d) => process.stderr.write('[server] ' + d));

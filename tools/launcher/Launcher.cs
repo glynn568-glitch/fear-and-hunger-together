@@ -249,7 +249,10 @@ static class Launcher
             // which would also keep this launcher waiting after the game window closed.
             + " --disable-extensions"
             // Nothing of this window is synced to the player's account.
-            + " --disable-sync");
+            + " --disable-sync"
+            // Covered by another window, or in the background, the game keeps its full pace:
+            // a fight it runs goes on for the other players (client/fixes.js keeps a minimised one going).
+            + " --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling");
     }
 
     // The browser may hand the window to a process of its own and exit at once,

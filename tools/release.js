@@ -46,6 +46,12 @@ if (!sourceOnly && !args.has('--no-github')) {
     if (tags) throw new Error('v' + version + ' is already released. Raise the version in package.json first (npm version patch --no-git-tag-version).');
 }
 if (!sourceOnly && !args.has('--no-itch') && !fs.existsSync(BUTLER)) throw new Error('butler not found at ' + BUTLER);
+// Only a commit that passed the whole release gate (node test/gate.js) ships.
+if (!sourceOnly) {
+    let gate = null;
+    try { gate = JSON.parse(fs.readFileSync(path.join(ROOT, 'test', 'out', 'gate.json'), 'utf8')); } catch (e) { /* never run */ }
+    if (!gate || gate.commit !== git(['rev-parse', 'HEAD'])) throw new Error('This commit has not passed the release gate. Run: node test/gate.js');
+}
 console.log(`${sourceOnly ? 'Updating the public source at' : 'Releasing'} ${version} from ${git(['rev-parse', '--short', 'HEAD'])}${dry ? ' (dry run)' : ''}`);
 
 // 1. The build.

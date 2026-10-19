@@ -159,6 +159,7 @@ Coop._receive = function (msg) {
             if (p.id === Coop.id) continue;
             const peer = Object.assign({ id: p.id, name: p.name }, p.last || { st: 'title', m: 0 });
             peer.id = p.id;
+            peer.host = !!p.host;
             peer._moved = true;
             Coop.peers.set(p.id, peer);
         }
@@ -168,7 +169,7 @@ Coop._receive = function (msg) {
         Coop.emit('online', msg);
         break;
     case 'join':
-        Coop.peers.set(msg.id, { id: msg.id, name: msg.name, m: 0, st: 'title' });
+        Coop.peers.set(msg.id, { id: msg.id, name: msg.name, m: 0, st: 'title', host: !!msg.host });
         Coop.note(msg.name + ' joined');
         Coop.emit('join', Coop.peers.get(msg.id));
         break;

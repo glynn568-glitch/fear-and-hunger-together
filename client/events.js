@@ -29,8 +29,30 @@
         return !owner || owner === Coop.id || !Coop.peers.has(owner);
     };
 
+    // A fight whose player's line dropped goes on on their machine: its
+    // enemy stays where it is until they are back out of the fight, or five
+    // minutes have passed without them (they are not coming back to it).
+    const HOLD_GRACE = 300000;
+
+    // The player behind a hold, here now (back under a new id, too), or null.
+    function holderOf(hold) {
+        const peer = Coop.peers.get(hold.by);
+        if (peer) return peer;
+        if (!hold.gone || !hold.name) return null;
+        for (const p of Coop.peers.values()) if (p.name.toLowerCase() === hold.name.toLowerCase()) return p;
+        return null;
+    }
+
     Ev.holdOf = function (eventId) {
-        return Ev.holds.get($gameMap.mapId() + ':' + eventId) || null;
+        const key = $gameMap.mapId() + ':' + eventId;
+        const hold = Ev.holds.get(key);
+        if (!hold || !hold.gone) return hold || null;
+        const back = holderOf(hold);
+        if ((back && ['map', 'event', 'dead'].indexOf(back.st) >= 0) || Date.now() - hold.gone > HOLD_GRACE) {
+            Ev.holds.delete(key);
+            return null;
+        }
+        return hold;
     };
 
     //--- who the event goes after -------------------------------------------
@@ -125,24 +147,35 @@
         if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         const key = msg.m + ':' + msg.e;
         if (msg.k === 'battle') Coop.note((Coop.peers.get(msg.from) || {}).name + ' is fighting event ' + msg.e + ' on map ' + msg.m);
-        if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k });
+        if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k, name: (Coop.peers.get(msg.from) || {}).name || '' });
         else if (Ev.holds.has(key) && Ev.holds.get(key).by === msg.from) Ev.holds.delete(key);
     });
 
-    function dropHoldsOf(peerId) {
-        for (const [key, hold] of Ev.holds) if (hold.by === peerId) Ev.holds.delete(key);
-    }
-    Coop.on('leave', function (peer) { dropHoldsOf(peer.id); });
-    Coop.on('peermap', function (peer) { dropHoldsOf(peer.id); });
+    // Gone from here: what they were talking to is free, what they were
+    // fighting is not (their fight goes on without a line to here).
+    Coop.on('leave', function (peer) {
+        for (const [key, hold] of Ev.holds) {
+            if (hold.by !== peer.id) continue;
+            if (hold.k === 'battle') { if (!hold.gone) { hold.gone = Date.now(); hold.name = peer.name; } } else Ev.holds.delete(key);
+        }
+    });
+    // Off to another map (or first heard of, back after a dropped line, on this one).
+    Coop.on('peermap', function (peer) {
+        for (const [key, hold] of Ev.holds) if (hold.by === peer.id && key.split(':')[0] !== String(peer.m)) Ev.holds.delete(key);
+    });
 
     // An enemy another player is already fighting cannot start a second,
     // separate fight. Touching it asks to join theirs.
     const _start = Game_Event.prototype.start;
     Game_Event.prototype.start = function () {
         const hold = Coop.world.live ? Ev.holdOf(this._eventId) : null;
-        if (hold && hold.k === 'battle' && Coop.peers.has(hold.by)) {
-            if (Coop.askToJoinBattle) Coop.askToJoinBattle(hold.by);
-            return;
+        if (hold && hold.k === 'battle') {
+            const holder = holderOf(hold);
+            if (holder) {
+                if (Coop.askToJoinBattle) Coop.askToJoinBattle(holder.id);
+                return;
+            }
+            if (hold.gone) return;
         }
         _start.call(this);
     };

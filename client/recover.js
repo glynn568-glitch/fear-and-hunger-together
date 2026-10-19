@@ -71,11 +71,17 @@
         box.style.display = '';
     }, 300);
 
+    // Asked afresh on each visit. Cleared on the way out, not on the way in:
+    // clearing it here could swallow an answer already on screen, and R with it.
     const _titleStart = Scene_Title.prototype.start;
     Scene_Title.prototype.start = function () {
         _titleStart.call(this);
-        offer = null;
         ask();
+    };
+    const _titleEnd = Scene_Title.prototype.terminate;
+    Scene_Title.prototype.terminate = function () {
+        _titleEnd.call(this);
+        offer = null;
     };
 
     document.addEventListener('keydown', function (e) {

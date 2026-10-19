@@ -7,8 +7,12 @@
 (function () {
     const JOIN_RANGE = 6; // tiles; closer players are pulled into the fight
     const JOIN_WAIT = 3500; // ms the first turn waits for their answer
-    const FRAME_GAP = 50; // ms between relayed stills (20 a second) when live video is not available
-    const FRAME = 1; // binary message kind
+    const FRAME_GAP = 50; // ms between relayed stills (20 a second), for a watcher that cannot decode video
+    const FRAME = 1; // binary message kinds: a still picture,
+    const CLIP = 2; // and a piece of encoded video
+    const CLIP_CODEC = 'vp09.00.10.08';
+    const CLIP_BITRATE = 1500000;
+    const STILLS_AHEAD = 100000; // bytes of stills on their way to one watcher; the next waits for some to arrive
 
     Coop.battle = null;
 
@@ -16,32 +20,103 @@
     // Streaming this machine's screen to watchers (battle guests, the dead)
     //=========================================================================
 
-    const Stream = Coop.stream = { watchers: new Set(), _busy: false, _last: 0, _canvas: null, _ctx: null, _audioDepth: 0 };
+    const Stream = Coop.stream = { watchers: new Set(), _out: new Map(), _busy: false, _last: 0, _canvas: null, _ctx: null, _audioDepth: 0 };
+
+    // Through the relay the picture travels as video: only what changed since
+    // the last picture is sent, a tenth of what stills cost, at the game's own
+    // frame rate. A watcher whose browser cannot decode it gets stills.
+    const Clip = { want: new Set(), need: new Set(), enc: null, w: 0, h: 0, seq: 0, ts: 0, key: false, keyAt: 0, rate: CLIP_BITRATE, pacedAt: 0, failed: !window.VideoEncoder };
+    Stream.clip = Clip; // what the lag meter and tests read
+    const clipConfig = (w, h) => ({ codec: CLIP_CODEC, width: w, height: h, bitrate: Clip.rate, framerate: 60, latencyMode: 'realtime' });
+    if (!Clip.failed) VideoEncoder.isConfigSupported(clipConfig(816, 624)).then(function (r) { if (!r.supported) Clip.failed = true; }, function () { Clip.failed = true; });
+
+    function forget(id) {
+        Stream.watchers.delete(id);
+        Stream._out.delete(id);
+        Clip.need.delete(id);
+    }
 
     Stream.add = function (id) {
         Stream.watchers.add(id);
+        Stream._out.delete(id);
+        if (Clip.want.has(id)) { Clip.need.add(id); Clip.key = true; }
         Coop.sendTo(id, 'baud', { f: 'sync', a: [AudioManager._currentBgm, AudioManager._currentBgs] });
     };
-    Stream.remove = function (id) { Stream.watchers.delete(id); };
-    Coop.on('leave', function (peer) { Stream.watchers.delete(peer.id); });
+    Stream.remove = function (id) { forget(id); };
+    Coop.on('leave', function (peer) { forget(peer.id); Clip.want.delete(peer.id); });
 
-    Stream.capture = function () {
-        if (!Stream.watchers.size || Stream._busy) return;
-        // Watchers on live video (video.js) need no stills.
-        const targets = Stream.onVideo && Stream.onVideo.size ? Array.from(Stream.watchers).filter((id) => !Stream.onVideo.has(id)) : Array.from(Stream.watchers);
-        if (!targets.length) return;
-        // A link that cannot keep up gets fewer, lighter frames rather
-        // than a growing queue of stale ones.
-        const backlog = Coop._ws ? Coop._ws.bufferedAmount : 0;
-        const slow = backlog > 250000;
+    // Each watcher says when a picture arrives. A narrow link, or a tunnel that
+    // hides its queue from this machine, then gets only as much as it carries,
+    // and the fight's other messages to that player do not wait behind pictures.
+    const outOf = function (id) {
+        let out = Stream._out.get(id);
+        if (!out) Stream._out.set(id, out = { bytes: 0, q: [], at: 0, min: Infinity, minAt: 0 });
+        return out;
+    };
+    // Pieces of video are answered by number (msg.s), stills by the time they
+    // were taken (msg.g). Whatever was sent before the one answered never
+    // arrived; an answer for something already given up on changes nothing.
+    Coop.on('to:fseen', function (msg) {
+        const out = Stream._out.get(msg.from);
+        if (!out) return;
+        const mark = msg.s ? 'c' + msg.s : 'f' + msg.g;
+        const i = out.q.findIndex((item) => item.mark === mark);
+        if (i < 0) return;
+        const done = out.q.splice(0, i + 1);
+        for (const item of done) out.bytes -= item.size;
         const now = performance.now();
-        // A watcher's key press is answered with a picture at once.
-        if (!Stream._urgent && now - Stream._last < (slow ? FRAME_GAP * 2.5 : FRAME_GAP)) return;
-        Stream._urgent = false;
-        Stream._last = now;
-        const quality = slow ? 0.4 : 0.55;
-        // A battle guest's own canvas is hidden behind the picture they are
-        // being sent; anyone watching them is shown that picture instead.
+        out.at = now;
+        if (done[i].pace) clipPace(now - done[i].at, out, now);
+    });
+    // The video's bitrate follows the slowest watcher's link: pictures that take
+    // longer to arrive than the link's own delay mean they are queueing.
+    function clipPace(took, out, now) {
+        // The fastest trip lately is the link's own delay; it is let drift up in case the route changed.
+        out.min = Math.min(took, out.min + (now - out.minAt) * 0.005);
+        out.minAt = now;
+        if (!Clip.enc) return;
+        const late = took - out.min;
+        if (late > 150 && now - Clip.pacedAt > 400) clipRate(Clip.rate * 0.7, now);
+        else if (late < 40 && now - Clip.pacedAt > 2000) clipRate(Clip.rate * 1.15, now);
+    }
+    function clipRate(rate, now) {
+        rate = Math.round(Math.max(200000, Math.min(CLIP_BITRATE, rate)));
+        Clip.pacedAt = now;
+        if (rate === Clip.rate) return;
+        Clip.rate = rate;
+        try { Clip.enc.configure(clipConfig(Clip.w, Clip.h)); } catch (e) { clipFail(e); }
+    }
+    // How much video may be on its way to one watcher: about a third of a
+    // second of it at the current bitrate, so the fight's messages to them
+    // never wait long behind pictures.
+    const clipAhead = () => Math.max(24000, Clip.rate / 8 * 0.3);
+    // A picture lost on the way is given up on after two seconds.
+    function roomFor(id, now, limit) {
+        const out = outOf(id);
+        if (out.bytes && now - out.at > 2000) {
+            out.bytes = 0;
+            out.q.length = 0;
+            if (Clip.enc && Clip.want.has(id)) clipRate(Clip.rate * 0.7, now);
+        }
+        return out.bytes < limit;
+    }
+    // pace: a piece of video that is not a whole picture, whose trip time says
+    // how loaded the link is (a whole picture is many times bigger, and slow anyway).
+    function send(kind, id, buf, now, mark, pace) {
+        if (!Coop.sendBinary(kind, id, buf)) return false;
+        const out = outOf(id);
+        if (!out.bytes) out.at = now;
+        out.bytes += buf.byteLength;
+        out.q.push({ size: buf.byteLength, at: now, mark, pace: !!pace });
+        return true;
+    }
+
+    // What the watchers should see, copied once per drawn frame. A battle
+    // guest's own canvas is hidden behind the picture they are being sent;
+    // anyone watching them is shown that picture instead.
+    function grab(now) {
+        if (Stream._grabbed === now) return Stream._canvas;
+        Stream._grabbed = now;
         const src = Viewer.active && Viewer.el ? (Viewer.pictureSource ? Viewer.pictureSource() : Viewer.el) : Graphics._canvas;
         if (!Stream._canvas) {
             Stream._canvas = document.createElement('canvas');
@@ -50,6 +125,96 @@
         const c = Stream._canvas;
         if (c.width !== Graphics.width || c.height !== Graphics.height) { c.width = Graphics.width; c.height = Graphics.height; }
         Stream._ctx.drawImage(src, 0, 0, c.width, c.height);
+        return c;
+    }
+
+    Stream.capture = function () {
+        const now = performance.now();
+        // Watchers on live video (video.js) need nothing from here.
+        const ids = Array.from(Stream.watchers).filter((id) => !(Stream.onVideo && Stream.onVideo.has(id)));
+        const clip = Clip.failed ? [] : ids.filter((id) => Clip.want.has(id));
+        if (clip.length) clipFrame(clip, now); else if (Clip.enc) clipStop();
+        const stills = ids.filter((id) => clip.indexOf(id) < 0 && roomFor(id, now, STILLS_AHEAD));
+        if (stills.length) stillFrame(stills, now);
+    };
+
+    function clipStart() {
+        if (Clip.enc && (Clip.w !== Graphics.width || Clip.h !== Graphics.height)) clipStop();
+        if (Clip.enc || Clip.failed) return !!Clip.enc;
+        try {
+            Clip.enc = new VideoEncoder({ output: clipOut, error: clipFail });
+            Clip.enc.configure(clipConfig(Clip.w = Graphics.width, Clip.h = Graphics.height));
+        } catch (e) { clipFail(e); }
+        Clip.key = true;
+        return !!Clip.enc;
+    }
+    function clipStop() {
+        if (Clip.enc) { try { Clip.enc.close(); } catch (e) { /* already closed */ } }
+        Clip.enc = null;
+    }
+    function clipFail(e) {
+        Coop.note('video encoder failed, sending stills: ' + (e && e.message || e));
+        clipStop();
+        Clip.failed = true;
+    }
+
+    function clipFrame(ids, now) {
+        if (!clipStart() || Clip.enc.encodeQueueSize > 1) return;
+        // The link sets the pace: no picture is made while nobody has room for it.
+        const room = ids.filter((id) => roomFor(id, now, clipAhead()));
+        if (!room.length) return;
+        // Everyone keeps step with the slowest line. A watcher passed over has to
+        // wait for a whole picture, and on a slow line (a whole picture can be more
+        // than its share in flight) that came about once a second: one picture a
+        // second to watch. Only a line gone quiet for a second is passed over.
+        if (room.length < ids.length && ids.some((id) => room.indexOf(id) < 0 && now - outOf(id).at < 1000)) return;
+        // A watcher who missed pictures starts again from a whole one.
+        let key = Clip.key || (room.some((id) => Clip.need.has(id)) && now - Clip.keyAt > 1000);
+        if (key) { Clip.key = false; Clip.keyAt = now; }
+        const ts = Clip.ts = Math.max(Date.now() * 1000, Clip.ts + 1);
+        const frame = new VideoFrame(grab(now), { timestamp: ts });
+        try { Clip.enc.encode(frame, { keyFrame: key }); } catch (e) { clipFail(e); } finally { frame.close(); }
+    }
+
+    // Each piece: [key 1 byte][number 4][time taken 8][video].
+    function clipOut(chunk) {
+        const key = chunk.type === 'key';
+        if (key) Clip.keys = (Clip.keys || 0) + 1;
+        const buf = new ArrayBuffer(chunk.byteLength + 13);
+        const view = new DataView(buf);
+        view.setUint8(0, key ? 1 : 0);
+        view.setUint32(1, ++Clip.seq);
+        view.setFloat64(5, chunk.timestamp / 1000);
+        chunk.copyTo(new Uint8Array(buf, 13));
+        const now = performance.now();
+        for (const id of Clip.want) {
+            if (!Stream.watchers.has(id) || (Stream.onVideo && Stream.onVideo.has(id))) continue;
+            if (Clip.need.has(id) && !key) continue;
+            if (roomFor(id, now, clipAhead()) && send(CLIP, id, buf, now, 'c' + Clip.seq, !key)) Clip.need.delete(id); else Clip.need.add(id);
+        }
+    }
+
+    Coop.on('to:vcan', function (msg) {
+        if (msg.c === CLIP_CODEC && !Clip.failed) { Clip.want.add(msg.from); Clip.need.add(msg.from); Clip.key = true; } else Clip.want.delete(msg.from);
+    });
+    Coop.on('to:vkey', function (msg) {
+        const out = Stream._out.get(msg.from);
+        if (out) { out.bytes = 0; out.q.length = 0; }
+        Clip.need.add(msg.from);
+    });
+
+    function stillFrame(targets, now) {
+        if (Stream._busy) return;
+        // A link that cannot keep up gets fewer, lighter frames rather
+        // than a growing queue of stale ones.
+        const backlog = Coop._ws ? Coop._ws.bufferedAmount : 0;
+        const slow = backlog > 250000;
+        // A watcher's key press is answered with a picture at once.
+        if (!Stream._urgent && now - Stream._last < (slow ? FRAME_GAP * 2.5 : FRAME_GAP)) return;
+        Stream._urgent = false;
+        Stream._last = now;
+        const quality = slow ? 0.4 : 0.55;
+        const c = grab(now);
         Stream._busy = true;
         const grabbedAt = Date.now();
         c.toBlob(function (blob) {
@@ -61,10 +226,11 @@
                 const buf = new ArrayBuffer(jpeg.byteLength + 8);
                 new Uint8Array(buf).set(new Uint8Array(jpeg));
                 new DataView(buf).setFloat64(jpeg.byteLength, grabbedAt);
-                for (const id of targets) if (Stream.watchers.has(id)) Coop.sendBinary(FRAME, id, buf);
+                const at = performance.now();
+                for (const id of targets) if (Stream.watchers.has(id)) send(FRAME, id, buf, at, 'f' + grabbedAt);
             }, function () { Stream._busy = false; });
         }, 'image/jpeg', quality);
-    };
+    }
 
     // Capture only on frames the engine actually drew; the WebGL buffer is
     // gone once the browser has presented it.
@@ -123,12 +289,16 @@
         Viewer.from = fromId;
         Viewer.frames = 0;
         Viewer.lastFrameAt = Date.now();
+        Viewer.clip = false;
+        decStop();
+        if (canDecode) Coop.sendTo(fromId, 'vcan', { c: CLIP_CODEC });
     };
 
     Viewer.hide = function () {
         if (!Viewer.active) return;
         Viewer.active = false;
         Viewer.from = 0;
+        decStop();
         if (Viewer.el) Viewer.el.style.display = 'none';
         AudioManager.stopMe();
         AudioManager.stopSe();
@@ -142,13 +312,76 @@
         if (Viewer.el) Graphics._centerElement(Viewer.el);
     };
 
+    // Video through the relay (Clip, above).
+    const Dec = { dec: null, from: 0, seq: 0, waiting: true, askedAt: 0 };
+    let canDecode = false;
+    if (window.VideoDecoder) VideoDecoder.isConfigSupported({ codec: CLIP_CODEC, optimizeForLatency: true }).then(function (r) { canDecode = !!r.supported; }, function () {});
+
+    function decStop() {
+        if (Dec.dec) { try { Dec.dec.close(); } catch (e) { /* already closed */ } }
+        Dec.dec = null;
+        Dec.from = 0;
+    }
+    // Stills from here on.
+    function decFail(fromId, e) {
+        Coop.note('video decoder failed, asking for stills: ' + (e && e.message || e));
+        decStop();
+        canDecode = false;
+        Coop.sendTo(fromId, 'vcan', { c: '' });
+    }
+
+    function decStart(fromId) {
+        decStop();
+        Dec.from = fromId;
+        Dec.waiting = true;
+        const dec = Dec.dec = new VideoDecoder({
+            output: function (frame) {
+                try {
+                    if (Dec.dec !== dec || !Viewer.active || Viewer.from !== fromId || Viewer.video) return;
+                    Viewer.ctx.drawImage(frame, 0, 0, Viewer.el.width, Viewer.el.height);
+                    Viewer.clip = true;
+                    Viewer.frames++;
+                    Viewer.lastFrameAt = Date.now();
+                    if (Viewer.ages) Viewer.ages.push(Date.now() - frame.timestamp / 1000);
+                } finally { frame.close(); }
+            },
+            error: function (e) { if (Dec.dec === dec) decFail(fromId, e); },
+        });
+        dec.configure({ codec: CLIP_CODEC, optimizeForLatency: true });
+    }
+
+    Coop.onBinary(CLIP, function (fromId, buffer) {
+        if (buffer.byteLength < 14) return;
+        const view = new DataView(buffer);
+        const key = view.getUint8(0) === 1, seq = view.getUint32(1), grabbedAt = view.getFloat64(5);
+        Coop.sendTo(fromId, 'fseen', { s: seq });
+        if (!Viewer.active || fromId !== Viewer.from || Viewer.video || !canDecode) return;
+        if (Dec.from !== fromId || !Dec.dec) {
+            try { decStart(fromId); } catch (e) { decFail(fromId, e); return; }
+        }
+        // A piece missed on the way: nothing can be shown until the next whole picture.
+        if (!key && (Dec.waiting || seq !== Dec.seq + 1)) {
+            Dec.waiting = true;
+            const now = performance.now();
+            if (now - Dec.askedAt > 500) { Dec.askedAt = now; Coop.sendTo(fromId, 'vkey', {}); }
+            return;
+        }
+        Dec.waiting = false;
+        Dec.seq = seq;
+        try {
+            Dec.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: grabbedAt * 1000, data: new Uint8Array(buffer, 13) }));
+        } catch (e) { Dec.waiting = true; }
+    });
+
     Coop.onBinary(FRAME, function (fromId, buffer) {
+        const grabbedAt = buffer.byteLength > 8 ? new DataView(buffer).getFloat64(buffer.byteLength - 8) : 0;
+        Coop.sendTo(fromId, 'fseen', { g: grabbedAt });
         if (!Viewer.active || fromId !== Viewer.from) return;
         const seq = ++Viewer._seq;
-        const grabbedAt = buffer.byteLength > 8 ? new DataView(buffer).getFloat64(buffer.byteLength - 8) : 0;
         createImageBitmap(new Blob([buffer], { type: 'image/jpeg' })).then(function (bmp) {
             if (seq > Viewer._drawn && Viewer.active) {
                 Viewer._drawn = seq;
+                Viewer.clip = false;
                 Viewer.ctx.drawImage(bmp, 0, 0, Viewer.el.width, Viewer.el.height);
                 Viewer.frames++;
                 Viewer.lastFrameAt = Date.now();
@@ -206,19 +439,25 @@
             return;
         }
         Viewer.sendKeys('bin');
+        // One of the two lines dropped: the fight goes on over there, and
+        // this player gets back into it once the owner is reachable again.
+        if (b.lost) {
+            const back = peerNamed(b.ownerName);
+            if (back && Coop.connected && Date.now() - (b.askedBack || 0) > 1500) {
+                b.askedBack = Date.now();
+                Coop.sendTo(back.id, 'bback', { fight: b.fight });
+            }
+            if (Date.now() - b.lost > LOST_WAIT) { stepOut(b, 'Could not get back into the fight. You carry the wounds of the rounds already fought.'); return; }
+        }
         // No picture for a while (their tab is hidden, their machine hung):
         // offer a way out, back to how this player was before the fight.
         if (Date.now() - Viewer.lastFrameAt > 6000) {
             if (!b.warned || Date.now() - b.warned > 4000) {
                 b.warned = Date.now();
-                Coop.toast('No picture from ' + peerName(b.owner) + '. Hold Esc to step out of the fight.', 4000);
+                Coop.toast('No picture from ' + b.ownerName + '. Hold Esc to step out of the fight.', 4000);
             }
             b.quitHeld = Input.isPressed('cancel') || Input.isPressed('escape') ? (b.quitHeld || 0) + 1 : 0;
-            if (b.quitHeld > 60) {
-                Coop.sendTo(b.owner, 'bquit', {});
-                restoreParty(JSON.parse(b.backup));
-                leaveSpectate();
-            }
+            if (b.quitHeld > 60) stepOut(b);
         } else {
             b.quitHeld = 0;
         }
@@ -232,6 +471,15 @@
     function peerName(id) {
         const p = Coop.peers.get(id);
         return p ? p.name : 'the other player';
+    }
+
+    // A player whose line dropped comes back under a new id, with the same name.
+    function sameName(a, b) {
+        return !!a && String(a).toLowerCase() === String(b || '').toLowerCase();
+    }
+    function peerNamed(name) {
+        for (const p of Coop.peers.values()) if (sameName(p.name, name)) return p;
+        return null;
     }
 
     // Whose turn it is, kept on screen for as long as it is true. A fight
@@ -295,7 +543,7 @@
             return;
         }
         const snap = partySnapshot();
-        Coop.battle = { role: 'guest', owner: msg.from, backup: JSON.stringify(snap), since: Date.now(), mine: [] };
+        Coop.battle = { role: 'guest', owner: msg.from, ownerName: peerName(msg.from), fight: msg.fight || '', backup: JSON.stringify(snap), since: Date.now(), mine: [] };
         Coop.sendTo(msg.from, 'bjoin', snap);
         SceneManager.push(Scene_CoopSpectate);
         Coop.reportPresence(true);
@@ -305,9 +553,14 @@
         answerInvite(msg, 20);
     });
 
+    // From the owner of this player's fight, also under the new id he came back with.
+    function fromOwner(b, msg) {
+        return b.owner === msg.from || (!!b.lost && sameName(peerName(msg.from), b.ownerName));
+    }
+
     Coop.on('to:bsync', function (msg) {
         const b = Coop.battle;
-        if (b && b.role === 'guest' && b.owner === msg.from && Array.isArray(msg.actors)) b.backup = JSON.stringify({ actors: msg.actors, inv: msg.inv });
+        if (b && b.role === 'guest' && fromOwner(b, msg) && Array.isArray(msg.actors)) b.backup = JSON.stringify({ actors: msg.actors, inv: msg.inv });
     });
 
     Coop.on('to:bwait', function (msg) {
@@ -343,18 +596,15 @@
         Coop.reportPresence(true);
     }
 
-    Coop.on('to:bend', function (msg) {
-        const b = Coop.battle;
-        if (!b || b.role !== 'guest' || b.owner !== msg.from) return;
-        if (msg.aborted) {
-            restoreParty(JSON.parse(b.backup));
-            if (msg.reason) Coop.toast(msg.reason);
-            leaveSpectate();
-            return;
-        }
+    // Fights this player has had the last word on: a result for one of them
+    // that turns up later (the owner sent it while this player was away) is old.
+    const settled = new Set();
+
+    // Back from the fight with the characters as it left them.
+    function comeHome(b, msg) {
+        settled.add(b.fight);
         restoreParty(msg);
         leaveSpectate();
-        if (msg.won) Coop.toast('The fight is won. Anything it dropped went to ' + msg.by + ', who started it.', 5000);
         const leader = $gameParty.leader();
         if (!leader || leader.isDead()) {
             // This player's own character fell in the fight. The game ends a
@@ -362,6 +612,52 @@
             // owner's machine for the owner's character only.
             Coop.afterSpectate = function () { SceneManager.goto(Scene_Gameover); };
         }
+    }
+
+    // Out of the fight before it ends: as of the last round fought. Their
+    // characters fight on over there; nothing from it comes back.
+    function stepOut(b, why) {
+        const owner = peerNamed(b.ownerName);
+        if (owner) Coop.sendTo(owner.id, 'bquit', {});
+        settled.add(b.fight);
+        restoreParty(JSON.parse(b.backup));
+        if (why) Coop.toast(why, 6000);
+        leaveSpectate();
+    }
+
+    Coop.on('to:bend', function (msg) {
+        const b = Coop.battle;
+        if (!b || b.role !== 'guest' || !fromOwner(b, msg)) return;
+        if (msg.aborted) {
+            settled.add(b.fight);
+            restoreParty(JSON.parse(b.backup));
+            if (msg.reason) Coop.toast(msg.reason);
+            leaveSpectate();
+            return;
+        }
+        comeHome(b, msg);
+        if (msg.won) Coop.toast('The fight is won. Anything it dropped went to ' + msg.by + ', who started it.', 5000);
+    });
+
+    // The owner is reachable again and this player is back in the fight.
+    Coop.on('to:bresume', function (msg) {
+        const b = Coop.battle;
+        const peer = Coop.peers.get(msg.from);
+        if (!b || b.role !== 'guest' || !b.lost || !peer || !sameName(peer.name, b.ownerName) || msg.fight !== b.fight) return;
+        b.owner = msg.from;
+        b.lost = 0;
+        Viewer.show(msg.from);
+        Coop.note('back in ' + peer.name + "'s fight");
+        Coop.toast('Back in the fight.', 3000);
+        Coop.reportPresence(true);
+    });
+
+    // It ended while this player was away, and nothing was kept for them.
+    Coop.on('to:bgone', function (msg) {
+        const b = Coop.battle;
+        const peer = Coop.peers.get(msg.from);
+        if (!b || b.role !== 'guest' || !b.lost || !peer || !sameName(peer.name, b.ownerName) || msg.fight !== b.fight) return;
+        stepOut(b, 'The fight ended while you were away. You carry the wounds of the rounds you were in.');
     });
 
     // Runs once the guest is back on the map scene.
@@ -377,12 +673,22 @@
 
     // A fight this player dropped out of (crashed tab, closed laptop) ended
     // without them; the host kept what became of their characters.
-    let owed = null;
-    Coop.on('owed', function (msg) { owed = msg; });
+    const owed = [];
+    Coop.on('owed', function (msg) {
+        if (msg.fight && settled.has(msg.fight)) return;
+        const b = Coop.battle;
+        // Still waiting in that fight's seat: this is how it ended.
+        if (b && b.role === 'guest' && msg.fight && msg.fight === b.fight) {
+            comeHome(b, msg);
+            Coop.toast('The fight ended while you were away. Your characters carry what happened to them there.', 7000);
+            return;
+        }
+        owed.push(msg);
+    });
     Coop.settleOwed = function () {
-        if (!owed || Coop.battle || Coop.dead || !(SceneManager._scene instanceof Scene_Map) || $gameMap.isEventRunning()) return;
-        const msg = owed;
-        owed = null;
+        if (!owed.length || Coop.battle || Coop.dead || !(SceneManager._scene instanceof Scene_Map) || $gameMap.isEventRunning()) return;
+        const msg = owed.shift();
+        if (msg.fight) settled.add(msg.fight);
         restoreParty(msg);
         Coop.toast('The fight you dropped out of ended without you. Your characters carry what happened to them there.', 7000);
         const leader = $gameParty.leader();
@@ -391,15 +697,18 @@
     const _mapUpdateOwed = Scene_Map.prototype.update;
     Scene_Map.prototype.update = function () {
         _mapUpdateOwed.call(this);
-        if (owed) Coop.settleOwed();
+        if (owed.length) Coop.settleOwed();
     };
 
+    // The owner gone from here, or this player's own line down: their
+    // characters are still in that fight, so this player waits for it.
+    const LOST_WAIT = 45000;
     Coop.on('leave', function (peer) {
         const b = Coop.battle;
-        if (b && b.role === 'guest' && b.owner === peer.id) {
-            restoreParty(JSON.parse(b.backup));
-            Coop.toast(peer.name + ' dropped out of the fight.');
-            leaveSpectate();
+        if (b && b.role === 'guest' && b.owner === peer.id && !b.lost) {
+            b.lost = Date.now();
+            Coop.note((Coop.connected ? peer.name + ' dropped out' : 'lost the line') + ' mid-fight; waiting to get back in');
+            Coop.toast(Coop.connected ? peer.name + ' dropped out of the fight. Waiting for them to come back.' : 'Connection lost. Waiting to get back into the fight.', 5000);
         }
     });
 
@@ -419,7 +728,7 @@
         if (b && b.role === 'owner') {
             if (!b.guests.has(msg.from) && !b.invited.has(msg.from)) {
                 b.invited.set(msg.from, Date.now() + JOIN_WAIT);
-                Coop.sendTo(msg.from, 'binvite', { auto: false });
+                Coop.sendTo(msg.from, 'binvite', { auto: false, fight: b.fight });
             }
         } else if (b && b.role === 'guest') {
             Coop.sendTo(msg.from, 'bredirect', { to: b.owner });
@@ -451,9 +760,11 @@
     const _setup = BattleManager.setup;
     BattleManager.setup = function (troopId, canEscape, canLose) {
         _setup.call(this, troopId, canEscape, canLose);
-        if (!Coop.world.live || (Coop.battle && Coop.battle.role === 'guest')) return;
+        // A fight begun while the line is down is still this world's fight.
+        if (!(Coop.world.live || Coop.world.cut) || (Coop.battle && Coop.battle.role === 'guest')) return;
         const b = Coop.battle = {
             role: 'owner',
+            fight: Coop.name + '@' + Date.now().toString(36),
             guests: new Map(), // player id -> { actors: [ids], inv, input }
             invited: new Map(), // player id -> deadline
             pending: [],
@@ -463,15 +774,42 @@
             eventId: $gameMap._interpreter.eventId(),
             mapId: $gameMap.mapId(),
         };
+        b.offline = !Coop.world.live;
         if (b.eventId) Coop.events.sendHold(b.eventId, 'battle');
         Coop.note('fight: troop ' + troopId + (b.eventId ? ' from event ' + b.eventId : '') + ' on map ' + b.mapId);
         for (const peer of Coop.peersHere()) {
             if ((peer.st === 'map' || peer.st === 'event') && Coop.distanceTo(peer) <= JOIN_RANGE) {
                 b.invited.set(peer.id, Date.now() + JOIN_WAIT);
-                Coop.sendTo(peer.id, 'binvite', { auto: true });
+                Coop.sendTo(peer.id, 'binvite', { auto: true, fight: b.fight });
             }
         }
     };
+
+    // Everyone hears again which enemy is in this fight: a player who has
+    // just come back, or this one, back after its own line dropped.
+    function holdAgain() {
+        const b = Coop.battle;
+        if (b && b.role === 'owner' && b.eventId && b.mapId === $gameMap.mapId() && !b.over) Coop.events.sendHold(b.eventId, 'battle');
+    }
+    Coop.on('join', holdAgain);
+    Coop.on('entered', holdAgain);
+    // Back for long enough that any clash with another fight on the same enemy has shown.
+    Coop.on('entered', function () {
+        const b = Coop.battle;
+        if (b && b.role === 'owner' && b.offline) setTimeout(function () { if (Coop.battle === b) b.offline = false; }, 10000);
+    });
+
+    // Begun while this player's line was down, on an enemy someone else was
+    // already fighting: theirs is the fight the others knew of, so this one is
+    // called off (as if fled) rather than both killing it and both taking its loot.
+    Coop.on('evh', function (msg) {
+        const b = Coop.battle;
+        if (!b || b.role !== 'owner' || !b.offline || b.over || msg.k !== 'battle' || msg.m !== b.mapId || msg.e !== b.eventId) return;
+        b.offline = false;
+        Coop.note('fight called off: ' + peerName(msg.from) + ' was already fighting this enemy');
+        Coop.toast(peerName(msg.from) + ' was already fighting this enemy while your line was down. Your fight is called off.', 7000);
+        BattleManager.abort();
+    });
 
     Coop.on('to:bjoin', function (msg) {
         const b = Coop.battle;
@@ -480,22 +818,62 @@
             return;
         }
         b.invited.delete(msg.from);
+        msg.name = peerName(msg.from);
         b.pending.push(msg);
-        Coop.note(peerName(msg.from) + ' asks into this fight' + (b.started ? ' (under way: in at the next turn)' : ''));
-        // Someone who joins once the fight is under way comes in at the next
-        // turn. They watch from now, not a black screen until then.
-        if (b.started) {
+        Coop.note(msg.name + ' asks into this fight' + (b.started ? ' (under way: in at the next turn)' : ''));
+        // They watch from now, not a black screen until they are let in;
+        // once the fight is under way that is at the next turn.
+        Stream.add(msg.from);
+        if (b.started) Coop.sendTo(msg.from, 'bwait', {});
+    });
+
+    // A guest whose line dropped, under the id they came back with.
+    function rekey(b, oldId, newId) {
+        const g = b.guests.get(oldId);
+        b.guests.delete(oldId);
+        b.guests.set(newId, g);
+        if (b.invOf === oldId) b.invOf = newId;
+        g.away = 0;
+        g.quit = false;
+        g.input = {};
+        g.inputAt = Date.now();
+        Stream.remove(oldId);
+        if (!Stream.watchers.has(newId)) Stream.add(newId);
+        b.ctl = ''; // whose turn it is gets said again
+        b.turnKey = ''; // and a partner choosing by message is asked again
+    }
+    function guestNamed(b, name) {
+        for (const [id, g] of b.guests) if (sameName(g.name, name)) return id;
+        return 0;
+    }
+
+    // A guest who lost sight of this fight asks to be let back in.
+    Coop.on('to:bback', function (msg) {
+        const b = Coop.battle;
+        const peer = Coop.peers.get(msg.from);
+        if (!peer) return;
+        if (!b || b.role !== 'owner' || msg.fight !== b.fight) { Coop.sendTo(msg.from, 'bgone', { fight: msg.fight }); return; }
+        const was = guestNamed(b, peer.name);
+        if (was) {
+            rekey(b, was, msg.from);
+            Coop.note(peer.name + ' is back in the fight');
+            Coop.toast(peer.name + ' is back in the fight.', 2500);
+        } else {
+            // Not let in yet: they still are, at the next turn.
+            const waiting = b.pending.find((m) => sameName(m.name, peer.name));
+            if (!waiting) { Coop.sendTo(msg.from, 'bgone', { fight: msg.fight }); return; }
+            waiting.from = msg.from;
             Stream.add(msg.from);
-            Coop.sendTo(msg.from, 'bwait', {});
         }
+        Coop.sendTo(msg.from, 'bresume', { fight: b.fight });
     });
 
     // A guest gave up on a frozen picture. Their characters fight on under
     // the owner's hand; nothing from here on is sent back to them.
     Coop.on('to:bquit', function (msg) {
         const b = Coop.battle;
-        const g = b && b.role === 'owner' ? b.guests.get(msg.from) : null;
-        if (g) { g.quit = true; Stream.remove(msg.from); }
+        const id = b && b.role === 'owner' ? guestNamed(b, peerName(msg.from)) : 0;
+        if (id) { b.guests.get(id).quit = true; Stream.remove(msg.from); }
     });
 
     Coop.on('to:bdecline', function (msg) {
@@ -507,6 +885,15 @@
         const b = Coop.battle;
         if (!b || b.role !== 'owner') return 0;
         for (const [id, g] of b.guests) if (!g.quit && g.actors.indexOf(actorId) >= 0 && Coop.peers.has(id)) return id;
+        return 0;
+    }
+
+    // Whose bag a character draws on: their player's, even with that player
+    // away or stepped out and the owner choosing for them.
+    function bagOf(actorId) {
+        const b = Coop.battle;
+        if (!b || b.role !== 'owner') return 0;
+        for (const [id, g] of b.guests) if (g.actors.indexOf(actorId) >= 0) return id;
         return 0;
     }
 
@@ -533,11 +920,23 @@
         if (!b.pending.length) return;
         for (const msg of b.pending.splice(0)) {
             if (!Coop.peers.has(msg.from)) continue;
+            // Back in after stepping out (or under a new id): their characters
+            // and bag never left this fight and go on as it left them; the bag
+            // they bring could be from before it, after a reload.
+            const was = guestNamed(b, msg.name);
+            if (was) {
+                rekey(b, was, msg.from);
+                const g = b.guests.get(msg.from);
+                Coop.sendTo(msg.from, 'bstart', { actors: g.actors });
+                Coop.toast(msg.name + ' is back in the fight.', 2500);
+                continue;
+            }
             // A character both players hold cannot be lent; without the
             // guest's own character there is nothing to join with.
             const free = msg.actors.filter(([id]) => $gameParty._actors.indexOf(id) < 0);
             if (!free.length || free[0][0] !== msg.actors[0][0]) {
                 Coop.sendTo(msg.from, 'bend', { aborted: true, reason: 'You cannot join: your character is already in that party.' });
+                Stream.remove(msg.from);
                 continue;
             }
             const taken = [];
@@ -548,10 +947,11 @@
                 taken.push(id);
             }
             b.guests.set(msg.from, { name: peerName(msg.from), actors: taken, prior, inv: msg.inv, input: {}, inputAt: Date.now() });
+            b.offline = false; // a fight with someone in it is not called off
             arrangeParty(b);
             for (const id of taken) $gameActors.actor(id).onBattleStart();
             Coop.sendTo(msg.from, 'bstart', { actors: taken });
-            Stream.add(msg.from);
+            if (!Stream.watchers.has(msg.from)) Stream.add(msg.from);
             Coop.toast(peerName(msg.from) + ' joins the fight.', 2500);
         }
         const scene = SceneManager._scene;
@@ -805,9 +1205,9 @@
 
     function inventoryOwner(b) {
         if (b.over) return 0;
-        if (BattleManager.isInputting() && BattleManager.actor()) return ownerOf(BattleManager.actor().actorId());
+        if (BattleManager.isInputting() && BattleManager.actor()) return bagOf(BattleManager.actor().actorId());
         const subject = BattleManager._subject;
-        if (subject && subject.isActor()) return ownerOf(subject.actorId());
+        if (subject && subject.isActor()) return bagOf(subject.actorId());
         return 0;
     }
 
@@ -817,7 +1217,7 @@
         const b = Coop.battle;
         if (!b || b.role !== 'owner' || !b.guests.size) return fn();
         const before = b.invOf;
-        holdInventory(b, battler.isActor() ? ownerOf(battler.actorId()) : 0);
+        holdInventory(b, battler.isActor() ? bagOf(battler.actorId()) : 0);
         try { return fn(); } finally { holdInventory(b, before); }
     }
     const _meetsItemConditions = Game_BattlerBase.prototype.meetsItemConditions;
@@ -894,7 +1294,11 @@
             if (g.quit) continue;
             const state = guestState(b, id, g);
             if (Coop.peers.has(id)) Coop.sendTo(id, 'bend', Object.assign({ won: !!b.won, end: b.end || '', foes, by: Coop.name }, state));
-            else Coop.send(Object.assign({ t: 'owed', name: g.name }, state));
+            else {
+                // Kept for them, even if this line is down right now.
+                const owe = Object.assign({ t: 'owed', name: g.name, fight: b.fight }, state);
+                if (Coop.connected) Coop.send(owe); else unsentOwed.push(owe);
+            }
             Stream.remove(id);
         }
         const lent = guestActorIds(b);
@@ -918,8 +1322,19 @@
         Coop.reportPresence(true);
     };
 
+    const unsentOwed = [];
+    Coop.on('online', function () { for (const owe of unsentOwed.splice(0)) Coop.send(owe); });
+
+    // A guest gone mid-fight (or this player's own line down) keeps their
+    // seat: the owner chooses for their characters until they are back.
     Coop.on('leave', function (peer) {
         const b = Coop.battle;
-        if (b && b.role === 'owner') b.invited.delete(peer.id);
+        if (!b || b.role !== 'owner') return;
+        b.invited.delete(peer.id);
+        const g = b.guests.get(peer.id);
+        if (g && !g.away) {
+            g.away = Date.now();
+            Coop.note(g.name + ' dropped out mid-fight; their seat is kept');
+        }
     });
 })();

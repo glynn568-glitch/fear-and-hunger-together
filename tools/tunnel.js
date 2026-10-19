@@ -38,8 +38,51 @@ class Tunnel {
         this.port = port;
         this.proc = null;
         this.url = '';
+        this.ready = false; // the address is published and connected, so a friend's PC can reach it
+        this.registered = false; // cloudflared has its connection to Cloudflare (it prints the address before that)
         this.starting = null;
+        this.round = 0;
         process.on('exit', () => this.stop());
+    }
+
+    // A new quick tunnel's name takes a moment to reach DNS (and on a bad day,
+    // minutes: Cloudflare's "DNS Update Delays", 10/19/26). A friend whose PC
+    // asks too early is told it does not exist, and Windows remembers that for
+    // a while. So the link is only handed out once Cloudflare's own DNS answers
+    // for it, asked over HTTPS so this PC caches nothing.
+    watchPublished() {
+        const round = ++this.round;
+        const name = new URL(this.url).hostname;
+        const since = Date.now();
+        let failures = 0;
+        const done = () => { if (round === this.round && !this.ready) { this.ready = true; if (this.onReady) this.onReady(); } };
+        const ask = () => {
+            if (round !== this.round || !this.url) return;
+            // After a minute and a half the link is handed out anyway: better a link
+            // that may need a minute more than none at all.
+            if (Date.now() - since > 90000) { done(); return; }
+            fetch('https://cloudflare-dns.com/dns-query?name=' + name + '&type=A', { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(5000) })
+                .then((r) => r.json())
+                .then((j) => {
+                    if (round !== this.round) return;
+                    if (j.Status === 0 && Array.isArray(j.Answer) && j.Answer.length && this.registered) done(); else setTimeout(ask, 2000);
+                }, () => {
+                    // Cannot ask (DNS over HTTPS blocked here): after a few tries, trust the usual few seconds.
+                    if (round !== this.round) return;
+                    if (++failures >= 4 && this.registered) done(); else setTimeout(ask, 2500);
+                });
+        };
+        ask();
+    }
+
+    // Resolves once the address answers, or after `ms` either way.
+    whenReady(ms) {
+        if (this.ready || !this.url) return Promise.resolve(this.ready);
+        return new Promise((resolve) => {
+            const t0 = Date.now();
+            const tick = () => { if (this.ready || !this.url || Date.now() - t0 > ms) resolve(this.ready); else setTimeout(tick, 250); };
+            tick();
+        });
     }
 
     // Resolves with the public address, e.g. https://some-words.trycloudflare.com
@@ -47,7 +90,14 @@ class Tunnel {
         if (this.url) return Promise.resolve(this.url);
         if (this.starting) return this.starting;
         // FH_TUNNEL_FAKE: the tests get an address without the internet.
-        if (process.env.FH_TUNNEL_FAKE) { this.url = process.env.FH_TUNNEL_FAKE; return Promise.resolve(this.url); }
+        // FH_TUNNEL_FAKE_DELAY: and that address takes so many ms to be published.
+        if (process.env.FH_TUNNEL_FAKE) {
+            this.url = process.env.FH_TUNNEL_FAKE;
+            const delay = Number(process.env.FH_TUNNEL_FAKE_DELAY) || 0;
+            this.ready = !delay;
+            if (delay) setTimeout(() => { if (this.url) { this.ready = true; if (this.onReady) this.onReady(); } }, delay);
+            return Promise.resolve(this.url);
+        }
         this.starting = fetchCloudflared().then(() => new Promise((resolve, reject) => {
             const proc = spawn(EXE, ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + this.port], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
             this.proc = proc;
@@ -61,8 +111,9 @@ class Tunnel {
             });
             proc.stderr.on('data', (d) => {
                 said = (said + d).slice(-4000);
+                if (/Registered tunnel connection/.test(said)) this.registered = true;
                 const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(said);
-                if (m && !this.url) { this.url = m[0]; clearTimeout(timer); resolve(this.url); }
+                if (m && !this.url) { this.url = m[0]; this.ready = false; this.registered = /Registered tunnel connection/.test(said); clearTimeout(timer); this.watchPublished(); resolve(this.url); }
             });
             proc.on('exit', (code) => {
                 clearTimeout(timer);
@@ -80,6 +131,9 @@ class Tunnel {
         const proc = this.proc;
         this.proc = null;
         this.url = '';
+        this.ready = false;
+        this.registered = false;
+        this.round++;
         // url is cleared first, so the exit handler does not report a drop.
         if (proc) { try { proc.kill(); } catch (e) { /* gone */ } }
     }

@@ -118,7 +118,7 @@
             map: window.$gameMap && Coop.world.live ? $gameMap.mapId() : 0,
             events: window.$gameMap && Coop.world.live ? $gameMap.events().length : 0,
             streamingTo: Coop.stream ? Coop.stream.watchers.size : 0,
-            watching: Coop.viewer && Coop.viewer.active ? (Coop.viewer.video ? 'video' : 'stills') : '',
+            watching: Coop.viewer && Coop.viewer.active ? (Coop.viewer.video ? 'video' : Coop.viewer.clip ? 'relayed video' : 'stills') : '',
             watchFps: Coop.viewer && Coop.viewer.active ? Math.round((Coop.viewer.frames - (M._frames || 0)) / secs) : 0,
             videoTo: Coop.stream && Coop.stream.onVideo ? Coop.stream.onVideo.size : 0,
             fight: b ? b.role + (b.guests ? ':' + b.guests.size : '') : '',
@@ -167,7 +167,7 @@
             'screen ' + s.screenHz + ' Hz   game ' + s.stepsPerSec + ' steps/s   late ' + s.lateSteps + '   worst gap ' + s.worstStepGapMs + ' ms',
             'step cost ' + s.stepCostMs + ' ms (worst ' + s.stepCostWorstMs + ')   draw worst ' + s.drawWorstMs + ' ms   stalls ' + s.stalls + (s.stalls ? ' (worst ' + s.stallWorstMs + ' ms)' : ''),
             'key press: ' + key,
-            (s.watching ? 'watching partner: ' + s.watching + ' at ' + s.watchFps + ' fps   ' : '') + (s.streamingTo ? 'streaming to ' + s.streamingTo + (s.videoTo ? ' (live video)' : ' (stills)') + '   ' : '') + (s.fight ? 'fight ' + s.fight + '   ' : '') + 'map ' + s.map + ' (' + s.events + ' events)   ' + s.window,
+            (s.watching ? 'watching partner: ' + s.watching + ' at ' + s.watchFps + ' fps   ' : '') + (s.streamingTo ? 'streaming to ' + s.streamingTo + (s.videoTo ? ' (live video)' : ' (relayed)') + '   ' : '') + (s.fight ? 'fight ' + s.fight + '   ' : '') + 'map ' + s.map + ' (' + s.events + ' events)   ' + s.window,
             s.gpu.slice(0, 70),
         ].join('\n');
     }

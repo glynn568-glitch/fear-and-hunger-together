@@ -4,7 +4,7 @@ const install = require('./helpers');
 
 async function twoPlayers(port, opts) {
     const o = Object.assign({ ax: 27, ay: 67, bx: 28, by: 67, actorA: 1, actorB: 3 }, opts);
-    const server = await startServer(port);
+    const server = await startServer(port, o.env);
     // FH_TEST_JOIN=1: B plays through a server of its own that joins A's, as a
     // friend on another PC would (`FH_TEST_JOIN=1 node test/run.js battle death`).
     const joiner = process.env.FH_TEST_JOIN ? await startServer(port + 100, { FH_JOIN: `http://localhost:${port}/` }) : null;
@@ -45,7 +45,12 @@ function checker() {
         }
         const failed = results.filter((r) => !r).length;
         // What each page was saying last, to see why without running it again.
-        if (failed) for (const p of pages || []) console.log(`--- ${p.label}, last lines\n` + p.logs.slice(process.env.FH_TEST_LOGS ? 0 : -15).map((l) => '  ' + l.slice(0, 240)).join('\n'));
+        // Failed requests are always shown; the base game's CanvasTextAlign warning never is.
+        if (failed) for (const p of pages || []) {
+            const lines = p.logs.filter((l) => !/CanvasTextAlign/.test(l));
+            const shown = process.env.FH_TEST_LOGS ? lines : lines.filter((l) => /^\[(http|requestfailed)/.test(l)).slice(-10).concat(lines.slice(-15));
+            console.log(`--- ${p.label}, last lines\n` + shown.map((l) => '  ' + l.slice(0, 240)).join('\n'));
+        }
         console.log(failed ? `${failed} FAILED` : `all ${results.length} passed`);
         return failed ? 1 : 0;
     };
