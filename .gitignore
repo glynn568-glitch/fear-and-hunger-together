@@ -13,3 +13,6 @@ data/usage.json
 data/scripts.json
 data/selfswitches.json
 client/mapnames.json
+tools/cloudflared
+tools/node-*/
+data/game-window/

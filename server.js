@@ -332,18 +332,28 @@ room.partners.onFail = (name, why) => {
 wss.on('connection', (ws, req) => {
     const q = new URL(req.url, 'http://x').searchParams;
     const theirs = { fp: q.get('fp') || '', build: q.get('build') || '?', mod: q.get('mod') || '', version: q.get('v') || '?' };
-    if (theirs.fp !== BUILD.fp || theirs.mod !== BUILD.mod) {
+    // Another release of the game, or of this mod, cannot share a world. The
+    // same release with data files that differ (a mod, a changed install) can:
+    // the host's census then decides what is shared, on both sides.
+    if (theirs.build !== BUILD.build || theirs.mod !== BUILD.mod) {
         // Told once, then closed for good: the page does not retry.
         console.log('turned away a player on another build: game ' + theirs.build + '/' + theirs.fp + ', mod ' + theirs.version + '/' + theirs.mod);
-        ws.send(JSON.stringify({ t: 'version', game: theirs.fp !== BUILD.fp, mine: { build: BUILD.build, version: BUILD.version }, yours: { build: theirs.build, version: theirs.version } }));
+        ws.send(JSON.stringify({ t: 'version', game: theirs.build !== BUILD.build, mine: { build: BUILD.build, version: BUILD.version }, yours: { build: theirs.build, version: theirs.version } }));
         ws.close(4001, 'version');
         return;
     }
+    const differs = theirs.fp !== BUILD.fp;
+    if (differs) console.log('a player whose game files differ from this one\'s joined (theirs ' + theirs.fp + ', ours ' + BUILD.fp + '); they share by this census');
     if (JOIN) {
         // A joining server is for its own PC's player only.
         if (!isHost(req)) { ws.close(4004, 'not from this PC'); return; }
         passOn(ws, req);
-    } else room.accept(ws, isHost(req));
+        return;
+    }
+    room.accept(ws, isHost(req));
+    if (differs) {
+        try { ws.send(JSON.stringify({ t: 'census', census: JSON.parse(fs.readFileSync(path.join(CLIENT, 'census.json'), 'utf8')) })); } catch (e) { console.error('could not send the census: ' + e.message); }
+    }
 });
 
 // --- the Together panel --------------------------------------------------------
@@ -403,7 +413,7 @@ async function probeHost(j) {
     try { hello = await res.json(); } catch (e) { /* not ours */ }
     if (!hello || hello.fh !== 'together') return 'That link is not a Fear & Hunger Together game.';
     if (!hello.hosting) return 'That player is not hosting; they joined someone else.';
-    if (hello.fp !== BUILD.fp) return 'Your copy of Fear & Hunger is a different version from your friend\'s (yours ' + BUILD.build + ', theirs ' + hello.build + '). Update both to the newest.';
+    if (hello.build !== BUILD.build) return 'Your copy of Fear & Hunger is a different version from your friend\'s (yours ' + BUILD.build + ', theirs ' + hello.build + '). Update both to the newest.';
     if (hello.mod !== BUILD.mod) return 'Your Fear & Hunger Together is not the same version as your friend\'s (yours ' + BUILD.version + ', theirs ' + hello.version + '). Use the same download.';
     return '';
 }

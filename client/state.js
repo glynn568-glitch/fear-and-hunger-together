@@ -20,6 +20,22 @@
         census,
     };
 
+    // Joining a host whose game files differ from this copy's (a mod, a
+    // changed install): the host's census decides what is shared, so both
+    // sides mirror exactly the same switches.
+    Coop.on('census', function (msg) {
+        const c = msg.census;
+        if (!c || !Array.isArray(c.sw) || !Array.isArray(c.va)) return;
+        worldSw.clear(); for (const id of c.sw) worldSw.add(id);
+        worldVa.clear(); for (const id of c.va) worldVa.add(id);
+        privateSs.clear(); for (const k of c.ssPrivate || []) privateSs.add(k);
+        World.census = c;
+        Coop.note('the host\'s game files differ from this copy\'s; sharing by the host\'s census');
+        if (World._toldDiffers) return;
+        World._toldDiffers = true;
+        if (Coop.toast) Coop.toast('Your game files differ from the host\'s (a mod, or a changed install). You can play. If something looks wrong, verify the game files in Steam.', 12000);
+    });
+
     World.isShared = function (kind, key) {
         if (World.demoted.has(kind + key)) return false;
         if (kind === 'sw') return worldSw.has(key);
