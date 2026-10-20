@@ -86,7 +86,7 @@
         const peer = Coop.peers.get(msg.from);
         if (!peer || !peer.bot || peer._introduced || !Coop.world.live || !peer.st || peer.st === 'title') return;
         peer._introduced = true;
-        if (Coop.toast) Coop.toast(peer.name + ' is an AI partner. Press Y to talk to them: give orders, ask for things.', 8000);
+        if (Coop.toast) Coop.toast(peer.name + ' is an AI partner. Press ' + Coop.keyName('Y') + ' to talk to them: give orders, ask for things.', 8000);
     });
 
     function open() {

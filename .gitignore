@@ -3,6 +3,7 @@ data/saves/
 test/out/
 *.log
 tools/cloudflared.exe
+tools/cloudflared
 dist/
 tools/node/
 data/partners/
@@ -13,6 +14,5 @@ data/usage.json
 data/scripts.json
 data/selfswitches.json
 client/mapnames.json
-tools/cloudflared
 tools/node-*/
 data/game-window/

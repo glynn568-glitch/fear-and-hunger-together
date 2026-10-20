@@ -113,7 +113,25 @@
         cache.name = null;
         const scene = SceneManager._scene;
         if (scene instanceof Scene_Title && scene._commandWindow) scene._commandWindow.refresh();
+        tellWhoseSaves(20);
     });
+
+    // Saves go by name: back under a new one, this PC's saves seem gone.
+    // Said at the title (the name is often taken before the title is up).
+    let toldWhose = false;
+    function tellWhoseSaves(triesLeft) {
+        if (toldWhose) return;
+        let savedAs = '';
+        try { savedAs = localStorage.getItem('fhcoop.savedAs') || ''; } catch (e) { /* storage blocked */ }
+        if (!savedAs || savedAs.toLowerCase() === accepted.toLowerCase()) return;
+        if (!(SceneManager._scene instanceof Scene_Title) || !Coop.toast) {
+            if (triesLeft > 0) setTimeout(function () { tellWhoseSaves(triesLeft - 1); }, 500);
+            return;
+        }
+        ensureIndex();
+        toldWhose = true;
+        if (!Object.keys(cache.exists).some((k) => k !== 'global')) Coop.toast('Your saves are under the name ' + savedAs + '.', 9000);
+    }
 
     //--- saving together ----------------------------------------------------
 
@@ -128,6 +146,8 @@
         saving = true;
         let ok = false;
         try { ok = _saveGame.call(this, savefileId); } finally { saving = false; }
+        // AI partners share the host's browser storage: only a person's saves count.
+        if (ok && !Coop.isBot) try { localStorage.setItem('fhcoop.savedAs', Coop.name); } catch (e) { /* storage blocked */ }
         if (ok && Coop.world.live && !quiet) Coop.send({ t: 'savepoint', slot: savefileId, stamp, by: Coop.name, runId: Coop.world.runId });
         return ok;
     };

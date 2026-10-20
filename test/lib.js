@@ -12,7 +12,9 @@ const CHROME = process.env.CHROME || 'C:\\Program Files\\Google\\Chrome\\Applica
 async function startServer(port, env) {
     const saves = path.join(OUT, 'saves-' + port);
     fs.rmSync(saves, { recursive: true, force: true });
-    const proc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    // A broken twin (test/twins.js) is put in as Node loads the server.
+    const twin = process.env.FH_TWIN ? ['-r', path.join(__dirname, 'twin-hook.js')] : [];
+    const proc = spawn(process.execPath, [...twin, path.join(ROOT, 'server.js')], {
         // Direct fight video unless a suite asks otherwise (FH_TEST_RELAY=1: every suite with
         // Hide my IP at its default); null leaves a setting at its default.
         env: Object.fromEntries(Object.entries({ ...process.env, FH_RELAY: process.env.FH_TEST_RELAY ? null : '0', PORT: String(port), FH_SAVES: saves, ...(env || {}) }).filter(([, v]) => v !== null)), stdio: ['ignore', 'pipe', 'pipe'],
@@ -20,7 +22,11 @@ async function startServer(port, env) {
     proc.saves = saves;
     proc.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
     await new Promise((resolve, reject) => {
-        proc.stdout.on('data', (d) => { if (String(d).includes('open http')) resolve(); });
+        // A server already on the port (another test, or another project's) is not ours to test against.
+        proc.stdout.on('data', (d) => {
+            if (String(d).includes('already running')) reject(new Error('port ' + port + ' is taken by another server'));
+            else if (String(d).includes('open http')) resolve();
+        });
         proc.on('exit', (code) => reject(new Error('server exited ' + code)));
         setTimeout(() => reject(new Error('server start timeout')), 10000);
     });
@@ -50,10 +56,31 @@ async function launch() {
         headless: 'new',
         args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio', '--window-size=900,700',
             ...gl, '--ignore-gpu-blocklist',
+            // Linux under WSL runs everything as root, where Chrome will not start sandboxed.
+            ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
             '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
         userDataDir: profile,
     });
     return browser;
+}
+
+// A broken twin of a client file (test/twins.js): the page is handed that file
+// with its fix taken out, whichever server it asks.
+async function serveTwin(page) {
+    const { TWINS, twinSource } = require('./twins');
+    const t = TWINS[process.env.FH_TWIN];
+    if (!t || !t.file.startsWith('client/')) return;
+    const name = t.file.slice('client/'.length);
+    const cdp = await page.target().createCDPSession();
+    cdp.on('Fetch.requestPaused', (e) => {
+        const body = twinSource(process.env.FH_TWIN, t.file, fs.readFileSync(path.join(ROOT, t.file), 'utf8'));
+        cdp.send('Fetch.fulfillRequest', {
+            requestId: e.requestId, responseCode: 200,
+            responseHeaders: [{ name: 'Content-Type', value: 'application/javascript; charset=utf-8' }, { name: 'Cache-Control', value: 'no-store' }],
+            body: Buffer.from(body).toString('base64'),
+        }).catch(() => { /* page gone */ });
+    });
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/coop/' + name + '*', requestStage: 'Request' }] });
 }
 
 // Open one player's tab. Each gets its own incognito context so local storage
@@ -73,6 +100,7 @@ async function openPlayer(browser, url, label) {
     page.on('requestfailed', (r) => page.logs.push(`[requestfailed] ${r.url()} ${r.failure() && r.failure().errorText}`));
     page.on('response', (r) => { if (r.status() >= 400) page.logs.push(`[http ${r.status()}] ${r.url()}`); });
     page.label = label;
+    await serveTwin(page);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     return page;
 }

@@ -31,7 +31,7 @@ class Room {
         // goodbye; one that misses a ping is dropped so the rest move on.
         setInterval(() => {
             for (const peer of this.peers.values()) {
-                if (peer.ws.isAlive === false) { peer.ws.terminate(); this.drop(peer); continue; }
+                if (peer.ws.isAlive === false) { peer.ws.terminate(); this.drop(peer, 'no answer to a ping'); continue; }
                 peer.ws.isAlive = false;
                 try { peer.ws.ping(); } catch (e) { /* closing */ }
             }
@@ -54,8 +54,9 @@ class Room {
 
     readWorld(runId, stamp) {
         const dir = this.runDir(runId);
-        for (const name of [stamp ? `world@${Number(stamp)}.json` : '', 'world.json']) {
-            if (!name) continue;
+        // A save from a bed reads that bed's world only: the live world.json
+        // may be from a later night, or from when this PC last hosted it.
+        for (const name of stamp ? [`world@${Number(stamp)}.json`] : ['world.json']) {
             try { return JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); } catch (e) { /* try next */ }
         }
         return null;
@@ -64,9 +65,10 @@ class Room {
     // host: the connection is the host's own browser (this PC, not the tunnel).
     accept(ws, host) {
         const id = this.freshId();
-        if (!id) { ws.close(1013, 'full'); return; }
+        if (!id) { console.log('turned away a connection: no free player number'); ws.close(1013, 'full'); return; }
         const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host };
         this.peers.set(id, peer);
+        console.log('player ' + id + ' connected' + (host ? ' (this PC)' : ''));
         this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly });
         this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
@@ -78,8 +80,8 @@ class Room {
         });
         ws.isAlive = true;
         ws.on('pong', () => { ws.isAlive = true; });
-        ws.on('close', () => this.drop(peer));
-        ws.on('error', () => this.drop(peer));
+        ws.on('close', (code) => this.drop(peer, 'closed ' + code));
+        ws.on('error', (e) => this.drop(peer, 'error ' + (e && e.message)));
     }
 
     // Ids travel in one byte (1-250). A free one not used for ten minutes is
@@ -237,8 +239,10 @@ class Room {
         } catch (e) { return null; }
     }
 
-    drop(peer) {
+    drop(peer, why) {
         if (!this.peers.delete(peer.id)) return;
+        // Who came and went, and why: a session can be read back from the log.
+        console.log('player ' + peer.id + ' (' + peer.name + ') left: ' + (why || 'dropped'));
         this.freedAt.set(peer.id, Date.now());
         // Vanishing mid-fight or while dead does not get to undo either:
         // the parked state remembers it, and carrying on picks up from there.
@@ -291,7 +295,7 @@ class Room {
                 if (!token || clash.token !== token) { this.send(peer, { t: 'nametaken', name }); break; }
                 // The same browser tab coming back before its old line was noticed dead.
                 clash.ws.terminate();
-                this.drop(clash);
+                this.drop(clash, 'its own tab came back');
             }
             peer.name = name;
             peer.named = true;
@@ -370,19 +374,23 @@ class Room {
                 mode = 'found';
                 this.entered = new Set();
                 const saved = msg.runId ? this.readWorld(msg.runId, msg.stamp) : null;
-                const kept = saved && how !== 'load' && how !== 'new' ? this.readBase(msg.runId) : null;
-                this.baseStamp = saved && how === 'load' ? stamp : (kept && Number(kept.stamp)) || 0;
+                // A save of a known run carries that run on, even on a PC that
+                // holds no copy of its world: the founder's save holds what
+                // the world was then, and partners' saves of the run still fit.
+                const carried = !!msg.runId && (!!saved || how === 'load');
+                const kept = carried && how !== 'load' && how !== 'new' ? this.readBase(msg.runId) : null;
+                this.baseStamp = carried && how === 'load' ? stamp : (kept && Number(kept.stamp)) || 0;
                 this.baseBy = kept && kept.by ? String(kept.by) : peer.name;
                 const latest = this.baseStamp ? this.latestStamp(msg.runId) : 0;
                 if (latest > this.baseStamp) newer = latest;
                 this.persist();
-                this.runId = saved ? String(msg.runId) : crypto.randomBytes(6).toString('hex');
+                this.runId = carried ? String(msg.runId) : crypto.randomBytes(6).toString('hex');
                 this.world = saved || { sw: {}, va: {}, ss: {} };
                 for (const k of ['sw', 'va', 'ss']) this.world[k] = this.world[k] || {};
                 this.founded = true;
                 this.dirty = true;
                 founded = true;
-                if (saved && how === 'load') this.writeBase();
+                if (carried && how === 'load') this.writeBase();
             }
             peer.live = true;
             peer.ini = ini;
@@ -507,6 +515,10 @@ class Room {
             fs.writeFileSync(path.join(dir, `world@${Number(msg.stamp)}.json`), JSON.stringify(this.world));
             this.persist();
             this.broadcast(msg, peer.id);
+            // Each player from another PC keeps this copy too, so any of them
+            // can host the run another night (server.js keepWorld).
+            const copy = JSON.stringify({ t: 'worldcopy', runId: this.runId, stamp: Number(msg.stamp), world: this.world });
+            for (const p of this.peers.values()) if (!p.host && p.named && p.ws.bufferedAmount < 4 * 1024 * 1024) this.deliver(p, copy, false);
             break;
         }
         case 'demote':

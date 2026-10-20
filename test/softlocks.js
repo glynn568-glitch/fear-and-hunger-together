@@ -74,6 +74,17 @@ async function goTo(page, mapId, x, y, d) {
 
 // Ends a fight from the side running it: broken off if it is still going,
 // or the victory read through with Z if it was won.
+// A fight's messages and coin flips (a guard's grab, a lost arm) are anyone's to answer:
+// this answers them from `page` until the returned function is called.
+function answering(page) {
+    let on = true;
+    (async () => {
+        while (on) {
+            try { if (await page.evaluate(() => $gameMessage.isBusy())) await press(page, 'KeyZ'); else await sleep(300); } catch (e) { return; }
+        }
+    })();
+    return () => { on = false; };
+}
 async function endFight(page) {
     await page.evaluate(() => { if (SceneManager._scene instanceof Scene_Battle && BattleManager._phase !== 'battleEnd') BattleManager.abort(); });
     for (let i = 0; i < 40 && !(await page.evaluate(() => SceneManager._scene instanceof Scene_Map)); i++) {
@@ -157,8 +168,10 @@ const coinShown = (p) => p.evaluate(() => [14, 15, 16, 17].filter((n) => { const
         let stalled = 0;
         while (Date.now() < until && turns.b < 4) {
             const st = await a.evaluate(() => ({ input: BattleManager.isInputting() && !!BattleManager.actor(), actor: BattleManager.actor() ? BattleManager.actor().actorId() : 0,
-                over: !(SceneManager._scene instanceof Scene_Battle), ex: !!(window.Galv && Galv.EXTURN && Galv.EXTURN.active) }));
+                over: !(SceneManager._scene instanceof Scene_Battle), ex: !!(window.Galv && Galv.EXTURN && Galv.EXTURN.active), msg: $gameMessage.isBusy() }));
             if (st.over) { turns.end = await a.evaluate(() => ($gameTroop.isAllDead() ? 'won' : $gameParty.isAllDead() ? 'lost' : 'over')); break; }
+            // The guest answers what the fight says (anyone may): a message waiting is no stall.
+            if (!st.input && st.msg) { turns.said = (turns.said || 0) + 1; await press(b, 'KeyZ'); await sleep(250); continue; }
             if (!st.input) { if (++stalled > 120) { turns.end = 'stalled'; break; } await sleep(250); continue; }
             stalled = 0;
             if (st.ex) turns.ex++;
@@ -202,6 +215,7 @@ const coinShown = (p) => p.evaluate(() => [14, 15, 16, 17].filter((n) => { const
         await waitFor(a, () => BattleManager.isInputting() && BattleManager.actor() && BattleManager.actor().actorId() === 3, 10000, 'and on to the knight again');
         await press(b, 'KeyZ'); await press(b, 'KeyZ'); await press(b, 'KeyZ');
         const ran = await waitFor(a, () => !BattleManager.isInputting() || $gameTroop.turnCount() >= 1, 15000, 'the round runs').then(() => true, () => false);
+        const stop = answering(a);
         try {
             await waitFor(a, () => (BattleManager.isInputting() && BattleManager.actor()) || BattleManager._phase === 'battleEnd' || !(SceneManager._scene instanceof Scene_Battle), 30000, 'the next round asks again, or the fight ends');
         } catch (e) {
@@ -214,7 +228,7 @@ const coinShown = (p) => p.evaluate(() => [14, 15, 16, 17].filter((n) => { const
                     ex: !!(window.Galv && Galv.EXTURN && Galv.EXTURN.active), party: w('_partyCommandWindow'), cmd: w('_actorCommandWindow'), skill: w('_skillWindow'), enemy: w('_enemyWindow'),
                     coop: Coop.battle && { role: Coop.battle.role, waiting: Coop.battle.waiting, seq: Coop.battle.turnSeq } };
             })));
-        }
+        } finally { stop(); }
         check('#49 with a self-fighting companion, cancelling never strands a turn', held === 3 && ran, 'after A\'s cancel ' + held);
         await endFight(a);
         await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 20000, 'A back on the map');

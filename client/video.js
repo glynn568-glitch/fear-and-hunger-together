@@ -218,9 +218,11 @@
             }).then(function (answer) { return pc.setLocalDescription(answer); }).then(function () {
                 Coop.sendTo(msg.from, 'rtca', { sdp: pc.localDescription });
             }).catch(function () { if (incoming === link) giveUp(msg.from); });
-            // No picture within a few seconds means the direct route is not
-            // happening; say so, and the relay carries on.
-            setTimeout(function () { if (incoming === link && !Viewer.video) giveUp(msg.from); }, 8000);
+            // No picture for a while means the direct route is not happening; say so,
+            // and the relay carries on. The relayed picture shows until then, so a
+            // slow PC (a Steam Deck, a busy one) gets the time it needs: giving up
+            // too soon left it on the relay for the whole fight.
+            setTimeout(function () { if (incoming === link && !Viewer.video) giveUp(msg.from); }, 20000);
         } else if (msg.c && incoming) {
             if (incoming.ready) incoming.pc.addIceCandidate(msg.c).catch(function () {}); else incoming.queue.push(msg.c);
         }

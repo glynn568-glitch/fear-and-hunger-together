@@ -108,6 +108,7 @@
         _swSet.call(this, id, value);
         const after = !!this._data[id];
         if (before !== after) {
+            if (after) World.mine.add('sw' + id); else World.mine.delete('sw' + id);
             queue('sw', id, after ? 1 : 0);
             if (id === START && after && !World._remote) World.enter();
         }
@@ -126,7 +127,10 @@
         const k = String(key);
         const before = !!this._data[k];
         _ssSet.call(this, key, value);
-        if (before !== !!value) queue('ss', k, value ? 1 : 0);
+        if (before !== !!value) {
+            if (value) World.mine.add('ss' + k); else World.mine.delete('ss' + k);
+            queue('ss', k, value ? 1 : 0);
+        }
     };
 
     //--- incoming -----------------------------------------------------------
@@ -153,13 +157,70 @@
     Coop.on('w', function (msg) {
         if (!World.live || !window.$gameSwitches) return;
         let changed = false;
-        for (const [kind, key, value] of msg.w) changed = apply(kind, key, value) || changed;
+        for (const [kind, key, value] of msg.w) {
+            // Only a write that changed it makes it theirs: both pulling the lever at once, both ride.
+            if (apply(kind, key, value)) { changed = true; World.mine.delete(kind + key); }
+        }
         if (changed) $gameMap.requestRefresh();
     });
 
     Coop.on('demote', function (msg) {
         World.demoted.add(msg.key);
     });
+
+    //--- whose scene --------------------------------------------------------
+    // A scene that starts by itself (autorun, parallel) because of a world
+    // flag someone else turned on, and that acts on the player (moves them,
+    // starts a fight, changes the party or their body, ends the game), is
+    // theirs: it plays on their machine, and what it changes reaches
+    // everyone from there. Played here as well, the elevator took a partner
+    // anywhere on the map along, and Trortur's table killed whoever else was
+    // there, then anyone who walked in later.
+    World.mine = new Set(); // 'sw12', 'ss1,5,A': world flags this machine turned on itself
+    const ACTS = new Set([201, 353, 301, 129, 311, 312, 313, 314, 315, 321, 322, 126, 127, 128]);
+    // The same done from a script line.
+    const ACTS_SCRIPT = /reserveTransfer|Scene_Gameover|addActor|removeActor|gainItem|loseItem|BattleManager\.setup|setHp|addState|changeEquip/;
+    const actsMemo = new WeakMap();
+    function actsOnPlayer(list, seen) {
+        if (!list) return false;
+        if (actsMemo.has(list)) return actsMemo.get(list);
+        const top = !seen;
+        seen = seen || new Set();
+        if (seen.has(list)) return false; // a common event calling itself: answered where it began
+        seen.add(list);
+        let yes = false;
+        for (const c of list) {
+            if (ACTS.has(c.code) || ((c.code === 355 || c.code === 655) && ACTS_SCRIPT.test(String(c.parameters[0])))) { yes = true; break; }
+            const ce = c.code === 117 && $dataCommonEvents[c.parameters[0]];
+            if (ce && actsOnPlayer(ce.list, seen)) { yes = true; break; }
+        }
+        if (yes || top) actsMemo.set(list, yes); // a "no" is final only when worked out from the top
+        return yes;
+    }
+    // Not only while in the world: a save being loaded is out of it until it is back in.
+    World.othersScene = function (ev) {
+        const page = ev.page();
+        if (!page || (page.trigger !== 3 && page.trigger !== 4)) return false;
+        const c = page.conditions;
+        const flags = [];
+        if (c.switch1Valid) flags.push(['sw', c.switch1Id]);
+        if (c.switch2Valid) flags.push(['sw', c.switch2Id]);
+        if (c.selfSwitchValid) flags.push(['ss', [ev._mapId, ev._eventId, c.selfSwitchCh].join(',')]);
+        // The shared flags say whose scene it is (a private one is only this machine's state).
+        const shared = flags.filter(([kind, key]) => World.isShared(kind, key));
+        if (!shared.length || shared.some(([kind, key]) => World.mine.has(kind + key))) return false;
+        return actsOnPlayer(page.list);
+    };
+    const _checkAuto = Game_Event.prototype.checkEventTriggerAuto;
+    Game_Event.prototype.checkEventTriggerAuto = function () {
+        if (this._trigger === 3 && World.othersScene(this)) return;
+        _checkAuto.call(this);
+    };
+    const _updateParallel = Game_Event.prototype.updateParallel;
+    Game_Event.prototype.updateParallel = function () {
+        if (this._interpreter && !this._interpreter.isRunning() && World.othersScene(this)) return;
+        _updateParallel.call(this);
+    };
 
     //--- entering the world -------------------------------------------------
     // Until the game's own START switch turns on, the player is in the title
@@ -337,7 +398,7 @@
             const table = server[kind] || {};
             for (const key in table) {
                 const k = kind === 'ss' ? key : Number(key);
-                changed = apply(kind, k, table[key]) || changed;
+                if (apply(kind, k, table[key])) { changed = true; World.mine.delete(kind + k); }
             }
         }
         let mine = [];
@@ -346,7 +407,7 @@
             // says it is. Anything this machine believed beyond that is dropped.
             for (const [kind, key] of localShared()) {
                 if (server[kind] && key in server[kind]) continue;
-                changed = apply(kind, key, 0) || changed;
+                if (apply(kind, key, 0)) { changed = true; World.mine.delete(kind + key); }
             }
         } else {
             // Founding it, or back after a dropped line: what this machine
@@ -395,6 +456,7 @@
     DataManager.setupNewGame = function () {
         World.leave();
         World.runId = '';
+        World.mine.clear();
         World._how = 'new';
         World._swapped = false;
         _setupNewGame.call(this);
@@ -403,7 +465,7 @@
     const _makeSaveContents = DataManager.makeSaveContents;
     DataManager.makeSaveContents = function () {
         const contents = _makeSaveContents.call(this);
-        contents.coop = { runId: World.runId, stamp: World.saveStamp || 0, name: Coop.name, dead: !!Coop.dead };
+        contents.coop = { runId: World.runId, stamp: World.saveStamp || 0, name: Coop.name, dead: !!Coop.dead, mine: Array.from(World.mine) };
         return contents;
     };
 
@@ -412,6 +474,9 @@
         World.leave();
         _extractSaveContents.call(this, contents);
         World.runId = contents.coop ? contents.coop.runId : '';
+        // An older save does not say whose flags were whose: all of them its player's, as they were then.
+        World.mine = new Set(contents.coop && contents.coop.mine ? contents.coop.mine
+            : $gameSwitches._data.map((on, id) => (on ? 'sw' + id : '')).filter(Boolean).concat(Object.keys($gameSelfSwitches._data).map((k) => 'ss' + k)));
         World.loadedStamp = contents.coop ? contents.coop.stamp : 0;
         World._how = World._nextHow || 'load';
         World._nextHow = '';

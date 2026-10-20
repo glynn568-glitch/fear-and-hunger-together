@@ -33,6 +33,7 @@ async function press(page, code, ms) {
                 return { do: 'attack', target: m ? Number(m[1]) : 0, say: 'The arm first.' };
             }
             if (kind === 'chat') {
+                if (/"[^"]*party[^"]*"$/.test(text)) return { say: 'In line.', order: 'party' };
                 if (/"[^"]*wait[^"]*"$/.test(text)) return { say: 'Holding here.', order: 'wait' };
                 if (/"[^"]*follow[^"]*"$/.test(text)) return { say: 'Right behind you.', order: 'follow' };
                 if (/"[^"]*torch[^"]*"$/.test(text)) return { say: 'Take it.', give: { kind: 'item', id: 5 } };
@@ -113,7 +114,7 @@ async function press(page, code, ms) {
         const last = trail.filter((t) => t.map !== 4).pop();
         const atDoor = last ? Math.abs(last.x - door.x) + Math.abs(last.y - door.y) : 99;
         check('far off when she went, it walks to that door and comes through after her', arrived.map === 4 && jumped === 0 && atDoor <= 4 && trail.some((t) => t.errand && t.errand.kind === 'follow'),
-            'arrived on map ' + arrived.map + ' at ' + arrived.x + ',' + arrived.y + ' in ' + Math.round((Date.now() - tDoor) / 1000) + ' s, jumps ' + jumped + ', last seen ' + atDoor + ' tiles from the door');
+            'arrived on map ' + arrived.map + ' at ' + arrived.x + ',' + arrived.y + ' in ' + Math.round((Date.now() - tDoor) / 1000) + ' s, jumps ' + jumped + ', last seen ' + atDoor + ' tiles from the door; it said: ' + [...new Set(trail.map((t) => t.said))].join(' | '));
 
         //--- Tab shows what the partner wears and carries ----------------------
         await a.keyboard.down('Tab');
@@ -142,6 +143,27 @@ async function press(page, code, ms) {
         await waitFor(bot, () => BOT.mode === 'follow', 10000, 'the bot takes the follow order');
         await waitFor(bot, () => { const p = Coop.others().find((q) => !q.bot); return p && p.m === $gameMap.mapId() && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 3; }, 120000, 'the bot comes back');
         check('called back, it comes back to her', true);
+
+        //--- told to join her party, it walks in her line through a door ------
+        await a.evaluate(() => Coop.say('join my party'));
+        await waitFor(bot, () => Coop.partyLeader && !Coop.peers.get(Coop.partyLeader).bot, 10000, 'the bot joins her party');
+        await a.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
+        await waitFor(a, () => $gameMap.mapId() === 74 && T.onMap(), 20000, 'Ann on map 74');
+        await a.evaluate(() => T.settle());
+        await waitFor(bot, () => $gameMap.mapId() === 74 && SceneManager._scene instanceof Scene_Map && !$gamePlayer.isTransferring(), 20000, 'the bot follows in her line');
+        await sleep(1500);
+        const inLine = await bot.evaluate(() => { const p = Coop.peers.get(Coop.partyLeader); return { gap: Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y), act: Coop.botActivity() }; });
+        check('in her party, it goes through the door with her at once and stays in line', inLine.gap <= 2 && inLine.act === 'walking in line', JSON.stringify(inLine));
+        await a.evaluate(() => Coop.say('wait here'));
+        await waitFor(bot, () => BOT.mode === 'wait' && !Coop.partyLeader, 10000, 'the bot steps out of line to wait');
+        check('told to wait, it steps out of her line', true);
+        await a.evaluate(() => Coop.say('follow me'));
+        await waitFor(bot, () => BOT.mode === 'follow', 10000, 'following again');
+        await a.evaluate(() => { $gamePlayer.reserveTransfer(1, 27, 61, 2, 0); });
+        await waitFor(a, () => $gameMap.mapId() === 1 && T.onMap(), 20000, 'Ann back on map 1');
+        await waitFor(bot, () => $gameMap.mapId() === 1 && SceneManager._scene instanceof Scene_Map && !$gamePlayer.isTransferring(), 90000, 'the bot back on map 1');
+        for (const p of [a, bot]) await p.evaluate(() => { for (const ev of $gameMap.events()) if (/guard|enemy|chaser/i.test(ev.event().name)) ev.erase(); });
+        await waitFor(bot, () => { const p = Coop.others().find((q) => !q.bot); return p && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 3; }, 60000, 'the bot beside Ann again');
         await bot.evaluate(() => { for (const ev of $gameMap.events()) if (/guard|enemy|chaser/i.test(ev.event().name)) ev.erase(); });
 
         //--- hunger and the bag -----------------------------------------------
@@ -342,7 +364,8 @@ async function press(page, code, ms) {
         // Where a door leads can hang on the run's random floor layout; the
         // test put both players on map 1 by hand, so the far side may be
         // another version of the floor. Either way it must go through and finish.
-        check('from the next map it found the door, came through and called Ann back', back2 && plan2.hops.join() === '4>1' && maps.has(4) && maps.size >= 2, plan2.hops.join() + ', maps seen ' + [...maps] + ', ' + Math.round((Date.now() - t1) / 1000) + ' s');
+        // (The bot plans by the run's own rolls, which may name another entrance than the map 1 the test chose.)
+        check('from the next map it found the door, came through and called Ann back', back2 && plan2.hops.length === 1 && plan2.hops[0].startsWith('4>') && maps.has(4) && maps.size >= 2, plan2.hops.join() + ', maps seen ' + [...maps] + ', ' + Math.round((Date.now() - t1) / 1000) + ' s');
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish([a, bot].filter(Boolean));
     await browser.close();

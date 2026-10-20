@@ -67,13 +67,15 @@
         const canHand = $gameParty.allItems().some(giftable);
         const canUse = $gameParty.items().some(usableOnOther);
         const spells = castable();
-        if (!canUse && !spells.length) return canHand && handOver(peer);
-        if (!canHand && !canUse && !spells.length) return false;
+        const party = Coop.partyChoices ? Coop.partyChoices(peer) : [];
+        if (!canUse && !spells.length && !party.length) return canHand && handOver(peer);
+        if (!canHand && !canUse && !spells.length && !party.length) return false;
         const choices = [];
         const calls = [];
         if (canHand) { choices.push('Hand them something'); calls.push('Coop.partnerChoice(' + peer.id + ', "hand")'); }
         if (canUse) { choices.push('Use an item on them'); calls.push('Coop.partnerChoice(' + peer.id + ', "use")'); }
         if (spells.length) { choices.push('Cast on them'); calls.push('Coop.partnerChoice(' + peer.id + ', "cast")'); }
+        for (const o of party) { choices.push(o.label); calls.push(o.call); }
         choices.push('Never mind');
         $gameMap._interpreter.setup(choiceList(peer.name + '.', choices, calls), 0);
         return true;
@@ -133,8 +135,10 @@
         $gameMap._interpreter.setup(choiceList('Cast what on ' + peer.name + '?', choices, calls), 0);
     }
 
+    // Someone standing in their own menu is still standing there: things can be handed to them.
+    const REACHABLE = ['map', 'event', 'menu'];
     function inReach(peer) {
-        return peer && (peer.st === 'map' || peer.st === 'event') && peer.m === $gameMap.mapId() && Coop.distanceTo(peer) <= 1;
+        return peer && REACHABLE.indexOf(peer.st) >= 0 && peer.m === $gameMap.mapId() && Coop.distanceTo(peer) <= 1;
     }
 
     // The caster as they are right now, for the partner's machine to work the effect out with.
@@ -220,7 +224,7 @@
         const peer = Coop.peers.get(p.peerId);
         if (!item || !$gameParty.hasItem(item)) return;
         // They may have walked off, or into a fight, while the list was open.
-        if (!peer || (peer.st !== 'map' && peer.st !== 'event') || peer.m !== $gameMap.mapId() || Coop.distanceTo(peer) > 1) {
+        if (!inReach(peer)) {
             Coop.toast((peer ? peer.name : 'They') + ' is out of reach.');
             return;
         }

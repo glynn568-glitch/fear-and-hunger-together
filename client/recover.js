@@ -67,7 +67,7 @@
         const mins = Math.max(1, Math.round(offer.ageSec / 60));
         const scale = Math.max(1, Math.min(2.4, (Graphics._realScale || 1) * 0.75));
         box.style.fontSize = Math.round(17 * scale) + 'px';
-        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press R to carry on from there.';
+        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press ' + Coop.keyName('R') + ' to carry on from there.';
         box.style.display = '';
     }, 300);
 

@@ -185,19 +185,20 @@
     help.id = 'coop-help';
     help.style.display = 'none';
     const HELP = [
-        ['Enter', 'Facing a partner: hand them something, use or cast something on them, or join their fight.'],
+        ['Enter', 'Facing a partner: hand them something, use or cast on them, or join their fight or party.'],
         ['F', 'Follow a partner who has just left the room.'],
-        ['Y', 'Talk. AI partners take orders this way.'],
+        ['Y', 'Talk. AI partners take orders.'],
         ['F8', 'Host: call an AI partner in, or send it home.'],
         ['Fights', 'Whoever touches the enemy starts it and keeps what it drops. Anyone near joins. You command your own.'],
         ['Bags', 'Yours alone. An emptied chest stays empty.'],
         ['Party', 'Four characters between you.'],
         ['Death', 'You watch. A partner can call you back at a ritual circle. Hold Esc to let the character go.'],
         ['Beds', 'Sleeping saves everyone. Another day, all press Continue.'],
-        ['Crash', 'Start it again and press R at the title.'],
+        ['Crash', 'Restart and press R at the title.'],
     ];
     help.innerHTML = '<h1>Playing together</h1><dl>' + HELP.map((row) => '<dt>' + row[0] + '</dt><dd>' + row[1] + '</dd>').join('') + '</dl>'
-        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';
+        + '<footer class="pad"><b>RT</b> torch &nbsp;&middot;&nbsp; <b>L3</b> phase &nbsp;&middot;&nbsp; <b>LT</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>R3</b> follow &nbsp;&middot;&nbsp; <b>Start</b> talk &nbsp;&middot;&nbsp; <b>View</b> this &nbsp;&middot;&nbsp; <b>View+Start</b> held: unstuck</footer>'
+        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(help));
     document.addEventListener('keydown', function (e) {
         if (e.code !== 'F1' || e.repeat) return;
@@ -206,7 +207,27 @@
         help.style.fontSize = Math.round(17 * scale) + 'px';
         help.style.width = Math.round(640 * scale) + 'px';
         help.style.maxWidth = '94vw';
+        // The controller's buttons, when one is plugged in (a Steam Deck has one).
+        const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+        help.querySelector('footer.pad').style.display = pads.length ? '' : 'none';
         help.style.display = help.style.display === 'none' ? '' : 'none';
+    });
+
+    // G lays a bear trap from the bag, as using one from the menu does.
+    const BEAR_TRAP = 76;
+    document.addEventListener('keydown', function (e) {
+        if (e.code !== 'KeyG' || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+        const scene = SceneManager._scene;
+        if (!(scene instanceof Scene_Map) || !scene.isActive() || SceneManager.isSceneChanging() || Coop.dead
+            || $gamePlayer.isTransferring() || $gameMap.isEventRunning() || $gameMessage.isBusy()) return;
+        const item = $dataItems[BEAR_TRAP], user = $gameParty.leader();
+        if (!item || !user || !$gameParty.hasItem(item) || !user.canUse(item)) { if (Coop.toast) Coop.toast('No bear trap to lay.', 2000); return; }
+        const action = new Game_Action(user);
+        action.setItemObject(item);
+        SoundManager.playUseItem();
+        user.useItem(item);
+        action.applyGlobal();
     });
 
     let lastHud = '';
@@ -239,7 +260,7 @@
             if (host) rows.push('<div class="row">' + esc(host.name) + '\'s game sets the run. New Game joins it as a new character.</div>');
         }
         if (onTitle && Coop.connected && !rows.length) rows.push('<div class="row dim">co-op: nobody else here yet</div>');
-        if (onTitle || (enteredAt && Date.now() - enteredAt < 60000)) rows.push('<div class="row dim">F1: how playing together works</div>');
+        if (onTitle || (enteredAt && Date.now() - enteredAt < 60000)) rows.push('<div class="row dim">' + Coop.keyName('F1') + ': how playing together works</div>');
         const html = rows.join('');
         if (html !== lastHud) { hud.innerHTML = html; lastHud = html; }
     }

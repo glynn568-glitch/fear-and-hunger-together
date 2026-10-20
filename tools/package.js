@@ -20,9 +20,9 @@ const out = path.join(top, 'app');
 const zip = path.join(ROOT, 'dist', `${name}-${version}.zip`);
 
 const FILES = [
-    'server.js', 'room.js', 'partners.js', 'package.json', 'package-lock.json', 'README.md', 'LICENSE', 'start.ps1',
+    'server.js', 'room.js', 'partners.js', 'package.json', 'package-lock.json', 'README.md', 'LICENSE', 'start.ps1', 'play.sh',
     'Play.cmd', 'start-local.cmd', 'start-online.cmd', 'start-online-private.cmd', 'start-with-ai-partner.cmd', 'bot.cmd',
-    'tools/bot.js', 'tools/bot-page.js', 'tools/brain.js', 'tools/find-game.js',
+    'tools/bot.js', 'tools/bot-page.js', 'tools/brain.js', 'tools/voices.js', 'tools/find-game.js',
     'tools/version.js', 'tools/scan.js', 'tools/census.js', // the census is rebuilt for a different build of the game
     'tools/tunnel.js',
 ];
@@ -95,9 +95,13 @@ fs.rmSync(unpacked, { recursive: true, force: true });
 console.log('launcher...');
 execFileSync(process.execPath, [path.join(__dirname, 'build-launcher.js'), path.join(top, 'Fear & Hunger Together.exe')], { stdio: 'inherit' });
 fs.copyFileSync(path.join(ROOT, 'README.md'), path.join(top, 'README.md'));
+// Linux and macOS start from here: sh play.sh (it finds app/ itself).
+fs.copyFileSync(path.join(ROOT, 'play.sh'), path.join(top, 'play.sh'));
 // The itch app shows a Launch button for this.
 fs.writeFileSync(path.join(top, '.itch.toml'), ['[[actions]]', 'name = "play"', 'path = "Fear & Hunger Together.exe"', ''].join('\n'));
 
 console.log('zip...');
 execFileSync(TAR, ['-a', '-c', '-f', zip, name], { cwd: path.dirname(top) });
+// Unzipped on a Steam Deck or a Mac, play.sh can be started as it is.
+require('./zipmode').markRunnable(zip, (n) => /(^|\/)play\.sh$/.test(n));
 console.log(`${zip}  (${Math.round(fs.statSync(zip).size / 1048576)} MB)`);

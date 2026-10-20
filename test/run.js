@@ -8,8 +8,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'humans', 'publish', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'trade', 'cast', 'talk', 'chat', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'bot', 'ai', 'ai-resume', 'partner', 'setup', 'soak'];
-const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL;
+const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'holds', 'reports', 'scenes', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'trade', 'cast', 'talk', 'chat', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'bot', 'ai', 'ai-resume', 'partner', 'setup', 'soak'];
+// The public copy has no oldsaves (it loads real players' saves, kept private).
+const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL.filter((n) => n === 'lint' || fs.existsSync(path.join(__dirname, n + '.js')));
 const jobs = Math.max(1, Number(process.env.FH_TEST_JOBS) || Math.min(6, Math.floor(os.cpus().length / 2)));
 
 // The longest suites start first, by how long each took last time.
@@ -19,23 +20,21 @@ try { times = JSON.parse(fs.readFileSync(TIMES, 'utf8')); } catch (e) { /* first
 const queue = names.slice().sort((a, b) => (times[b] || 0) - (times[a] || 0));
 const LOGS = process.env.FH_TEST_LOGS_DIR || path.join(__dirname, 'out', 'logs');
 
-// One run at a time: two would share every suite's ports and join each other's games.
-// The lock is created only if absent (no two can take it at once) and touched every
-// 20 s; one untouched for a minute belongs to a run that was killed, and is taken over.
-const LOCK = path.join(__dirname, 'out', 'run.lock');
-fs.mkdirSync(path.dirname(LOCK), { recursive: true });
-function takeLock() {
-    try { fs.closeSync(fs.openSync(LOCK, 'wx')); return true; } catch (e) { /* held */ }
-    let age = 0;
-    try { age = Date.now() - fs.statSync(LOCK).mtimeMs; } catch (e) { return takeLock(); }
-    if (age < 60000) return false;
-    fs.rmSync(LOCK, { force: true });
-    try { fs.closeSync(fs.openSync(LOCK, 'wx')); return true; } catch (e) { return false; }
+// One run at a time (test/lock.js).
+if (!require('./lock')()) { console.error('Another test run is using the ports (test/out/run.lock). Wait for it, or end it.'); process.exit(2); }
+
+// Exit 0 is not a pass: the last line has to say what passed. A suite that checked
+// nothing, or stopped before its summary, fails.
+const PROVED = /^(all [1-9]\d* passed|lint: [1-9]\d* files clean|[A-Z]+ OK)$/;
+function proved(code, stdout) {
+    const lines = stdout.trim().split('\n');
+    return code === 0 && PROVED.test(lines[lines.length - 1].trim());
 }
-if (!takeLock()) { console.error('Another test run is using the ports (test/out/run.lock). Wait for it, or end it.'); process.exit(2); }
-fs.writeFileSync(LOCK, String(process.pid));
-setInterval(() => { try { const now = new Date(); fs.utimesSync(LOCK, now, now); } catch (e) { /* gone */ } }, 20000).unref();
-process.on('exit', () => { try { if (Number(fs.readFileSync(LOCK, 'utf8')) === process.pid) fs.rmSync(LOCK); } catch (e) { /* gone */ } });
+// The scorer is tried on known answers before it scores anything.
+for (const [code, out, want] of [[0, 'PASS x\nall 3 passed\n', true], [0, 'SOAK OK', true], [0, '', false], [0, 'all 0 passed', false],
+    [0, 'PASS x', false], [1, 'all 3 passed', false], [0, 'all 3 passed\n1 FAILED', false], [0, 'all 3 passed\nkilled after 10 minutes', false]]) {
+    if (proved(code, out) !== want) throw new Error('the scorer is wrong about: exit ' + code + ', ' + JSON.stringify(out));
+}
 
 function runOne(name, again) {
     return new Promise((resolve) => {
@@ -53,13 +52,14 @@ function runOne(name, again) {
         child.on('close', (code) => {
             clearTimeout(timer);
             const secs = Math.round((Date.now() - started) / 1000);
-            const ok = code === 0;
+            const ok = proved(code, stdout);
             // Every suite's whole output is kept, passed or not, to read afterwards.
             fs.mkdirSync(LOGS, { recursive: true });
             fs.writeFileSync(path.join(LOGS, name + (again ? '.again' : '') + '.txt'), stdout + (stderr ? '\n--- stderr\n' + stderr : ''));
             times[name] = secs;
             const lines = stdout.trim().split('\n');
             let report = `${ok ? 'ok  ' : 'FAIL'} ${name.padEnd(10)} ${secs}s  ${lines[lines.length - 1] || ''}`;
+            if (!ok && code === 0) report += '\n       exited 0 without a last line saying what passed';
             if (!ok) report += '\n' + lines.filter((l) => /^FAIL|Error/.test(l)).slice(0, 8).map((l) => '       ' + l.slice(0, 300)).join('\n');
             // An exception a suite caught goes to stderr: its first lines say where.
             if (!ok && stderr.trim()) report += '\n' + stderr.trim().split('\n').slice(0, 6).map((l) => '       ' + l.slice(0, 300)).join('\n');

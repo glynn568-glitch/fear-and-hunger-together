@@ -39,7 +39,7 @@ const battle = (p) => p.evaluate(() => ({
         // the picture is video through the host.
         const relayed = await b.evaluate(() => Coop.relayOnly);
         if (relayed) await waitFor(b, () => Coop.viewer.clip, 15000, 'B switches to video through the host');
-        else await waitFor(b, () => Coop.viewer.video, 15000, 'B switches to live video');
+        else await waitFor(b, () => Coop.viewer.video, 25000, 'B switches to live video');
         await sleep(2000);
         const vid = await b.evaluate(() => { const c = document.createElement('canvas'); c.width = 204; c.height = 156; const x = c.getContext('2d'); x.drawImage(Coop.viewer.el, 0, 0, 204, 156); const d = x.getImageData(0, 0, 204, 156).data; let lit = 0; for (let i = 0; i < d.length; i += 400) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; return { size: Coop.viewer.videoSize, clip: Coop.viewer.clip, shown: Coop.viewer.el.style.display !== 'none', bareVideoShown: !!document.querySelector('video') && getComputedStyle(document.querySelector('video')).opacity > 0.5, lit, frames: Coop.viewer.frames }; });
         if (relayed) check('B is watching video of the fight through the host, painted on the page canvas', vid.clip && vid.shown && !vid.bareVideoShown && vid.lit > 20, JSON.stringify(vid));

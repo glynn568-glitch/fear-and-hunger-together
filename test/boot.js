@@ -38,5 +38,6 @@ const { startServer, launch, openPlayer, waitFor, shot, sleep } = require('./lib
         await browser.close();
         server.kill();
     }
+    console.log(failed ? 'BOOT FAILED' : 'BOOT OK');
     process.exit(failed ? 1 : 0);
 })();

@@ -57,6 +57,13 @@ for (const id of [36, 37, 38, 39, 248, 249, 250, 251, 252, 253, 254, 255, 256, 2
 // ghost) and the library door, whose parallel event re-runs Enki's rejoin.
 // Shared, one player's ambush or rejoin would play out on the other's screen.
 for (const id of [2271, 2282, 2294, 2311, 2638, 1643]) SW_PRIVATE_IDS.add(id);
+// A fight's outcome that starts a scene on the map belongs to whoever fought:
+// the jaggedjaws' "takes a great leap at you" (the hound then mauls whoever it
+// touches), Trortur lowering his weapon (the scene takes the player to
+// Buckman), Moonless joining (an autorun that adds him to the party), Seril's
+// senses. Shared, the other player was mauled, moved or given the dog too.
+// What those scenes set afterwards is still world state.
+for (const id of [2881, 2888, 2895, 2909, 2916, 2923, 2970, 724, 2374]) SW_PRIVATE_IDS.add(id);
 // The game mode is chosen once and has to match for everyone.
 const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480]);
 

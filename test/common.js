@@ -27,7 +27,7 @@ async function twoPlayers(port, opts) {
     await waitFor(b, () => Coop.world.live, 10000, 'B live');
     await sleep(500);
     const idA = await a.evaluate(() => Coop.id), idB = await b.evaluate(() => Coop.id);
-    return { server, browser, a, b, idA, idB, close: async () => { await browser.close(); server.kill(); if (joiner) joiner.kill(); } };
+    return { server, joiner, browser, a, b, idA, idB, close: async () => { await browser.close(); server.kill(); if (joiner) joiner.kill(); } };
 }
 
 function checker() {

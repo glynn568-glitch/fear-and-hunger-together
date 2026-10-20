@@ -64,8 +64,8 @@ if (!args.has('--no-github')) {
         execFileSync('git', ['archive', '--format=tar', 'HEAD', '-o', path.join(ROOT, 'dist', 'public.tar')], { cwd: ROOT });
         execFileSync(process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar', ['-xf', path.join(ROOT, 'dist', 'public.tar'), '-C', PUBLIC]);
         fs.rmSync(path.join(ROOT, 'dist', 'public.tar'));
-        // Working notes stay private.
-        for (const f of ['TASKS.md', 'docs/signpath-application.md']) fs.rmSync(path.join(PUBLIC, f), { force: true });
+        // Working notes, and the real saves the tests load, stay private.
+        for (const f of ['TASKS.md', 'docs/signpath-application.md', 'docs/grok', 'test/fixtures', 'test/oldsaves.js']) fs.rmSync(path.join(PUBLIC, f), { recursive: true, force: true });
     }
     const id = dry ? '0' : execFileSync('gh', ['api', 'user', '-q', '.id'], { encoding: 'utf8' }).trim();
     const who = ['-c', 'user.name=glynn568-glitch', '-c', `user.email=${id}+glynn568-glitch@users.noreply.github.com`];

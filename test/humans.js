@@ -85,8 +85,12 @@ const enemy = (p, name) => p.evaluate((name) => {
         // friend's breakable line runs straight to the host on this PC.
         let link;
         if (process.env.FH_TEST_TUNNEL === '1') {
-            const res = await fetch(`http://localhost:${HOST}/coop/app/online`, { method: 'POST', headers: { 'x-fh-app': '1', 'content-type': 'application/json' }, body: JSON.stringify({ on: true, private: true }) });
-            let app = await res.json();
+            const online = (on) => fetch(`http://localhost:${HOST}/coop/app/online`, { method: 'POST', headers: { 'x-fh-app': '1', 'content-type': 'application/json' }, body: JSON.stringify({ on, private: true }) }).then((r) => r.json());
+            // Hosting stopped and started again at once (to change Hide my IP, say): the old
+            // cloudflared's exit once took the new tunnel's place, and no link came.
+            await online(true);
+            await online(false);
+            let app = await online(true);
             // As the Together panel does: it follows on until Cloudflare has published the link.
             for (let i = 0; i < 60 && app.mode === 'online' && !app.ready; i++) { await sleep(2000); app = await (await fetch(`http://localhost:${HOST}/coop/app`, { headers: { 'x-fh-app': '1' } })).json(); }
             check('the host is online through a tunnel', /^https:\/\/.+trycloudflare\.com\/\?k=/.test(app.link || ''), JSON.stringify(app).slice(0, 200));

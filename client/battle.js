@@ -50,7 +50,7 @@
     // and the fight's other messages to that player do not wait behind pictures.
     const outOf = function (id) {
         let out = Stream._out.get(id);
-        if (!out) Stream._out.set(id, out = { bytes: 0, q: [], at: 0, min: Infinity, minAt: 0 });
+        if (!out) Stream._out.set(id, out = { bytes: 0, q: [], at: 0, min: Infinity, minAt: 0, made: performance.now(), ackAt: 0 });
         return out;
     };
     // Pieces of video are answered by number (msg.s), stills by the time they
@@ -65,7 +65,7 @@
         const done = out.q.splice(0, i + 1);
         for (const item of done) out.bytes -= item.size;
         const now = performance.now();
-        out.at = now;
+        out.at = out.ackAt = now;
         if (done[i].pace) clipPace(now - done[i].at, out, now);
     });
     // The video's bitrate follows the slowest watcher's link: pictures that take
@@ -90,13 +90,16 @@
     // second of it at the current bitrate, so the fight's messages to them
     // never wait long behind pictures.
     const clipAhead = () => Math.max(24000, Clip.rate / 8 * 0.3);
-    // A picture lost on the way is given up on after two seconds.
+    // A picture lost on the way is given up on after two seconds. That is a
+    // sign of a crowded line, unless other watchers' pictures are arriving: then
+    // it is that one watcher gone quiet, and the others keep their picture.
     function roomFor(id, now, limit) {
         const out = outOf(id);
         if (out.bytes && now - out.at > 2000) {
             out.bytes = 0;
             out.q.length = 0;
-            if (Clip.enc && Clip.want.has(id)) clipRate(Clip.rate * 0.7, now);
+            const heard = (other) => other !== id && Stream.watchers.has(other) && now - (outOf(other).ackAt || 0) < 2000;
+            if (Clip.enc && Clip.want.has(id) && !Array.from(Clip.want).some(heard)) clipRate(Clip.rate * 0.7, now);
         }
         return out.bytes < limit;
     }
@@ -166,8 +169,9 @@
         // Everyone keeps step with the slowest line. A watcher passed over has to
         // wait for a whole picture, and on a slow line (a whole picture can be more
         // than its share in flight) that came about once a second: one picture a
-        // second to watch. Only a line gone quiet for a second is passed over.
-        if (room.length < ids.length && ids.some((id) => room.indexOf(id) < 0 && now - outOf(id).at < 1000)) return;
+        // second to watch. Only a line gone quiet for a second is passed over:
+        // one that has answered nothing in that time (a new one gets a second to start).
+        if (room.length < ids.length && ids.some((id) => room.indexOf(id) < 0 && now - (outOf(id).ackAt || outOf(id).made) < 1000)) return;
         // A watcher who missed pictures starts again from a whole one.
         let key = Clip.key || (room.some((id) => Clip.need.has(id)) && now - Clip.keyAt > 1000);
         if (key) { Clip.key = false; Clip.keyAt = now; }
@@ -456,7 +460,7 @@
         if (Date.now() - Viewer.lastFrameAt > 6000) {
             if (!b.warned || Date.now() - b.warned > 4000) {
                 b.warned = Date.now();
-                Coop.toast('No picture from ' + b.ownerName + '. Hold Esc to step out of the fight.', 4000);
+                Coop.toast('No picture from ' + b.ownerName + '. Hold ' + Coop.keyName('Esc') + ' to step out of the fight.', 4000);
             }
             b.quitHeld = Input.isPressed('cancel') || Input.isPressed('escape') ? (b.quitHeld || 0) + 1 : 0;
             if (b.quitHeld > 60) stepOut(b);
@@ -752,7 +756,7 @@
         if (Input.isTriggered('ok') && Coop.world.live && !$gameMap.isEventRunning() && !$gameMap.isAnyEventStarting()) {
             const peer = Coop.peerInReach();
             if (peer && peer.st === 'battle') { Coop.askToJoinBattle(peer.id); return true; }
-            if (peer && (peer.st === 'map' || peer.st === 'event') && Coop.offerGift) return Coop.offerGift(peer);
+            if (peer && ['map', 'event', 'menu'].indexOf(peer.st) >= 0 && Coop.offerGift) return Coop.offerGift(peer);
         }
         return false;
     };
@@ -782,12 +786,34 @@
         if (b.eventId) Coop.events.sendHold(b.eventId, 'battle');
         Coop.note('fight: troop ' + troopId + (b.eventId ? ' from event ' + b.eventId : '') + ' on map ' + b.mapId);
         for (const peer of Coop.peersHere()) {
-            if ((peer.st === 'map' || peer.st === 'event') && Coop.distanceTo(peer) <= JOIN_RANGE) {
+            // A party mate is pulled in from anywhere on the map.
+            if ((peer.st === 'map' || peer.st === 'event') && (Coop.distanceTo(peer) <= JOIN_RANGE || (Coop.inMyParty && Coop.inMyParty(peer.id)))) {
                 b.invited.set(peer.id, Date.now() + JOIN_WAIT);
                 Coop.sendTo(peer.id, 'binvite', { auto: true, fight: b.fight });
             }
         }
     };
+
+    // Two players in the same enemy's scene at once (both talking to the
+    // priests): the one whose scene reaches the fight second goes into the
+    // first one's fight, not into a second, separate fight with the same enemy.
+    let joinAfter = null; // { id, until }: whose fight to ask into once this scene is over
+    const _command301 = Game_Interpreter.prototype.command301;
+    Game_Interpreter.prototype.command301 = function () {
+        const hold = Coop.world.live && this._eventId && this._mapId === $gameMap.mapId() ? Coop.events.holdOf(this._eventId) : null;
+        if (hold && hold.k === 'battle') {
+            if (Coop.peers.has(hold.by)) joinAfter = { id: hold.by, until: Date.now() + 15000 };
+            Coop.note('event ' + this._eventId + ' is already in ' + (hold.name || 'someone') + "'s fight: going into that one");
+            return true; // its won/fled/lost branches are skipped; the fight's owner plays them
+        }
+        return _command301.call(this);
+    };
+    setInterval(function () {
+        if (!joinAfter) return;
+        const peer = Coop.peers.get(joinAfter.id);
+        if (Coop.battle || Date.now() > joinAfter.until || !peer || peer.st !== 'battle') { joinAfter = null; return; }
+        if (canJoin()) Coop.askToJoinBattle(joinAfter.id);
+    }, 200);
 
     // Everyone hears again which enemy is in this fight: a player who has
     // just come back, or this one, back after its own line dropped.

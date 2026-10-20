@@ -28,6 +28,7 @@ module.exports = function installBot(options) {
         if (BOT.errand && BOT.errand.kind === 'circle') return 'going to a ritual circle';
         if (BOT.errand && BOT.errand.kind === 'follow') return 'coming after you';
         if (BOT.mode === 'explore') return 'exploring';
+        if (Coop.partyLeader) return 'walking in line';
         if (BOT.mode === 'wait') return 'waiting';
         if (BOT.giving) return 'handing something over';
         return 'following';
@@ -63,8 +64,10 @@ module.exports = function installBot(options) {
         BOT.notes.push(text);
     }
 
+    // The people it plays with. A test run's host (options.lead) plays with
+    // everyone; a partner told whom to follow counts that one as a person.
     function humans() {
-        return Coop.others().filter((p) => !p.bot);
+        return Coop.others().filter((p) => !p.bot || options.lead || (options.follow && p.name.toLowerCase() === options.follow.toLowerCase()));
     }
 
     let mapNames = {};
@@ -249,7 +252,7 @@ module.exports = function installBot(options) {
     function situation() {
         const me = window.$gameParty && $gameParty.leader();
         const rows = [];
-        if (me && window.$gameMap) rows.push('You: ' + me.name() + ', ' + me.hp + '/' + me.mhp + ' HP, ' + hunger(me) + ', in ' + placeName($gameMap.mapId()) + (BOT.mode === 'wait' ? ', waiting where told' : '') + (BOT.errand && BOT.errand.kind === 'circle' ? ', on your way to a ritual circle' : '') + (BOT.mode === 'explore' ? ', exploring on your own' : '') + (BOT.quiet ? ', keeping quiet' : '') + '.');
+        if (me && window.$gameMap) rows.push('You: ' + me.name() + ', ' + me.hp + '/' + me.mhp + ' HP, Mind ' + me.mp + '/' + me.mmp + (me.mp < me.mmp * 0.35 ? ' (your mind is going)' : '') + ', ' + hunger(me) + ', in ' + placeName($gameMap.mapId()) + (BOT.mode === 'wait' ? ', waiting where told' : '') + (BOT.errand && BOT.errand.kind === 'circle' ? ', on your way to a ritual circle' : '') + (BOT.mode === 'explore' ? ', exploring on your own' : '') + (Coop.partyLeader && Coop.peers.has(Coop.partyLeader) ? ', walking in ' + Coop.peers.get(Coop.partyLeader).name + "'s party" : '') + (BOT.quiet ? ', keeping quiet' : '') + '.');
         if (me && window.$gameMap) rows.push('Your condition: ' + (conditionsOf(me).join(', ') || 'nothing wrong') + '. Your bag: ' + bagText() + '.');
         for (const p of humans()) {
             if (!p.st || p.st === 'title') { rows.push(p.name + ' is not in the dungeon.'); continue; }
@@ -275,6 +278,7 @@ module.exports = function installBot(options) {
 
     // The player to stick to: a named one if asked for, else a person in the world.
     function leader() {
+        if (options.lead) return null; // the host follows nobody
         const inWorld = Coop.others().filter((p) => p.st && p.st !== 'title');
         if (options.follow) return inWorld.find((p) => p.name.toLowerCase() === options.follow.toLowerCase()) || null;
         const people = inWorld.filter((p) => !p.bot);
@@ -338,6 +342,49 @@ module.exports = function installBot(options) {
         BOT.lastNoteAt = 0;
         return true;
     };
+
+    // The way a person comes in (options.lead, options.intro): New Game and
+    // the game's own opening, as a character nobody has taken.
+    BOT.start = function () {
+        const scene = SceneManager._scene;
+        const name = freeCharacter();
+        if (!(scene instanceof Scene_Title) || !name) return false;
+        BOT.character = name;
+        BOT.joinedAt = Date.now();
+        BOT.intro = true;
+        log('New Game, to play the ' + name);
+        if (window.fhBrainCharacter) window.fhBrainCharacter(name);
+        scene.commandNewGame();
+        return true;
+    };
+
+    // The opening, played through: the character picker (map 10, EV004 reads
+    // left/right/ok into variable 9), the name screen, then questions and text.
+    const PICKER = { mercenary: 1, knight: 2, priest: 3, outlander: 4 };
+    function introStep(scene) {
+        if (scene instanceof Scene_Name) {
+            const w = scene._inputWindow;
+            if (w && w.active) { w.select(89); press('ok'); } // the name screen's OK
+            return true;
+        }
+        if (!(scene instanceof Scene_Map) || !window.$gameMap) return false;
+        // While the picker is up the action key picks whoever is shown, so it
+        // is only pressed once the wanted one is.
+        if ($gameMap.mapId() === 10 && $gameSwitches.value(296) && !$gameSwitches.value(214)) {
+            const want = PICKER[BOT.character];
+            press($gameVariables.value(9) === want ? 'ok' : 'right');
+            return true;
+        }
+        if ($gameMessage.isChoice()) { chooseInDialogue(scene); return true; }
+        if ($gameMessage.isBusy()) {
+            BOT.msgSince = BOT.msgSince || Date.now();
+            if (Date.now() - BOT.msgSince > 400) { press('ok'); BOT.msgSince = 0; }
+            return true;
+        }
+        // Between texts the opening waits for the action key now and then.
+        press('ok');
+        return true;
+    }
 
     // Which protagonist the loaded party leads with.
     function characterOf(actorId) {
@@ -409,6 +456,8 @@ module.exports = function installBot(options) {
     // Rules of thumb when there is no answer: an arm first, then the head,
     // then whatever still stands.
     function fallbackPick(brief) {
+        // A wind-up (the guard's step closer before its charge): guard this turn.
+        if (/takes a step closer|prepares for|readies|raises (his|her|its) arms/i.test(brief.log[brief.log.length - 1] || '')) return { do: 'guard' };
         const alive = brief.enemies.filter((e) => e.how !== 'gone');
         const by = (re) => alive.find((e) => re.test(e.name));
         const target = by(/arm/i) || by(/head/i) || alive.find((e) => !/torso/i.test(e.name)) || alive[0];
@@ -455,7 +504,10 @@ module.exports = function installBot(options) {
     let ownTurn = null; // the action being decided; each turn, extra turns included, makes new ones
     function ownFight(scene) {
         const actor = BattleManager.actor();
-        const mine = actor && actor.actorId() === (CHARACTERS[BOT.character] || {}).actor;
+        // Its own character and any companion it recruited; a partner's turn is theirs.
+        const lent = new Set();
+        if (Coop.battle && Coop.battle.guests) for (const g of Coop.battle.guests.values()) for (const id of g.actors) lent.add(id);
+        const mine = actor && !lent.has(actor.actorId());
         if (BattleManager.isInputting() && mine) {
             const action = BattleManager.inputtingAction();
             if (!action || ownTurn === action) return;
@@ -555,6 +607,8 @@ module.exports = function installBot(options) {
     // What a reply asks this partner to do, beyond talking.
     function obey(r, peer) {
         const order = String(r.order || '').toLowerCase();
+        if ((order === 'wait' || order === 'explore') && Coop.partyLeader) Coop.leaveParty();
+        if (order === 'party' && Coop.joinParty && Coop.joinParty(peer.id)) { BOT.mode = 'follow'; BOT.explore = null; BOT.errand = null; log('joined ' + peer.name + "'s party"); }
         if (order === 'wait' && BOT.mode !== 'wait') { BOT.mode = 'wait'; log('waiting where told'); }
         if (order === 'follow' && BOT.mode !== 'follow') { BOT.mode = 'follow'; BOT.explore = null; if (BOT.errand && BOT.errand.kind === 'explore') BOT.errand = null; log('following again'); }
         if (order === 'explore' && BOT.mode !== 'explore') { BOT.mode = 'explore'; BOT.explore = null; log('exploring alone'); }
@@ -617,6 +671,18 @@ module.exports = function installBot(options) {
             BOT.calledAt = Date.now();
             return;
         }
+        // The same question again and again (a shop, a lever): the way out, the last choice.
+        const asked = said + '|' + choices.join('|');
+        BOT.asked = BOT.asked && BOT.asked.key === asked && Date.now() - BOT.asked.at < 60000 ? { key: asked, n: BOT.asked.n + 1, at: Date.now() } : { key: asked, n: 1, at: Date.now() };
+        if (BOT.asked.n >= 4) {
+            for (let i = choices.length - 1; i >= 0; i--) { win.select(i); if (win.isCurrentItemEnabled()) { win.processOk(); BOT.asked.n = 0; log('asked the same again: took "' + choices[i] + '"'); return; } }
+        }
+        // A test run's set answer (options.prefer: the difficulty, say), when it is offered.
+        const set = (options.prefer || []).map((t) => choices.indexOf(t)).find((i) => i >= 0);
+        if (set !== undefined) {
+            win.select(set);
+            if (win.isCurrentItemEnabled()) { win.processOk(); return; }
+        }
         BOT.choosing = true;
         think('choice', 'You are reading: "' + said + '"\nChoices: ' + choices.map((c, i) => i + ' ' + c).join(' | ') + '\nPick one: {"pick":n,"say":"..."}', 30000).then(function (r) {
             BOT.choosing = false;
@@ -645,13 +711,38 @@ module.exports = function installBot(options) {
     };
 
     // Doors out of a map, from its data: event -> where the transfer goes.
+    // The commands of a page this run can reach. A door whose way depends on
+    // a variable (the floor rolled at the start: inner hall 3, 31 or 53) only
+    // goes where this run's numbers send it; switch conditions (a door not
+    // opened yet) are left as possible.
+    function reachable(list) {
+        const out = [];
+        const branch = []; // branch[k]: contents at indent k are on (true), off (false) or either (null)
+        const last = []; // the condition at indent k, for its else
+        for (const c of list) {
+            const i = c.indent;
+            branch.length = i + 1;
+            if (branch.some((b) => b === false)) continue;
+            out.push(c);
+            if (c.code === 111) branch[i + 1] = last[i] = c.parameters[0] === 1 ? variableHolds(c.parameters) : null;
+            else if (c.code === 411) branch[i + 1] = last[i] === null ? null : !last[i];
+            else branch[i + 1] = null;
+        }
+        return out;
+    }
+    function variableHolds(p) {
+        const v = $gameVariables.value(p[1]);
+        const n = p[2] === 0 ? p[3] : $gameVariables.value(p[3]);
+        return [v === n, v >= n, v <= n, v > n, v < n, v !== n][p[4]];
+    }
+
     Nav.exits = function (data, mapId) {
         const out = [];
         if (!data || !data.events) return out;
         for (const ev of data.events) {
             if (!ev) continue;
             const seen = new Set();
-            for (const page of ev.pages) for (const c of page.list) {
+            for (const page of ev.pages) for (const c of reachable(page.list)) {
                 if (c.code !== 201 || c.parameters[0] !== 0 || c.parameters[1] === mapId) continue;
                 const key = c.parameters[1];
                 if (seen.has(key)) continue;
@@ -715,7 +806,11 @@ module.exports = function installBot(options) {
     // it gets opened on the way through.
     function blockedByEvent(x, y, except, careful) {
         if (!window.$dataMap) return true; // between maps: stand still
-        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev)) || (careful && ev.page() && ev.isTriggerIn([1, 2]))));
+        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev)) || (ev.page() && ev.isTriggerIn([1, 2]) && (careful || takesAway(ev)))));
+    }
+    // A tile that sends whoever steps on it to another map is never on the way.
+    function takesAway(ev) {
+        return ev.page().list.some((c) => c.code === 201);
     }
 
     // A step was blocked: if a shut door is what stands there, face it and
@@ -777,6 +872,12 @@ module.exports = function installBot(options) {
         return null;
     };
 
+    // Off this tile, any way that is open.
+    function stepAside(player) {
+        const free = [2, 4, 6, 8].filter((d) => player.canPass(player.x, player.y, d));
+        if (free.length) player.executeMove(free[Math.randomInt(free.length)]);
+    }
+
     function dirTo(x, y) {
         const dx = x - $gamePlayer.x, dy = y - $gamePlayer.y;
         if (Math.abs(dx) >= Math.abs(dy) && dx) return dx > 0 ? 6 : 4;
@@ -787,6 +888,8 @@ module.exports = function installBot(options) {
     //   circle  a partner lies dead; walk to a circle that can call them back
     //   follow  a partner went through a door; go after them
     async function startErrand(dead) {
+        // A circle errand goes its own way: out of anyone's line first (party.js would pull it back).
+        if (Coop.partyLeader) Coop.leaveParty();
         BOT.errand = { kind: 'circle', for: dead.id, name: dead.name, since: Date.now(), plan: null, planning: true, map: 0, steps: null, tries: 0, replans: 0 };
         log('walking to a ritual circle for ' + dead.name);
         await replan();
@@ -803,6 +906,13 @@ module.exports = function installBot(options) {
         BOT.errand = null;
         BOT.lastHop = Date.now();
         BOT.stuck = 0;
+        // On foot only (options.walkOnly, for test runs): no jumping; look for a way out instead.
+        if (options.walkOnly) {
+            if (BOT.mode !== 'explore') log('no way on foot to ' + (who ? who.name : 'them') + '; looking for a way out');
+            BOT.mode = 'explore';
+            BOT.lost = Date.now();
+            return;
+        }
         if (who && who.m && !$gamePlayer.isTransferring()) {
             $gamePlayer.reserveTransfer(who.m, who.x, who.y, 2, 0);
             log('no way on foot; catching up with ' + who.name + ' on ' + placeName(who.m));
@@ -872,10 +982,20 @@ module.exports = function installBot(options) {
         if ($gameMap.mapId() !== e.map) {
             // Through a door. Still on the plan, or somewhere it did not expect.
             const expected = e.plan && (e.plan.goal === $gameMap.mapId() || e.plan.hops.some((h) => h.map === $gameMap.mapId()));
+            // Back on a map it already left on this trip: the way bounced it.
+            const back = (e.been = e.been || []).indexOf($gameMap.mapId()) >= 0;
+            if (e.been.indexOf(e.map) < 0) e.been.push(e.map);
+            if (back) e.bounces = (e.bounces || 0) + 1;
             e.map = $gameMap.mapId();
             e.steps = null;
             e.tries = 0;
-            if (!expected) { replan(); return; }
+            if (e.bounces > 4) {
+                log('going round in circles; giving this trip up');
+                if (e.kind === 'follow') jumpTo(Coop.peers.get(e.for));
+                else { BOT.errand = null; if (e.kind === 'circle') BOT.noWayUntil = Date.now() + 120000; }
+                return;
+            }
+            if (!expected || back) { replan(); return; }
         }
         const t = errandTarget();
         if (t && t.arrived) { BOT.errand = null; log('caught up on ' + placeName($gameMap.mapId())); return; }
@@ -905,6 +1025,7 @@ module.exports = function installBot(options) {
                 return;
             }
         }
+        if (!e.steps.length) { e.steps = null; stepAside(player); return; } // on the goal's own tile
         const next = e.steps[0];
         const x = player.x, y = player.y;
         player.executeMove(dirTo(next.x, next.y));
@@ -928,6 +1049,7 @@ module.exports = function installBot(options) {
             if (dir > 0) this.executeMove(dir);
             return;
         }
+        if (Coop.partyLeader && Coop.partyStep(this)) return;
         if (BOT.mode === 'wait') return;
         if (BOT.mode === 'explore') return exploreStep(this);
         const who = leader();
@@ -935,8 +1057,7 @@ module.exports = function installBot(options) {
         const dist = Math.abs(who.x - this.x) + Math.abs(who.y - this.y);
         if (dist === 0) {
             // Standing on the same tile hides the bot behind the player; step off.
-            const free = [2, 4, 6, 8].filter((d) => this.canPass(this.x, this.y, d));
-            if (free.length) this.executeMove(free[Math.randomInt(free.length)]);
+            stepAside(this);
             return;
         }
         if (dist <= 2) { BOT.stuck = 0; BOT.trail = null; return; }
@@ -965,39 +1086,58 @@ module.exports = function installBot(options) {
     // chests: anything whose page gives items when you interact), then goes
     // through a door to somewhere it has not been. It says what it finds.
     BOT.visited = new Set(); // "map:event" searched already
-    BOT.seenMaps = new Set();
+    BOT.seenMaps = new Map(); // map id -> when last there
 
+    // The developer's test tiles on the entrance (invisible; they hand over
+    // the Passages, keys and companions): never touched.
+    const CHEATS = new Set(['1:140', '1:323']);
     function lootHere() {
         if (!window.$dataMap) return [];
         const now = Date.now();
         return $gameMap.events().filter((ev) => {
             const key = $gameMap.mapId() + ':' + ev.eventId();
-            if (ev._erased || BOT.visited.has(key) || (Nav.banned.get('x' + key) || 0) > now) return false;
+            if (ev._erased || CHEATS.has(key) || BOT.visited.has(key) || (Nav.banned.get('x' + key) || 0) > now) return false;
             const page = ev.page();
             if (!page || !ev.isTriggerIn([0])) return false;
             return page.list.some((c) => c.code === 125 || c.code === 126 || c.code === 127 || c.code === 128);
         });
     }
 
-    // The nearest door to a map it has not been on.
+    // Everything else here that does something when used, not tried yet.
+    function pokeHere() {
+        const now = Date.now();
+        return $gameMap.events().filter((ev) => {
+            const key = $gameMap.mapId() + ':' + ev.eventId();
+            if (ev._erased || CHEATS.has(key) || BOT.visited.has(key) || (Nav.banned.get('x' + key) || 0) > now) return false;
+            const page = ev.page();
+            return !!page && ev.isTriggerIn([0]) && page.list.length > 1;
+        });
+    }
+
+    // The nearest door to a map it has not been on. A test run's host never
+    // runs out: with all seen, the one it was on longest ago.
     function unseenDoor() {
         const here = $gameMap.mapId();
         const now = Date.now();
+        const when = (x) => BOT.seenMaps.get(x.to) || 0;
         return Nav.exits($dataMap, here)
-            .filter((x) => !BOT.seenMaps.has(x.to) && !((Nav.banned.get('m' + x.to) || 0) > now) && !((Nav.banned.get(here + ':' + x.ev) || 0) > now))
-            .sort((a, b) => $gameMap.distance($gamePlayer.x, $gamePlayer.y, a.x, a.y) - $gameMap.distance($gamePlayer.x, $gamePlayer.y, b.x, b.y))[0];
+            .filter((x) => (options.lead || !BOT.seenMaps.has(x.to)) && !((Nav.banned.get('m' + x.to) || 0) > now) && !((Nav.banned.get(here + ':' + x.ev) || 0) > now))
+            .sort((a, b) => when(a) - when(b) || $gameMap.distance($gamePlayer.x, $gamePlayer.y, a.x, a.y) - $gameMap.distance($gamePlayer.x, $gamePlayer.y, b.x, b.y))[0];
     }
 
     function exploreStep(player) {
-        BOT.seenMaps.add($gameMap.mapId());
+        BOT.seenMaps.set($gameMap.mapId(), Date.now());
         let x = BOT.explore;
         if (!x || x.map !== $gameMap.mapId()) x = BOT.explore = { map: $gameMap.mapId(), target: 0, steps: null, tries: 0 };
         let ev = x.target ? $gameMap.event(x.target) : null;
         if (!ev || BOT.visited.has(x.map + ':' + x.target)) {
-            const near = lootHere().sort((a, b) => $gameMap.distance(player.x, player.y, a.x, a.y) - $gameMap.distance(player.x, player.y, b.x, b.y))[0];
+            const byDistance = (a, b) => $gameMap.distance(player.x, player.y, a.x, a.y) - $gameMap.distance(player.x, player.y, b.x, b.y);
+            let near = lootHere().sort(byDistance)[0];
+            // Nothing left to search here: on to somewhere new.
+            const door = near ? null : unseenDoor();
+            // A test run's host with no way on tries what a curious player would: each lever, sign or door once.
+            if (!near && !door && options.lead) near = pokeHere().sort(byDistance)[0];
             if (!near) {
-                // Nothing left to search here: on to somewhere new.
-                const door = unseenDoor();
                 if (door) {
                     BOT.errand = { kind: 'explore', for: 0, name: '', goalMap: door.to, since: Date.now(), plan: { goal: door.to, hops: [Object.assign({ map: $gameMap.mapId() }, door)] }, planning: false, map: $gameMap.mapId(), steps: null, tries: 0, replans: 0 };
                     log('exploring on into ' + placeName(door.to));
@@ -1027,6 +1167,7 @@ module.exports = function installBot(options) {
             x.steps = Nav.path(ev.x, ev.y, ev.eventId(), solid);
             if (!x.steps) { Nav.banned.set('x' + x.map + ':' + x.target, Date.now() + 300000); x.target = 0; return; }
         }
+        if (!x.steps.length) { x.steps = null; stepAside(player); return; } // on the goal's own tile
         const next = x.steps[0];
         const bx = player.x, by = player.y;
         player.executeMove(dirTo(next.x, next.y));
@@ -1044,6 +1185,16 @@ module.exports = function installBot(options) {
     Game_Party.prototype.gainItem = function (item, amount, includeEquip) {
         _gainItem.call(this, item, amount, includeEquip);
         if (item && amount > 0 && BOT.mode === 'explore' && this === window.$gameParty && !this.inBattle() && Coop.world.live) note('You found ' + item.name + (amount > 1 ? ' x' + amount : '') + '.');
+        // A weapon or armour better than what it wears goes on, as a player would.
+        if (item && amount > 0 && (DataManager.isWeapon(item) || DataManager.isArmor(item)) && this === window.$gameParty && !this.inBattle() && Coop.world.live) {
+            const me = this.leader();
+            if (me) setTimeout(function () {
+                if ($gameParty.inBattle() || BOT.giving) return;
+                const before = me.equips().map((e) => e && e.name).join();
+                me.optimizeEquipments();
+                if (me.equips().map((e) => e && e.name).join() !== before) log('now wearing ' + me.equips().filter(Boolean).map((e) => e.name).join(', '));
+            }, 0);
+        }
     };
 
     Game_Player.prototype.updateDashing = function () {
@@ -1065,10 +1216,19 @@ module.exports = function installBot(options) {
             // The host says whether it kept a dropped session; wait a moment for that.
             BOT.titleAt = BOT.titleAt || Date.now();
             if (!BOT.parkKnown && Date.now() - BOT.titleAt < 4000) return;
-            if (leader() && leader().st !== 'dead') { if (!BOT.comeBack()) BOT.join(); }
+            // A test run that has ended stays ended (options.once).
+            if (options.lead && options.once && BOT.played) { log('the run is over'); return; }
+            if (options.lead) { if (!BOT.comeBack()) BOT.start(); return; }
+            // By the opening, only once the leader's character is known, so as not to take the same one.
+            if (leader() && leader().st !== 'dead' && (!options.intro || (leader().ini || []).length)) { if (!BOT.comeBack()) (options.intro ? BOT.start() : BOT.join()); }
             else log('waiting at the title for a player to be in the dungeon');
             return;
         }
+        if (Coop.world.live) BOT.played = true;
+        if (BOT.intro && Coop.world.live) { BOT.intro = false; becameCharacter(); }
+        if (BOT.intro && !(window.$gameSwitches && $gameSwitches.value(79)) && introStep(scene)) return;
+        // A name asked for later in the game (some events do): the one offered.
+        if (scene instanceof Scene_Name) { introStep(scene); return; }
         BOT.titleAt = 0;
         BOT.parkKnown = false;
         if (BOT.cameBack && scene instanceof Scene_Map && scene.isActive()) {
@@ -1114,8 +1274,10 @@ module.exports = function installBot(options) {
         const dead = humans().find((p) => p.st === 'dead');
         const circleTrip = BOT.errand && BOT.errand.kind === 'circle';
         if (dead && !circleTrip && !(BOT.noWayUntil > Date.now()) && !(Date.now() - (BOT.calledAt || 0) < 10000)) { startErrand(dead); return; }
-        if (circleTrip && (!dead || dead.id !== BOT.errand.for)) { BOT.errand = null; log('the errand is over'); }
+        if (circleTrip && (!dead || dead.id !== BOT.errand.for)) { BOT.errand = null; log('the errand is over'); return; }
         if (circleTrip) { log('on the way to a circle for ' + BOT.errand.name); return; }
+        // A test run's host has nobody to follow: it goes on into the dungeon.
+        if (options.lead) { if (BOT.mode !== 'explore') { BOT.mode = 'explore'; BOT.explore = null; } return; }
         if (!who) {
             // Nobody left to follow. A bot must not keep a world going on its
             // own: the next player to start would walk into whatever it did there.
@@ -1131,12 +1293,17 @@ module.exports = function installBot(options) {
         BOT.aloneSince = 0;
         if (who.st === 'dead') { log(who.name + ' is dead; waiting'); return; }
         if (BOT.mode === 'wait') { BOT.errand = null; log('waiting where told'); return; }
+        // In someone's party the line itself takes this partner through doors (party.js).
+        if (Coop.partyLeader) { BOT.errand = null; log('walking in ' + who.name + "'s party"); return; }
+        // Cut off and looking for a way: back to following once together, or to try again in a while.
+        if (BOT.lost && (who.m === $gameMap.mapId() || Date.now() - BOT.lost > 45000)) { BOT.lost = 0; BOT.mode = 'follow'; BOT.explore = null; BOT.errand = null; }
         if (BOT.mode === 'explore') { log('exploring alone'); return; }
         const sameMap = who.m === $gameMap.mapId();
+        if (sameMap) BOT.lastSeen = { id: who.id, m: who.m, x: who.x, y: who.y };
         const chase = BOT.errand && BOT.errand.kind === 'follow' ? BOT.errand : null;
         // Close by when they went through: after them at once, the way a
         // person does with F. Walking is for when it was too far off for that.
-        if (!sameMap && Coop.follow && Coop.follow()) { BOT.errand = null; log('went after ' + who.name + ' through the door'); return; }
+        if (!sameMap && walkedOut(who) && Coop.follow && Coop.follow()) { BOT.errand = null; log('went after ' + who.name + ' through the door'); return; }
         if (!sameMap && who.m && !$gamePlayer.isTransferring()) {
             // They went through a door: after them, on foot. Somewhere new
             // since setting off, or too long on the way: think again, or jump.
@@ -1152,11 +1319,24 @@ module.exports = function installBot(options) {
         if (sameMap) log('following ' + who.name);
     };
 
-    let lastMap = 0;
+    // They left by a way out of this map (a door, stairs, an edge), not carried
+    // off by a scene (captured, a fall, a death): only then straight after them.
+    function walkedOut(who) {
+        const seen = BOT.lastSeen;
+        if (!seen || seen.id !== who.id || seen.m !== $gameMap.mapId() || !window.$dataMap) return false;
+        return Nav.exits($dataMap, seen.m).some((x) => x.to === who.m && Math.abs(x.x - seen.x) + Math.abs(x.y - seen.y) <= 2);
+    }
+
+    let lastMap = 0, partyAskedAt = 0;
     setInterval(function () {
         try {
             BOT.tick();
             joinFightNearby();
+            // A test run's partner (options.party) walks in its leader's party once they stand together.
+            if (options.party && !Coop.partyLeader && !Coop.dead && Coop.world.live && Date.now() - partyAskedAt > 3000 && SceneManager._scene instanceof Scene_Map && Coop.joinParty) {
+                const who = leader();
+                if (who && who.st !== 'dead' && who.m === $gameMap.mapId() && Coop.distanceTo(who) <= 3) { partyAskedAt = Date.now(); if (Coop.joinParty(who.id)) log('joined ' + who.name + "'s party"); }
+            }
             if (window.$gameMap && Coop.world.live && SceneManager._scene instanceof Scene_Map && $gameMap.mapId() !== lastMap) {
                 if (lastMap) note('You are now in ' + placeName($gameMap.mapId()) + '.');
                 lastMap = $gameMap.mapId();

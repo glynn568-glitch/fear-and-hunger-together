@@ -27,7 +27,8 @@ function findGame() {
         steams.push('C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam');
     } else {
         const home = require('os').homedir();
-        steams.push(path.join(home, '.steam', 'steam'), path.join(home, '.local', 'share', 'Steam'), path.join(home, 'Library', 'Application Support', 'Steam'));
+        steams.push(path.join(home, '.steam', 'steam'), path.join(home, '.local', 'share', 'Steam'), path.join(home, 'Library', 'Application Support', 'Steam'),
+            path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam')); // Steam as a Flatpak
     }
     const libraries = new Set();
     for (const steam of steams) {

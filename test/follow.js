@@ -53,6 +53,45 @@ const onMap = (id) => $gameMap.mapId() === id && SceneManager._scene instanceof 
         await a.keyboard.down('KeyF'); await sleep(120); await a.keyboard.up('KeyF');
         await sleep(800);
         check('and F does nothing after that', await a.evaluate(() => $gameMap.mapId()) === 1);
+
+        // An offer not taken is for that one exit: A goes over by herself, far
+        // from B, and B leaves again within the offer's seconds. No offer.
+        await b.evaluate(() => { $gamePlayer.reserveTransfer(1, 28, 67, 8, 0); });
+        await waitFor(b, onMap, 30000, 'B beside A again', 1);
+        await b.evaluate(() => T.settle());
+        await sleep(800);
+        await b.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
+        await waitFor(a, () => document.getElementById('coop-follow').style.display !== 'none', 8000, 'offered once more');
+        const t0 = Date.now();
+        await a.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
+        await waitFor(a, onMap, 30000, 'A over on her own', 74);
+        await a.evaluate(() => { T.settle(); $gamePlayer.setThrough(true); $gamePlayer.locate($gamePlayer.x, $gamePlayer.y - 14); $gamePlayer.setThrough(false); });
+        await sleep(700);
+        await b.evaluate(() => { $gamePlayer.reserveTransfer(1, 28, 67, 8, 0); });
+        await waitFor(b, onMap, 30000, 'B gone again', 1);
+        await sleep(1000);
+        const late = await offer(a);
+        // Only a test while the first offer would still be standing.
+        const gap = Date.now() - t0;
+        check('an old offer does not come back when the partner leaves again from far off', !late.shown && gap < 8000, JSON.stringify(late) + ' ' + Math.round(gap / 1000) + ' s after the first');
+
+        // A door into a door: B goes on again from where A was offered to follow.
+        // The offer stands, and takes A to where B ended up.
+        await a.evaluate(() => { $gamePlayer.reserveTransfer(1, 27, 67, 8, 0); });
+        await waitFor(a, onMap, 30000, 'A back beside B', 1);
+        await a.evaluate(() => T.settle());
+        await sleep(800);
+        await b.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
+        await waitFor(a, () => document.getElementById('coop-follow').style.display !== 'none', 8000, 'offered after B');
+        await waitFor(b, onMap, 30000, 'B through the first door', 74);
+        await b.evaluate(() => { $gamePlayer.reserveTransfer(4, 8, 26, 8, 0); });
+        await waitFor(b, onMap, 30000, 'B through the second', 4);
+        await sleep(600);
+        const chained = await offer(a);
+        check('a partner going straight on through another door can still be followed', chained.shown, JSON.stringify(chained));
+        await a.keyboard.down('KeyF'); await sleep(120); await a.keyboard.up('KeyF');
+        await waitFor(a, onMap, 30000, 'A after B', 4).catch(() => {});
+        check('and F takes A to where B ended up', await a.evaluate(() => $gameMap.mapId()) === 4);
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

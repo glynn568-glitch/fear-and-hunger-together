@@ -147,6 +147,8 @@
         if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         const key = msg.m + ':' + msg.e;
         if (msg.k === 'battle') Coop.note((Coop.peers.get(msg.from) || {}).name + ' is fighting event ' + msg.e + ' on map ' + msg.m);
+        // The dead are using nothing (0.1.8 and before could still say they were).
+        if (msg.k && (Coop.peers.get(msg.from) || {}).st === 'dead') return;
         if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k, name: (Coop.peers.get(msg.from) || {}).name || '' });
         else if (Ev.holds.has(key) && Ev.holds.get(key).by === msg.from) Ev.holds.delete(key);
     });
@@ -157,6 +159,18 @@
         for (const [key, hold] of Ev.holds) {
             if (hold.by !== peer.id) continue;
             if (hold.k === 'battle') { if (!hold.gone) { hold.gone = Date.now(); hold.name = peer.name; } } else Ev.holds.delete(key);
+        }
+    });
+    // Dead, or back at the title: they let go of whatever they were using
+    // (0.1.8 and before left these behind). A player only just heard of counts
+    // as at the title until they say where they are, so only a report counts.
+    Coop.on('p', function (msg) {
+        if (msg.st !== 'dead' && msg.st !== 'title') return;
+        const peer = Coop.peers.get(msg.from);
+        for (const [key, hold] of Ev.holds) {
+            // A fight whose line dropped, its player back under a new id.
+            const theirs = hold.by === msg.from || (hold.gone && peer && hold.name && hold.name.toLowerCase() === peer.name.toLowerCase());
+            if (theirs) Ev.holds.delete(key);
         }
     });
     // Off to another map (or first heard of, back after a dropped line, on this one).
@@ -225,8 +239,9 @@
         if (ev._trigger === 2) Ev._touch.add(ev._eventId);
     }
 
+    // A map being loaded again (a revive onto the same map) has no data yet.
     Coop.on('ev', function (msg) {
-        if (!window.$gameMap || !Coop.world.live || msg.m !== $gameMap.mapId() || msg.m !== Ev._mapId) return;
+        if (!window.$gameMap || !window.$dataMap || !Coop.world.live || msg.m !== $gameMap.mapId() || msg.m !== Ev._mapId) return;
         if (Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
         for (const row of msg.e) applyMove(row, false);
     });
@@ -235,7 +250,7 @@
     // map for a single frame; it is kept and applied on that first frame.
     Coop.on('to:evall', function (msg) {
         if (!window.$gameMap || Coop.mapDiffersWith(Coop.peers.get(msg.from), msg.m)) return;
-        if (msg.m === Ev._mapId && msg.m === $gameMap.mapId()) for (const row of msg.e) applyMove(row, true);
+        if (msg.m === Ev._mapId && msg.m === $gameMap.mapId() && window.$dataMap) for (const row of msg.e) applyMove(row, true);
         else Ev._arrival = msg;
     });
 

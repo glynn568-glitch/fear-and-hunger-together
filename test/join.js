@@ -54,7 +54,7 @@ const KEY = 'jointest';
         await sleep(1500);
         const onHost = path.join(host.saves, 'players', 'bo', 'file3.rpgsave');
         const onJoiner = path.join(joiner.saves, 'players', 'bo', 'file3.rpgsave');
-        check('the joiner\'s save is kept on the host', fs.existsSync(onHost) && !fs.existsSync(onJoiner));
+        check('the joiner\'s save is kept on the joiner\'s own PC, not the host', fs.existsSync(onJoiner) && !fs.existsSync(onHost));
         check('...and reads back through its own server', await b.evaluate(() => StorageManager.exists(3) && !!StorageManager.load(3)));
 
         // The joiner's server is for its own PC: another machine gets neither the game nor a seat.

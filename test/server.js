@@ -66,8 +66,10 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
             const ws = new WebSocket(`ws://localhost:${PORT}/coop/ws?fp=0000&build=1&mod=x&v=0.0.1`);
             const inbox = [];
             ws.on('message', (raw) => inbox.push(JSON.parse(raw)));
-            ws.on('close', (code) => resolve({ code, inbox }));
-            ws.on('error', () => resolve({ code: 0, inbox }));
+            // Still open after ten seconds: let in.
+            const late = setTimeout(() => { resolve({ code: 'still open', inbox }); ws.terminate(); }, 10000);
+            ws.on('close', (code) => { clearTimeout(late); resolve({ code, inbox }); });
+            ws.on('error', () => { clearTimeout(late); resolve({ code: 0, inbox }); });
         });
         check('another build of the game is turned away with a reason', other.code === 4001 && other.inbox.length === 1 && other.inbox[0].t === 'version' && other.inbox[0].game === true);
 

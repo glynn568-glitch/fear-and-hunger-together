@@ -73,7 +73,7 @@ const COMPRESSIBLE = new Set(['.html', '.js', '.json', '.css', '.txt']);
 
 // Client scripts, in load order. They are appended to the plugin list so they
 // load after every plugin the game ships with.
-const COOP_SCRIPTS = ['net', 'fixes', 'state', 'presence', 'events', 'battle', 'video', 'death', 'save', 'recover', 'trade', 'talk', 'chat', 'setup', 'together', 'sheet', 'light', 'rules', 'ui', 'meter'];
+const COOP_SCRIPTS = ['net', 'pad', 'fixes', 'state', 'presence', 'events', 'battle', 'video', 'death', 'save', 'recover', 'trade', 'party', 'pointer', 'talk', 'chat', 'setup', 'together', 'sheet', 'light', 'rules', 'ui', 'meter'];
 
 // A link pasted into a chat program shows as a card saying what it is. The
 // program fetches the page and the picture itself, with no cookie, so the
@@ -303,6 +303,18 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(COOP_SCRIPTS.filter((n) => fs.existsSync(path.join(CLIENT, n + '.js')))));
         return;
     }
+    // The saves from playing the game alone, for this PC's own page to bring
+    // into co-op (Together, "Bring mine in"). Nothing else of that folder.
+    const solo = /^\/coop\/solo\/(global|file\d{1,3})$/.exec(pathname);
+    if (solo) {
+        if (!isHost(req)) { res.writeHead(403); res.end(); return; }
+        fs.readFile(path.join(GAME, 'save', solo[1] + '.rpgsave'), 'utf8', (err, text) => {
+            if (err) { res.writeHead(404); res.end(); return; }
+            res.writeHead(200, { 'Content-Type': MIME['.txt'], 'Cache-Control': 'no-store' });
+            res.end(text);
+        });
+        return;
+    }
     if (pathname.startsWith('/coop/')) {
         const file = resolveIn(CLIENT, pathname.slice('/coop/'.length));
         if (!file) { res.writeHead(403); res.end(); return; }
@@ -371,7 +383,8 @@ const tunnel = new Tunnel(PORT);
 let online = false; // hosting through the tunnel
 let offer = ''; // a join link handed over by the launcher
 let offerAt = 0; // when: the same link clicked twice is offered twice
-tunnel.onDrop = () => { online = false; KEY = process.env.FH_KEY || ''; console.log('the tunnel dropped; not online any more'); };
+let droppedAt = 0; // when the tunnel last dropped by itself: the panel tells the host
+tunnel.onDrop = () => { online = false; KEY = process.env.FH_KEY || ''; droppedAt = Date.now(); console.log('the tunnel dropped; not online any more'); };
 
 function appState() {
     return {
@@ -382,6 +395,7 @@ function appState() {
         private: !!room.relayOnly,
         offer: offer, // a join link that came from a clicked fhtogether:// link, for the panel
         offerAt: offerAt,
+        droppedAt: droppedAt,
     };
 }
 
@@ -492,7 +506,7 @@ async function handleApp(req, res, pathname) {
     if (pathname === '/coop/app/quit') {
         reply(200, {});
         console.log('the game window was closed; stopping');
-        setTimeout(() => { room.partners.stopAll(); tunnel.stop(); process.exit(0); }, 100);
+        setTimeout(stopAll, 100);
         return;
     }
     // The launcher hands over a link someone clicked; the panel offers it.
@@ -531,6 +545,7 @@ function passOn(local, req) {
     });
     up.on('open', () => { for (const d of waiting.splice(0)) up.send(d, { binary: false }); });
     up.on('message', (data, isBinary) => {
+        if (!isBinary && data.length > 16 && data.toString('utf8', 0, 16) === '{"t":"worldcopy"') { if (data.length <= 8 * 1024 * 1024) keepWorld(data); return; }
         if (local.readyState !== WebSocket.OPEN || isBinary && local.bufferedAmount > BEHIND) return;
         local.send(data, { binary: isBinary });
     });
@@ -562,20 +577,64 @@ function passOn(local, req) {
     local.on('error', () => up.terminate());
 }
 
-// A save file read or written on the host.
-function proxyStore(req, res) {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-        const init = { method: req.method, headers: Object.assign({ 'content-type': 'text/plain' }, joinHeaders()) };
-        if (req.headers['x-fh-token']) init.headers['x-fh-token'] = String(req.headers['x-fh-token']);
-        if (req.method === 'PUT') init.body = Buffer.concat(chunks);
-        fetch(JOIN.origin + req.url, init).then((r) => r.arrayBuffer().then((buf) => {
-            res.writeHead(r.status, { 'Content-Type': r.headers.get('content-type') || MIME['.txt'], 'Cache-Control': 'no-store' });
-            res.end(Buffer.from(buf));
-        })).catch((err) => { res.writeHead(502, { 'Content-Type': MIME['.txt'] }); res.end('the host could not be reached: ' + err.message); });
-    });
+// The run's world at a bed, as the host froze it: kept here as well, so this
+// player can host the run another night.
+function keepWorld(data) {
+    try {
+        const msg = JSON.parse(data);
+        const run = String(msg.runId || '').replace(/[^\w-]/g, '');
+        const stamp = Number(msg.stamp);
+        const world = msg.world;
+        if (!run || !Number.isSafeInteger(stamp) || stamp <= 0 || !world || typeof world !== 'object' || Array.isArray(world)) return;
+        const dir = path.join(SAVES, 'runs', run);
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, `world@${stamp}.json`);
+        fs.writeFileSync(file + '.tmp', JSON.stringify(world));
+        fs.renameSync(file + '.tmp', file);
+        // The last twenty beds of a run are plenty to carry it on from.
+        const beds = fs.readdirSync(dir).map((n) => /^world@(\d+)\.json$/.exec(n)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+        for (const old of beds.slice(20)) fs.rmSync(path.join(dir, `world@${old}.json`), { force: true });
+    } catch (e) { console.error('could not keep a copy of the run: ' + e.message); }
 }
+
+// A joining player's saves live on their own PC, so whoever hosts another
+// night, everyone still has theirs. Saves made before 0.1.3 sit on the host
+// they were made with: read from there when this PC has none, and kept here.
+function proxyStore(req, res) {
+    let pathname;
+    try { pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch (e) { res.writeHead(400); res.end(); return; }
+    const own = storeFile(pathname);
+    const index = /^\/coop\/store\/([\w \-']{1,16})\/index$/.exec(pathname);
+    if (!own && !index) { res.writeHead(404); res.end(); return; }
+    const fromHost = (method) => fetch(JOIN.origin + req.url, {
+        method, headers: Object.assign(req.headers['x-fh-token'] ? { 'x-fh-token': String(req.headers['x-fh-token']) } : {}, joinHeaders()),
+    });
+    if (index) {
+        const dir = path.join(SAVES, 'players', index[1].trim().toLowerCase());
+        const mine = fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.rpgsave')).map((n) => n.slice(0, -8)) : [];
+        fromHost('GET').then((r) => (r.ok ? r.json() : [])).catch(() => []).then((theirs) => {
+            res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify([...new Set(mine.concat(Array.isArray(theirs) ? theirs : []))]));
+        });
+        return;
+    }
+    if (req.method === 'GET' && !fs.existsSync(own)) {
+        fromHost('GET').then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null).then((buf) => {
+            if (!buf) { res.writeHead(404); res.end(); return; }
+            try { fs.mkdirSync(path.dirname(own), { recursive: true }); fs.writeFileSync(own, Buffer.from(buf)); } catch (e) { console.error('could not keep an old save here: ' + e.message); }
+            res.writeHead(200, { 'Content-Type': MIME['.txt'], 'Cache-Control': 'no-store' });
+            res.end(Buffer.from(buf));
+        });
+        return;
+    }
+    // An old copy left on the host must not come back after a delete.
+    if (req.method === 'DELETE') fromHost('DELETE').catch(() => {});
+    handleStore(req, res, own);
+}
+
+// Stopping takes what it started with it: AI partners and the tunnel.
+function stopAll() { room.partners.stopAll(); tunnel.stop(); process.exit(0); }
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, stopAll);
 
 // Starting it twice is the common mistake; say so plainly instead of a stack trace.
 function onListenError(err) {

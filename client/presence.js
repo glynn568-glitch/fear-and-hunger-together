@@ -81,6 +81,7 @@
             bot: Coop.isBot ? 1 : 0,
             act: Coop.isBot && Coop.botActivity ? String(Coop.botActivity()).slice(0, 40) : undefined,
             fl: followersNow() || 0, // 0, not left out: a field left out keeps its old value on the other side
+            pl: Coop.partyLeader || 0, // whose line this player walks in (party.js)
         };
     }
 
@@ -255,6 +256,9 @@
 
     function offerFollow(peer, was) {
         if (!window.$gameMap || !Coop.world.live || Coop.dead) return;
+        // Gone on again from this map: any old offer after them was for an earlier
+        // way out. (Moving on from somewhere else, a door into a door, it still stands.)
+        if (followOffer && followOffer.id === peer.id && was.m === $gameMap.mapId()) followOffer = null;
         if (was.m !== $gameMap.mapId() || !peer.m || peer.m === was.m) return;
         if (Math.abs(was.x - $gamePlayer.x) + Math.abs(was.y - $gamePlayer.y) > FOLLOW_RANGE) return;
         followOffer = { id: peer.id, until: Date.now() + FOLLOW_FOR };
@@ -274,7 +278,7 @@
         if (!peer) { followOffer = followOffer && Date.now() <= followOffer.until && Coop.peers.has(followOffer.id) ? followOffer : null; followBox.style.display = 'none'; return; }
         const scale = Math.max(1, Math.min(2.4, (Graphics._realScale || 1) * 0.75));
         followBox.style.fontSize = Math.round(17 * scale) + 'px';
-        followBox.textContent = peer.name + ' has gone on. Press F to follow (' + Math.ceil((followOffer.until - Date.now()) / 1000) + ')';
+        followBox.textContent = peer.name + ' has gone on. Press ' + Coop.keyName('F') + ' to follow (' + Math.ceil((followOffer.until - Date.now()) / 1000) + ')';
         followBox.style.display = freeToFollow() ? '' : 'none';
     }, 200);
 

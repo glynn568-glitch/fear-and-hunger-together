@@ -8,9 +8,9 @@ Folders named below are inside the download's `app` folder (in the source code, 
 
 ## What you need
 
-- **Fear & Hunger** from Steam or itch (Windows), for every player. The mod finds it through Steam or the itch app; if it can't, it asks you for the folder once. Everyone needs the same version of the game: the mod checks, and says so if not.
+- **Fear & Hunger** from Steam or itch, for every player (Windows, Steam Deck or Linux). The mod finds it through Steam or the itch app; if it can't, it asks you for the folder once. Everyone needs the same version of the game: the mod checks, and says so if not.
 - **This mod**, for every player, the same version.
-- **Chrome, Edge or Opera** to play in.
+- **Chrome, Edge, Opera or Brave** to play in.
 - For an AI partner that talks and thinks, any one of: **Claude Code** signed in on this PC (https://claude.com/claude-code), an **Anthropic API key** (paste it when F8 asks), or **Ollama** running a local model. The partner finds whichever you have. Without any, it still follows and fights, silently.
 
 Everything else comes in the box, except one thing: the first time you host online, the mod downloads Cloudflare's tunnel program (cloudflared, about 55 MB) from Cloudflare's official releases and checks it against their published checksum.
@@ -33,33 +33,44 @@ The first time, Windows may say "Windows protected your PC" because the program 
 
 For tinkerers, `app\Play.cmd` still starts it from a console with the old menu.
 
+### Steam Deck and Linux
+
+1. Fear & Hunger installed through Steam (the Windows version; Steam installs it with Proton). On a Deck it may be on the SD card.
+2. Chrome (or Chromium, Edge, Brave). On a Deck: Desktop Mode, **Discover**, install **Google Chrome**.
+3. Unzip this mod anywhere, for example into Downloads.
+4. Start **play.sh**. On a Deck, to play it from Game Mode: in Steam, **Games > Add a Non-Steam Game**, Browse, pick `play.sh`. It opens full screen; closing it quits. If the buttons do nothing in the game, pick the **Gamepad** layout in its controller settings.
+
+The first start fetches its own copy of Node.js (about 30 MB, checked against nodejs.org's checksums). Online hosting fetches Cloudflare's tunnel program the same way.
+
 ## Playing together
 
-| Key | |
-|---|---|
-| **Y** | Talk to everyone. An AI partner takes orders this way. |
-| **F8** | Call an AI partner in, or send it home (host only). **Shift+F8** calls another. |
-| **Enter**, facing a partner | Hand them something, use an item on them (a bandage, food), cast a skill on them (a healing prayer), or join their fight. |
-| **F** | Follow a partner who just went through a door. |
-| **Tab** (hold) | Everyone's character: health, hunger, what they wear and carry. |
-| **F1** | How playing together works. |
-| **F9** | Lag meter. |
-| **R** at the title | Carry on after a crash or a dropped connection. |
-| **Ctrl+Shift+U** | Unstuck, if the game's own scripts trap you. |
-| **Ctrl+Shift+B** | Copy a bug report (also in the Together panel). |
+| Key | Controller | |
+|---|---|---|
+| **Y** | Start | Talk to everyone. An AI partner takes orders this way. On a Deck, Steam + X brings up the keyboard. |
+| **F8** | | Call an AI partner in, or send it home (host only). **Shift+F8** calls another. |
+| **Enter**, facing a partner | A | Join their party, hand them something, use an item on them (a bandage, food), cast a skill on them (a healing prayer), or join their fight. |
+| **F** | R3 | Follow a partner who just went through a door. |
+| **Tab** (hold) | LT (hold) | Everyone's character: health, hunger, what they wear and carry. |
+| **F1** | View | How playing together works. |
+| **F9** | | Lag meter. |
+| **R** at the title | RT | Carry on after a crash or a dropped connection. |
+| **Ctrl+Shift+U** | View + Start (hold) | Unstuck, if the game's own scripts trap you. |
+| **Ctrl+Shift+B** | | Copy a bug report (also in the Together panel). |
+
+On a controller the game's own keys are on buttons too: **RT** lights the torch (T), **L3** is phase (C). The Together panel works with the D-pad, A and B. Hold **B** where it says hold Esc.
 
 - **Fights.** Whoever touches the enemy starts the fight and keeps what it drops. Anyone nearby is pulled in. Each player commands their own character.
 - **Bags** are your own. An emptied chest is empty for everyone.
-- **Party.** Four characters between all of you.
+- **Party.** Four characters between all of you. Join someone's party (Enter, facing them) and you walk in their line: through every door they take and into every fight they start, from anywhere on the map. You still run your own character and menu, and their characters show in your menu lineup, where you can look at their gear but not change it. Hold a direction to step out of line.
 - **Death.** You watch through a living partner's eyes. They can call you back at a ritual circle, which spends the circle. If everyone is dead, the run is over. Hold Esc to let your character go: what you carried passes to a partner, and you can start someone new.
-- **Saves.** Sleeping in a bed saves everyone. Another day, everyone presses Continue and lands on their save from that night.
+- **Saves.** Sleeping in a bed saves everyone. Another day, everyone presses Continue and lands on their save from that night. Any of you can host that other day: each player's PC keeps its own copy of their saves and of the run, so nobody waits on the first night's host.
 
 ## The AI partner
 
 It joins as whichever character nobody has taken, and plays them: it walks with you, fights its own turns, talks in that character's voice, and lives under the same rules you do.
 
 - **Fights.** It sees the fight the way you do (the enemy's wounds in words, never numbers; its own side's health as the numbers on the battle screen) and picks its own attack, target, skill or item.
-- **Talking.** Press Y and talk to it normally. It understands "wait here", "follow me", "be quiet", "you can talk again", "give me your torch", "eat something", "go home". If it is dead and you tell it to let go, it gives the character up and you get its bag.
+- **Talking.** Press Y and talk to it normally. It understands "wait here", "follow me", "join my party", "be quiet", "you can talk again", "give me your torch", "eat something", "go home". If it is dead and you tell it to let go, it gives the character up and you get its bag.
 - **Wounds.** It binds its own bleeding, treats infection and poison, and heals when it is close to death, with what it carries. When it has nothing for it, it asks you.
 - **Fights you are in.** If you are fighting close by, it comes in. It is told plainly how a fight ended, so it won't claim a kill that got away.
 - **Hunger.** It gets hungry, eats from its own bag, and asks you when it has nothing. It doesn't scavenge: it eats what you hand it and what its own fights drop. Hand it food by facing it and pressing Enter.

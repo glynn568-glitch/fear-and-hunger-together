@@ -4,9 +4,10 @@
 //   join      the second player on their own PC, through their own server
 //   badlink   as shipped, over a poor line: 80 ms each way and 4 Mbit/s to each player
 //   internet  two people (test/humans.js) through a real Cloudflare tunnel: needs the internet
+//   twins     each fix taken back out (test/twins.js): its suite has to fail
 // A suite that fails, even one that passes when run again alone, fails the gate.
 // On a pass, test/out/gate.json names the commit; tools/release.js ships only that commit.
-//   node test/gate.js              all five (about forty minutes)
+//   node test/gate.js              all six (about an hour)
 //   node test/gate.js join badlink some of them (no gate.json is written)
 const { spawnSync, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -20,6 +21,8 @@ const MODES = {
     join: { FH_TEST_RELAY: '1', FH_TEST_JOIN: '1' },
     badlink: { FH_TEST_RELAY: '1', FH_LAG: '80', FH_RATE: '500000' },
     internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans'] },
+    // Last, so every suite has just passed clean (FH_TWINS_CLEAN_RUN skips that control).
+    twins: { runner: 'twins.js', FH_TWINS_CLEAN_RUN: '1' },
 };
 const asked = process.argv.slice(2);
 const modes = asked.length ? asked : Object.keys(MODES);
@@ -38,12 +41,12 @@ for (const mode of modes) {
     // and here a flaky suite fails the gate.
     const env = Object.assign({ FH_TEST_JOBS: '4' }, process.env, { FH_TEST_LOGS_DIR: logs, FH_TEST_RESULT: result });
     for (const k of ['FH_TEST_RELAY', 'FH_TEST_JOIN', 'FH_LAG', 'FH_RATE', 'FH_TEST_TUNNEL']) delete env[k];
-    const { suites, ...vars } = MODES[mode];
+    const { suites, runner, ...vars } = MODES[mode];
     Object.assign(env, vars);
     // A result left over from an earlier run must never stand in for this one.
     fs.rmSync(result, { force: true });
     console.log(`\n=== ${mode}`);
-    const ran = spawnSync(process.execPath, [path.join(__dirname, 'run.js'), ...(suites || [])], { cwd: ROOT, env, stdio: 'inherit' });
+    const ran = spawnSync(process.execPath, [path.join(__dirname, runner || 'run.js'), ...(suites || [])], { cwd: ROOT, env, stdio: 'inherit' });
     let r = null;
     try { r = JSON.parse(fs.readFileSync(result, 'utf8')); } catch (e) { /* no result: the run did not finish */ }
     if (!r || !(r.suites > 0)) r = { suites: 0, broken: ['(the run itself did not finish: exit ' + ran.status + ')'], flaky: [] };

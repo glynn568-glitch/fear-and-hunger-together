@@ -31,6 +31,8 @@ const install = require('./helpers');
         await waitFor(a, () => { const p = Coop.peersHere()[0]; return p && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 3; }, 60000, 'the bot appears beside the human');
         const first = await a.evaluate(() => { const p = Coop.peersHere()[0]; return { cn: p.cn, an: p.an, ini: p.ini }; });
         check('it joined as a different protagonist', first.an !== 'Mercenary' && first.ini.length === 1, JSON.stringify(first));
+        // Drawn on the next frame after it arrives; a loaded machine can be slow to get there.
+        await waitFor(a, () => { const p = Coop.peersHere()[0]; const e = p && SceneManager._scene._spriteset._coopSprites.get(p.id); return e && e.label && e.sprite.visible && e.sprite.opacity > 0; }, 5000, 'the bot drawn').catch(() => {});
         const seen = await a.evaluate(() => { const p = Coop.peersHere()[0]; const e = SceneManager._scene._spriteset._coopSprites.get(p.id); return { transparent: !!p.tr, drawn: !!e, visible: !!e && e.sprite.visible && e.sprite.opacity > 0, label: e && e.label ? e.label.visible : false }; });
         await sleep(1500);
         check('it steps off the tile the human is standing on', await a.evaluate(() => { const p = Coop.peersHere()[0]; return Coop.distanceTo(p) >= 1; }));

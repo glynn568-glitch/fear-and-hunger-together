@@ -31,5 +31,23 @@ for (const file of files) {
 // The release zip holds every script the packaged ones load or start.
 const pkg = require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'tools', 'package.js'), '--check'], { encoding: 'utf8' });
 if (pkg.status !== 0) { bad++; console.log('FAIL ' + pkg.stderr.trim()); }
+// Every broken twin still finds the fix it takes out (test/twins.js).
+const twins = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'twins.js'), '--check'], { encoding: 'utf8' });
+if (twins.status !== 0) { bad++; console.log(twins.stdout.trim() + twins.stderr.trim()); }
+// Suites run several at a time: no two in the full run may use the same port (a joiner sits at
+// its twoPlayers() or night() port + 100). publish and carry once shared one, and failed together.
+const all = JSON.parse(fs.readFileSync(path.join(__dirname, 'run.js'), 'utf8').match(/const ALL = (\[[^\]]*\]);/)[1].replace(/'/g, '"'));
+const claimed = {};
+for (const suite of all) {
+    const text = fs.readFileSync(path.join(__dirname, suite + '.js'), 'utf8');
+    const ports = new Set([...text.matchAll(/\b8[4-8]\d\d\b/g)].map((m) => +m[0]));
+    for (const m of text.matchAll(/\b(?:twoPlayers|night)\((8[4-8]\d\d)\b/g)) ports.add(+m[1] + 100);
+    // Ports worked out from a constant (four.js: HOST + 1, HOST + 2). carry once took one of them.
+    for (const m of text.matchAll(/\bconst (\w+) = (8[4-8]\d\d)\b/g)) {
+        for (const k of text.matchAll(new RegExp('\\b' + m[1] + ' \\+ (\\d+)\\b', 'g'))) ports.add(+m[2] + +k[1]);
+    }
+    for (const p of ports) (claimed[p] = claimed[p] || []).push(suite);
+}
+for (const [p, by] of Object.entries(claimed)) if (by.length > 1) { bad++; console.log(`FAIL port ${p} is used by ${by.join(' and ')}, which can run at the same time`); }
 console.log(bad ? `${bad} problem(s)` : `lint: ${files.length} files clean`);
 process.exit(bad ? 1 : 0);

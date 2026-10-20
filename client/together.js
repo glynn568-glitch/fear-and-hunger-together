@@ -39,6 +39,7 @@
         + '<div class="row"><input type="text" spellcheck="false" autocomplete="off" placeholder="Paste the link your friend sent" data-field="join"></div>'
         + '<div class="row"><button class="big" data-do="join">Join</button></div></div>'
         + '<div data-part="leave" hidden><div class="row"><button data-do="leave">Leave their game</button></div></div>'
+        + '<div data-part="import"><h3>Single-player saves</h3><div class="row"><button data-do="import">Bring mine in</button></div></div>'
         + '<div data-part="partner"><h3>AI partner</h3><div class="row"><button data-do="partner">Call one in</button><button data-do="home">Send one home</button></div></div>'
         + '<div class="why"></div>'
         + '<div class="row" style="justify-content: space-between"><button data-do="report">Copy a bug report</button><button data-do="close">Close</button></div>';
@@ -73,6 +74,41 @@
         $('[data-do=private]').disabled = online;
     }
 
+    // Saves from playing alone (the game's own save folder) copied into free
+    // slots here, once each. Loading one starts a co-op run from that moment.
+    async function importSaves() {
+        if (!onTitle()) throw new Error('Go back to the title screen first.');
+        if (!Coop.name) throw new Error('Type your name first (bottom left): your saves are kept under it.');
+        const get = (file) => fetch('coop/solo/' + file, { cache: 'no-store' }).then((r) => (r.ok ? r.text() : ''), () => '');
+        let theirs = null;
+        try { theirs = JSON.parse(LZString.decompressFromBase64(await get('global'))); } catch (e) { /* none */ }
+        if (!Array.isArray(theirs) || !theirs.some(Boolean)) return 'No single-player saves were found in the game\'s folder.';
+        const mine = DataManager.loadGlobalInfo() || [];
+        const max = DataManager.maxSavefiles();
+        const had = new Set(mine.filter(Boolean).map((i) => i.coopFrom).filter(Boolean));
+        let brought = 0, already = 0, full = 0;
+        for (let i = 1; i < theirs.length; i++) {
+            const info = theirs[i];
+            if (!info) continue;
+            const from = i + ':' + info.timestamp;
+            if (had.has(from)) { already++; continue; }
+            let slot = 1;
+            while (slot <= max && mine[slot]) slot++;
+            if (slot > max) { full++; continue; }
+            let json = '';
+            try { json = LZString.decompressFromBase64(await get('file' + i)) || ''; } catch (e) { /* unreadable */ }
+            if (!json) continue;
+            StorageManager.save(slot, json);
+            mine[slot] = Object.assign({}, info, { coopFrom: from });
+            brought++;
+        }
+        if (brought) DataManager.saveGlobalInfo(mine);
+        if (!brought && already) return 'Those saves are already here. Continue lists them.';
+        if (!brought && full) return 'No free save slot is left here for them.';
+        if (!brought) return 'No single-player saves could be read.';
+        return 'Brought in ' + brought + ' save' + (brought > 1 ? 's' : '') + '. Continue lists ' + (brought > 1 ? 'them' : 'it') + '.' + (full ? ' ' + full + ' did not fit.' : '');
+    }
+
     function act(what) {
         if (busy) return;
         const run = (text, p, after) => {
@@ -100,6 +136,11 @@
             Coop.send({ t: 'partner', on: true });
         } else if (what === 'home') {
             Coop.send({ t: 'partner', on: false });
+        } else if (what === 'import') {
+            busy = true;
+            why.classList.remove('bad');
+            why.textContent = 'Looking for your saves...';
+            importSaves().then((said) => { busy = false; why.textContent = said; }, (e) => { busy = false; why.textContent = e.message; why.classList.add('bad'); });
         } else if (what === 'report') {
             bugReport().then((said) => { why.classList.remove('bad'); why.textContent = said; });
         } else if (what === 'close') close();
@@ -149,6 +190,7 @@
     // A clicked fhtogether:// link reaches this PC's server through the
     // launcher; it is offered here. Checked every couple of seconds.
     let offered = 0;
+    let dropSeen = null; // null until the first answer: a drop from before this page loaded is old news
     setInterval(function () {
         if (!window.SceneManager || !SceneManager._scene) return;
         api('').then(function (s) {
@@ -161,6 +203,15 @@
                     () => { why.textContent = 'Your link works now. Press Copy, then send it to your friends.'; Coop.toast('Your link works now. Open Together and press Copy.', 10000); });
             }
             if (s.mode !== 'online') copyWhenReady = false;
+            // The tunnel dropped: the link friends have is dead, and only the host can make a new one.
+            if (s.droppedAt !== dropSeen) {
+                if (dropSeen !== null && s.droppedAt && s.mode === 'local') {
+                    const said = 'Your link stopped working. Host online again and send the new link.';
+                    Coop.toast(said, 15000);
+                    if (box.classList.contains('open')) { why.classList.add('bad'); why.textContent = said; }
+                }
+                dropSeen = s.droppedAt;
+            }
             if (!s.offer || s.offerAt === offered) return;
             offered = s.offerAt;
             if (!onTitle()) { Coop.toast('A link to join a friend arrived. Go back to the title screen to join.', 8000); return; }

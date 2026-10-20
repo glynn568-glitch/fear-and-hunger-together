@@ -10,6 +10,15 @@
     // Per protagonist: the game's "killed" and "body lies here" switches.
     const KILLED_FLAGS = { 1: [274, 281], 3: [275, 282], 4: [276, 283], 5: [277, 284] };
     const HUNGRY_BUT_ALIVE = 100; // "weak from hunger" starts at 108, "ill" at 88
+    // Per protagonist: the game's "lost" switches for arm 1, arm 2, leg 1, leg 2.
+    // With both arms and both legs gone the game sets DISABLED (common event 40),
+    // and nearly every map then asks "Quit breathing / Hold on!".
+    const LIMBS = { 1: [36, 37, 38, 39], 3: [248, 249, 250, 251], 4: [252, 253, 254, 255], 5: [256, 257, 258, 259] };
+    const DISABLED = 41;
+    // How the game takes a limb: a "cut" state, then its dismemberment event.
+    const CUT = { arm: 3, leg: 14 };
+    const HELPLESS = 13; // "Can't do shit", put on a protagonist with nothing left
+    const DISMEMBER = 240;
     // Every ending plays out on this map (its event 4 picks the page by the ending's switch).
     const ENDING_MAP = 86;
     const ENDINGS = [1889, 1890, 1891, 1892, 2249, 2647]; // D, C, B, A, S, C2; none = E
@@ -34,6 +43,9 @@
         const ended = window.$gameMap && $gameMap.mapId() === ENDING_MAP;
         if (sceneClass === Scene_Gameover && Coop.world.live && !realGameover && !Coop.dead && !ended && living().length > 0) {
             Coop.dead = true;
+            // Whatever they were in the middle of (the enemy that killed them) never
+            // finishes here: let it go, or it stands frozen for everyone else.
+            if (window.$gameMap) for (const ev of $gameMap.events()) if (ev._locked) ev.unlock();
             Coop.reportPresence(true);
             _goto.call(this, Scene_CoopDead);
             return;
@@ -99,7 +111,7 @@
         this._watching = peer.id;
         Coop.viewer.show(peer.id);
         Coop.sendTo(peer.id, 'watch', { on: true });
-        banner.textContent = 'You are dead. ' + peer.name + ' can call you back at a ritual circle. Hold Esc to give this character up: what you carry passes to them, and you can start another.';
+        banner.textContent = 'You are dead. ' + peer.name + ' can call you back at a ritual circle. Hold ' + Coop.keyName('Esc') + ' to give this character up: what you carry passes to them, and you can start another.';
         banner.style.display = '';
     };
 
@@ -123,7 +135,7 @@
             if (Coop.deadFromSave) {
                 // Nobody to watch yet, and nobody whose death would end the run.
                 if (this._watching) { Coop.viewer.hide(); this._watching = 0; }
-                banner.textContent = 'You were dead when this was saved. Once a partner has loaded their save of this run, they can call you back at a ritual circle. Hold Esc to go back to the title.';
+                banner.textContent = 'You were dead when this was saved. Once a partner has loaded their save of this run, they can call you back at a ritual circle. Hold ' + Coop.keyName('Esc') + ' to go back to the title.';
                 banner.style.display = '';
                 return;
             }
@@ -198,24 +210,65 @@
 
     // The circle is spent when the dead player's machine says they are up,
     // not when the call goes out: a call nobody answers costs nothing.
-    let calling = null; // { peerId, switchId, name, timer }
-    function revive(peer, ev, switchId) {
+    let calling = null; // { peerId, switchId, name, at, limb, giver, timer }
+    // at: where the circle was used, { m, x, y }; giver: the actor whose limb it is.
+    function revive(peer, switchId, at, limb, giver) {
         if (calling) clearTimeout(calling.timer);
-        calling = { peerId: peer.id, switchId, name: peer.name, timer: setTimeout(function () {
+        calling = { peerId: peer.id, switchId, name: peer.name, at, limb, giver, timer: setTimeout(function () {
             if (calling) Coop.toast(calling.name + ' did not answer. The circle is untouched.', 5000);
             calling = null;
         }, 6000) };
-        Coop.sendTo(peer.id, 'revive', { m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y, by: Coop.name });
+        Coop.sendTo(peer.id, 'revive', { m: at.m, x: at.x, y: at.y, by: Coop.name, limb });
     }
     Coop.on('to:revived', function (msg) {
         if (!calling || calling.peerId !== msg.from) return;
         clearTimeout(calling.timer);
         $gameSwitches.setValue(calling.switchId, true);
+        // The limb they came back with was this player's.
+        const giver = msg.limb && calling.limb === msg.limb && $gameActors.actor(calling.giver);
+        if (giver) {
+            giver.addState(CUT[calling.limb]);
+            $gameTemp.reserveCommonEvent(DISMEMBER);
+        }
         $gameScreen.startFlash([150, 20, 20, 200], 90);
         $gameScreen.startShake(4, 6, 60);
         Coop.toast('The circle goes dark. ' + calling.name + ' draws breath.', 5000);
         calling = null;
     });
+
+    // Someone with no limbs left would only quit breathing again on arrival.
+    // The circle takes them back only with a limb of the caller's.
+    let gift = null; // { peerId, switchId, name, at }: waiting to be asked
+    let giftOffer = null; // the same plus giver, while the choice is up
+    Coop.on('to:limbless', function (msg) {
+        if (!calling || calling.peerId !== msg.from) return;
+        clearTimeout(calling.timer);
+        gift = { peerId: calling.peerId, switchId: calling.switchId, name: calling.name, at: calling.at };
+        calling = null;
+    });
+    // The limbs this actor still has to give.
+    function spareLimbs(actor) {
+        const l = actor && LIMBS[actor.actorId()];
+        return l ? ['arm', 'leg'].filter((k) => !$gameSwitches.value(k === 'arm' ? l[1] : l[3])) : [];
+    }
+    function askGift() {
+        if (!gift || $gameMap.isEventRunning() || Coop.battle || Coop.dead) return;
+        // Asked only at the circle: anywhere else the moment has passed.
+        if ($gameMap.mapId() !== gift.at.m) { gift = null; return; }
+        const leader = $gameParty.leader();
+        giftOffer = Object.assign(gift, { giver: leader && leader.actorId() });
+        gift = null;
+        const choices = spareLimbs(leader).map((k) => ['Give ' + (k === 'arm' ? 'an' : 'a') + ' ' + k, "Coop.giftAnswer('" + k + "')"]);
+        choices.push(['Step away', 'Coop.giftAnswer(null)']);
+        $gameMap._interpreter.setup(choiceList([giftOffer.name + ' has no limbs left to crawl with.', 'The circle will take one of yours.'], choices), 0);
+    }
+    Coop.giftAnswer = function (limb) {
+        const g = giftOffer;
+        giftOffer = null;
+        if (!g || !limb || !spareLimbs($gameActors.actor(g.giver)).includes(limb)) return;
+        const peer = Coop.peers.get(g.peerId);
+        if (peer && peer.st === 'dead' && !$gameSwitches.value(g.switchId)) revive(peer, g.switchId, g.at, limb, g.giver);
+    };
 
     // Everything a party is carrying or wearing, as plain counts.
     function belongings() {
@@ -238,6 +291,7 @@
     Scene_Map.prototype.update = function () {
         _mapUpdateInherit.call(this);
         playEnding();
+        askGift();
         if (!inherited.length || Coop.battle || Coop.dead || !Coop.world.live) return;
         const msg = inherited.shift();
         let n = 0;
@@ -260,17 +314,16 @@
     let offer = null; // { peerId, eventId, switchId }
     let bypass = false;
 
-    function offerList(name) {
-        const choices = ['Call ' + name + ' back', 'Use the circle yourself', 'Step away'];
-        const list = [
-            { code: 101, indent: 0, parameters: ['', 0, 0, 2] },
-            { code: 401, indent: 0, parameters: ['The circle could call ' + name + ' back from the dark.'] },
-            { code: 401, indent: 0, parameters: ['It would be spent.'] },
-            { code: 102, indent: 0, parameters: [choices, 2, 2, 2, 0] },
-        ];
-        choices.forEach(function (text, n) {
-            list.push({ code: 402, indent: 0, parameters: [n, text] });
-            if (n < 2) list.push({ code: 355, indent: 1, parameters: ['Coop.circleAnswer(' + n + ')'] });
+    // A message and a choice as event commands; each choice runs its script, if any.
+    // The last choice is the default and what cancel picks.
+    function choiceList(lines, choices) {
+        const last = choices.length - 1;
+        const list = [{ code: 101, indent: 0, parameters: ['', 0, 0, 2] }];
+        for (const line of lines) list.push({ code: 401, indent: 0, parameters: [line] });
+        list.push({ code: 102, indent: 0, parameters: [choices.map((c) => c[0]), last, last, 2, 0] });
+        choices.forEach(function (c, n) {
+            list.push({ code: 402, indent: 0, parameters: [n, c[0]] });
+            if (c[1]) list.push({ code: 355, indent: 1, parameters: [c[1]] });
             list.push({ code: 0, indent: 1, parameters: [] });
         });
         list.push({ code: 404, indent: 0, parameters: [] });
@@ -285,7 +338,7 @@
         const ev = $gameMap.event(o.eventId);
         if (n === 0) {
             const peer = Coop.peers.get(o.peerId);
-            if (peer && peer.st === 'dead' && !$gameSwitches.value(o.switchId)) revive(peer, ev, o.switchId);
+            if (peer && peer.st === 'dead' && !$gameSwitches.value(o.switchId)) revive(peer, o.switchId, { m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y });
         } else if (n === 1 && ev) {
             bypass = true;
             ev.start();
@@ -300,7 +353,9 @@
             const switchId = dead.length ? circleSwitch(this) : 0;
             if (switchId && !$gameSwitches.value(switchId)) {
                 offer = { peerId: dead[0].id, eventId: this._eventId, switchId };
-                $gameMap._interpreter.setup(offerList(dead[0].name), 0);
+                const name = dead[0].name;
+                $gameMap._interpreter.setup(choiceList(['The circle could call ' + name + ' back from the dark.', 'It would be spent.'],
+                    [['Call ' + name + ' back', 'Coop.circleAnswer(0)'], ['Use the circle yourself', 'Coop.circleAnswer(1)'], ['Step away', null]]), 0);
                 return;
             }
         }
@@ -309,6 +364,9 @@
 
     Coop.on('to:revive', function (msg) {
         if (!Coop.dead) return;
+        const limbs = $gameParty.leader() && LIMBS[$gameParty.leader().actorId()];
+        const limbless = limbs && $gameSwitches.value(limbs[1]) && $gameSwitches.value(limbs[3]);
+        if (limbless && !CUT[msg.limb]) { Coop.sendTo(msg.from, 'limbless', {}); return; }
         Coop.dead = false;
         Coop.deadFromSave = false;
         const leader = $gameParty.leader();
@@ -322,6 +380,12 @@
             // The world may have this character down as killed, with a body
             // lying somewhere. They are neither any more.
             for (const id of KILLED_FLAGS[leader.actorId()] || []) $gameSwitches.setValue(id, false);
+            // The caller's own limb, sewn on: the second of that kind comes back.
+            if (limbless) {
+                $gameSwitches.setValue(msg.limb === 'arm' ? limbs[1] : limbs[3], false);
+                $gameSwitches.setValue(DISABLED, false);
+                leader.removeState(HELPLESS);
+            }
         }
         // Whatever killed this player was mid-script; none of it resumes.
         $gameMap._interpreter.clear();
@@ -332,8 +396,9 @@
         $gamePlayer.reserveTransfer(msg.m, msg.x, msg.y, 2, 0);
         $gamePlayer.refresh();
         SceneManager.goto(Scene_Map);
-        Coop.sendTo(msg.from, 'revived', {});
-        Coop.toast(msg.by + ' called you back. You have one breath of life left.', 6000);
+        Coop.sendTo(msg.from, 'revived', { limb: limbless ? msg.limb : null });
+        if (limbless) $gameTemp.reserveCommonEvent(DISMEMBER); // the game redraws the body
+        Coop.toast(msg.by + ' called you back' + (limbless ? ' with their own ' + msg.limb : '') + '. You have one breath of life left.', 6000);
         Coop.reportPresence(true);
     });
 
@@ -390,6 +455,7 @@
         Coop.battle = null;
         ending = null;
         endingSent = false;
+        gift = giftOffer = null;
         Coop.world.leave();
         Coop.viewer.hide();
         Coop.reportPresence(true);

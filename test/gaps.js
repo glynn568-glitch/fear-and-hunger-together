@@ -98,9 +98,16 @@ const resumeOffer = (page) => page.evaluate(() => { const b = document.getElemen
         //--- the keys are explained ---
         await b.keyboard.press('F1');
         await sleep(300);
-        const help = await b.evaluate(() => { const h = document.getElementById('coop-help'); return { shown: h.style.display !== 'none', text: h.textContent }; });
+        const help = await b.evaluate(() => { const h = document.getElementById('coop-help'); const pad = h.querySelector('footer.pad'); return { shown: h.style.display !== 'none', text: pad.style.display === 'none' ? h.textContent.replace(pad.textContent, '') : h.textContent }; });
         check('F1 explains how playing together works', help.shown && /Facing a partner: hand them something/.test(help.text) && /ritual circle/.test(help.text) && help.text.length < 760, help.text.length + ' chars');
         await b.keyboard.press('F1');
+
+        //--- G lays a bear trap, as the menu does ---
+        await b.evaluate(() => { $gameParty.gainItem($dataItems[76], 2); window.TRAPS = 0; const r = Game_Temp.prototype.reserveCommonEvent; Game_Temp.prototype.reserveCommonEvent = function (id) { if (id === 55) TRAPS++; return r.apply(this, arguments); }; });
+        await b.keyboard.down('KeyG'); await sleep(120); await b.keyboard.up('KeyG');
+        await sleep(600);
+        const trap = await b.evaluate(() => ({ left: $gameParty.numItems($dataItems[76]), laid: TRAPS }));
+        check('G lays a bear trap from the bag', trap.left === 1 && trap.laid === 1, JSON.stringify(trap));
         s.a = a3;
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
