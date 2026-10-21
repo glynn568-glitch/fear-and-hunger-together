@@ -137,6 +137,8 @@
             others: Coop.peers.size,
             window: innerWidth + 'x' + innerHeight + ' @' + (+devicePixelRatio.toFixed(2)),
             gpu: gpuName(),
+            // Memory in use, for a game that slows down over a long session (Chrome only).
+            heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
         };
         M._frames = Coop.viewer ? Coop.viewer.frames : 0;
         frames = 0; steps = 0; lateSteps = 0; worstGap = 0; drawWorst = 0; stepCost = 0; stepWorst = 0; stalls = 0; stallWorst = 0;

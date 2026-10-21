@@ -1186,12 +1186,14 @@ module.exports = function installBot(options) {
         _gainItem.call(this, item, amount, includeEquip);
         if (item && amount > 0 && BOT.mode === 'explore' && this === window.$gameParty && !this.inBattle() && Coop.world.live) note('You found ' + item.name + (amount > 1 ? ' x' + amount : '') + '.');
         // A weapon or armour better than what it wears goes on, as a player would.
-        if (item && amount > 0 && (DataManager.isWeapon(item) || DataManager.isArmor(item)) && this === window.$gameParty && !this.inBattle() && Coop.world.live) {
+        // Not for what its own change of clothes hands back (each piece taken off is a
+        // gain: 10/21 that scheduled another change per piece, until the page froze).
+        if (item && amount > 0 && (DataManager.isWeapon(item) || DataManager.isArmor(item)) && this === window.$gameParty && !this.inBattle() && Coop.world.live && !BOT.dressing) {
             const me = this.leader();
-            if (me) setTimeout(function () {
-                if ($gameParty.inBattle() || BOT.giving) return;
+            if (me) BOT.dressing = setTimeout(function () {
+                if ($gameParty.inBattle() || BOT.giving) { BOT.dressing = 0; return; }
                 const before = me.equips().map((e) => e && e.name).join();
-                me.optimizeEquipments();
+                try { me.optimizeEquipments(); } finally { BOT.dressing = 0; }
                 if (me.equips().map((e) => e && e.name).join() !== before) log('now wearing ' + me.equips().filter(Boolean).map((e) => e.name).join(', '));
             }, 0);
         }

@@ -23,6 +23,22 @@ const arg = (name, fallback) => { const i = process.argv.indexOf('--' + name); r
 const MINUTES = Number(arg('minutes', 30));
 const SPEED = Number(arg('speed', 4));
 const PORT = Number(arg('port', 8651));
+// --from <map>: once both are in the run, both are put where a door of the game enters that map
+// (bots cannot solve Level 3, so deeper floors are otherwise never played). Flagged in the report.
+const FROM = Number(arg('from', 0));
+function entryOf(id) {
+    const data = path.join(require('../tools/find-game').findGame(), 'data');
+    for (const f of fs.readdirSync(data).filter((n) => /^Map\d+\.json$/.test(n))) {
+        const map = JSON.parse(fs.readFileSync(path.join(data, f), 'utf8'));
+        for (const ev of map.events || []) for (const page of (ev && ev.pages) || []) for (const c of page.list) {
+            if (c.code === 201 && c.parameters[0] === 0 && c.parameters[1] === id && Number(f.slice(3, 6)) !== id) return { x: c.parameters[2], y: c.parameters[3] };
+        }
+    }
+    // Floors the game picks by a variable have no direct door in: one of the map's own stairs out.
+    const own = JSON.parse(fs.readFileSync(path.join(data, 'Map' + String(id).padStart(3, '0') + '.json'), 'utf8'));
+    for (const ev of own.events || []) for (const page of (ev && ev.pages) || []) if (page.trigger === 1 || page.trigger === 2) for (const c of page.list) if (c.code === 201) return { x: ev.x, y: ev.y };
+    throw new Error('no door leads to map ' + id);
+}
 const STUCK_S = 90; // real seconds without any change = stuck
 const OUT = path.join(__dirname, 'out', 'marathon', new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '-' + PORT);
 fs.mkdirSync(OUT, { recursive: true });
@@ -71,6 +87,41 @@ const look = () => {
     };
 };
 
+// A busy page stopped in the debugger, three times a second apart: the code it is stuck in.
+// The debugger is switched on at the start (p.cdp): Chrome cannot switch it on in a page
+// that is already spinning.
+async function whereBusy(p) {
+    const samples = [];
+    try {
+        const cdp = p.cdp;
+        for (let i = 0; i < 3; i++) {
+            const paused = new Promise((r) => cdp.once('Debugger.paused', r));
+            await cdp.send('Debugger.pause');
+            const ev = await Promise.race([paused, sleep(10000).then(() => null)]);
+            if (!ev) { samples.push('(would not pause)'); break; }
+            samples.push(ev.callFrames.slice(0, 40).map((f) => (f.functionName || '(anon)') + ' ' + String(p.scripts.get(f.location.scriptId) || '').replace(/^.*\//, '') + ':' + (f.location.lineNumber + 1)).join(' < '));
+            await cdp.send('Debugger.resume');
+            await sleep(1000);
+        }
+        // Slow frames rather than one endless loop: where five seconds of time go.
+        await cdp.send('Profiler.enable');
+        await cdp.send('Profiler.start');
+        await sleep(5000);
+        const { profile } = await cdp.send('Profiler.stop');
+        fs.writeFileSync(path.join(OUT, p.label + '-hang.cpuprofile'), JSON.stringify(profile));
+        const self = new Map();
+        const dt = profile.timeDeltas || [];
+        const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+        profile.samples.forEach((id, i) => {
+            const f = byId.get(id).callFrame;
+            const key = (f.functionName || '(anon)') + ' ' + f.url.replace(/^.*\//, '') + ':' + (f.lineNumber + 1);
+            self.set(key, (self.get(key) || 0) + (dt[i] || 0) / 1000);
+        });
+        samples.push('profile (self ms): ' + [...self].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => k + ' ' + Math.round(v)).join(', '));
+    } catch (e) { samples.push('(no stack: ' + e.message + ')'); }
+    return samples.join('\n            ');
+}
+
 (async () => {
     const server = await startServer(PORT);
     const browser = await launch();
@@ -80,12 +131,28 @@ const look = () => {
     let code = 1;
     try {
         for (const p of pages) {
+            p.cdp = await p.target().createCDPSession();
+            p.scripts = new Map();
+            p.cdp.on('Debugger.scriptParsed', (s) => p.scripts.set(s.scriptId, s.url));
+            await p.cdp.send('Debugger.enable');
             await p.exposeFunction('fhBrain', () => null); // no model: rules of thumb
             await p.exposeFunction('fhBrainCharacter', () => {});
             await p.exposeFunction('fhLeave', () => {});
             await waitFor(p, () => window.SceneManager && window.Coop && SceneManager._scene instanceof Scene_Title && SceneManager._scene.isReady() && Coop.connected, 90000, 'title');
             // Faster: more logic steps per second of real time.
             await p.evaluate((n) => { SceneManager._dt = 1 / 60 / n; }, SPEED);
+            // How often battlers are refreshed and how many actors exist: the 10/21 freezes sat in refresh.
+            await p.evaluate(() => {
+                window.__refresh = { n: 0, stacks: new Map() };
+                const r = Game_BattlerBase.prototype.refresh;
+                Game_BattlerBase.prototype.refresh = function () {
+                    if (++window.__refresh.n % 200 === 1) {
+                        const k = new Error().stack.split('\n').slice(2, 16).map((l) => l.trim().replace(/^at /, '').replace(/\(?https?:\/\/[^)]*\/([^/)]*)\)?/, '$1')).join(' < ');
+                        window.__refresh.stacks.set(k, (window.__refresh.stacks.get(k) || 0) + 1);
+                    }
+                    return r.apply(this, arguments);
+                };
+            });
             // What called the game over: the event or common event running, the body, the fight.
             await p.evaluate(() => {
                 window.__deaths = [];
@@ -157,9 +224,15 @@ const look = () => {
             if (mins > MINUTES) { endWhy = 'time up'; break; }
             const st = {};
             for (const p of pages) {
-                try { st[p.label] = await p.evaluate(look); p.unread = 0; } catch (e) {
+                try {
+                    st[p.label] = await Promise.race([p.evaluate(look), sleep(15000).then(() => { throw new Error('no answer in 15 s'); })]);
+                    p.unread = 0;
+                } catch (e) {
                     st[p.label] = null;
                     event('page', p.label + ' could not be read: ' + e.message.slice(0, 120));
+                    // A page that does not answer is busy: where its code is spinning (10/21: the host's
+                    // page froze six minutes in and the marathon only said "timed out").
+                    if (/no answer/.test(e.message) && !p.hangSaid) { p.hangSaid = true; event('HANG', p.label + ': ' + await whereBusy(p)); }
                     // A moment between pages is normal; for long, the page is gone.
                     if (++p.unread >= 5) { event('ERROR', p.label + ' unreadable for 15 s'); endWhy = p.label + ' unreadable'; }
                 }
@@ -196,6 +269,12 @@ const look = () => {
                 else if (!p.offSaid && Date.now() - p.offSince > 30000) { p.offSaid = true; event('ERROR', p.label + ' has not connected again in 30 s'); }
             }
             // Once both are in the run: is the difficulty the same for both (a shared switch)?
+            if (FROM && !pages.moved && h.live && q.live && h.scene === 'Scene_Map' && q.scene === 'Scene_Map') {
+                pages.moved = true;
+                const at = entryOf(FROM);
+                for (const p of pages) await p.evaluate((m, x, y) => { $gamePlayer.reserveTransfer(m, x, y, 2, 0); }, FROM, at.x, at.y);
+                event('start', 'both put on map ' + FROM + ' (' + at.x + ',' + at.y + ') by --from');
+            }
             if (!modeSaid && h.live && q.live) {
                 modeSaid = true;
                 const modes = await Promise.all(pages.map((p) => p.evaluate(() => [2190, 3153, 3155].filter((id) => $gameSwitches.value(id)).join(',') || 'none').catch(() => '?')));
@@ -205,6 +284,15 @@ const look = () => {
             for (const p of pages) {
                 const s = st[p.label];
                 if (s.map) maps.add(s.map);
+                if (Date.now() - (p.refreshAt || t0) > 60000) {
+                    p.refreshAt = Date.now();
+                    const r = await p.evaluate(() => {
+                        const out = { n: window.__refresh.n, actors: $gameActors._data.filter(Boolean).length, party: $gameParty._actors.length, top: [...window.__refresh.stacks].sort((a, b) => b[1] - a[1]).slice(0, 2) };
+                        window.__refresh.n = 0; window.__refresh.stacks.clear();
+                        return out;
+                    }).catch(() => null);
+                    if (r) event(r.n > 20000 ? 'REFRESH' : 'refresh', `${p.label}: ${r.n} battler refreshes last minute, ${r.actors} actors, party ${r.party}` + (r.n > 20000 ? '; ' + r.top.map(([k, c]) => c + 'x ' + k).join(' || ') : ''));
+                }
                 const prev = last.get(p.label);
                 // Progress is going somewhere or doing something; hunger ticking down and wounds are not.
                 const key = [s.scene, s.map, s.x, s.y, s.msg, s.choices, s.dead, s.fight, s.party, s.items].join('|');

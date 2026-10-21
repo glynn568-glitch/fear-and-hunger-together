@@ -9,6 +9,7 @@ const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someon
 const RATE = Number(process.env.FH_RATE || 0);
 const JITTER = Number(process.env.FH_JITTER || 0);
 const METER_LOG_MS = Number(process.env.FH_METER_LOG_MS) || 60000; // how often a player's meter goes in the log
+const NOTES_PER_MIN = 120; // a player's notes kept in the host's log, at most, each minute
 let ONCE = [];
 try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once || []; } catch (e) { /* no census yet */ }
 
@@ -566,6 +567,18 @@ class Room {
             this.broadcast(msg, peer.id); // and passed on as before: tools/stats.js listens for it
             break;
         }
+        case 'notes': // a player's own notes (fights joined or skipped, script errors): kept in the host's log
+            if (!Array.isArray(msg.lines)) break;
+            // At most NOTES_PER_MIN lines a minute each: a page throwing in a loop must not fill the host's disk.
+            if (Date.now() - (peer.notesAt || 0) >= 60000) { peer.notesAt = Date.now(); peer.notesN = 0; }
+            for (const line of msg.lines.slice(0, 50)) {
+                if (typeof line !== 'string') continue;
+                const who = 'note ' + (peer.name || 'player ' + peer.id) + ': ';
+                if (++peer.notesN === NOTES_PER_MIN + 1) console.log(who + '(more notes this minute left out)');
+                if (peer.notesN > NOTES_PER_MIN) continue;
+                console.log(who + line.slice(0, 300).replace(/[\r\n]+/g, ' '));
+            }
+            break;
         default: // everything else is relayed as-is
             this.broadcast(msg, peer.id);
         }
@@ -576,6 +589,11 @@ class Room {
 function meterLine(s) {
     const n = (v) => (typeof v === 'number' ? v : '?');
     const parts = [n(s.stepsPerSec) + ' steps/s', 'screen ' + n(s.screenHz) + ' Hz', 'late ' + n(s.lateSteps), 'stalls ' + n(s.stalls)];
+    // Which part is slow: the game's own steps or the drawing; and where, and how much memory.
+    if (s.stepCostMs != null) parts.push('step ' + n(s.stepCostMs) + ' ms (worst ' + n(s.stepCostWorstMs) + ')');
+    if (s.drawWorstMs != null) parts.push('draw worst ' + n(s.drawWorstMs) + ' ms');
+    if (s.map) parts.push('map ' + n(s.map));
+    if (s.heapMB != null) parts.push('heap ' + n(s.heapMB) + ' MB');
     if (s.lineMs != null) parts.push('line ' + n(s.lineMs) + ' ms (worst ' + n(s.lineWorstMs) + ')');
     if (s.keyToPictureMs != null) parts.push('key to picture ' + n(s.keyToPictureMs) + ' ms');
     if (s.watching) parts.push('watching ' + String(s.watching).slice(0, 20) + ' at ' + n(s.watchFps) + ' fps');

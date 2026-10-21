@@ -35,7 +35,20 @@ const LOCAL = process.env.LOCALAPPDATA || '';
 const CHROME = process.env.CHROME || ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     path.join(LOCAL, 'Google\\Chrome\\Application\\chrome.exe'), 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
-    '/usr/bin/google-chrome', '/usr/bin/chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find((p) => fs.existsSync(p));
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    // Linux: the names play.sh looks for on the PATH, then Flatpaks (SteamOS installs browsers only as those;
+    // 10/21: a Deck player could not call a partner in).
+    ...(process.platform === 'linux' ? linuxBrowsers() : [])].find((p) => fs.existsSync(p));
+function linuxBrowsers() {
+    const onPath = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge', 'microsoft-edge-stable', 'brave-browser']
+        // Not a Snap: its sandbox cannot write the partner's profile and puppeteer often cannot drive it.
+        .flatMap((b) => (process.env.PATH || '').split(':').filter((d) => d && !d.startsWith('/snap/')).map((d) => path.join(d, b)));
+    const flatpaks = ['com.google.Chrome', 'org.chromium.Chromium', 'com.microsoft.Edge', 'com.brave.Browser']
+        .flatMap((id) => ['/var/lib/flatpak/exports/bin', path.join(process.env.HOME || '', '.local/share/flatpak/exports/bin')].map((d) => path.join(d, id)));
+    return [...onPath, ...flatpaks];
+}
+// A Flatpak browser may only write in its own folder: the partner's profile goes there.
+const FLATPAK = CHROME && /\/flatpak\/exports\/bin\//.test(CHROME) ? path.basename(CHROME) : '';
 
 (async () => {
     if (!CHROME) { console.error('Chrome or Edge was not found. Set CHROME to its path.'); process.exit(1); }
@@ -49,7 +62,7 @@ const CHROME = process.env.CHROME || ['C:\\Program Files\\Google\\Chrome\\Applic
             '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
         // One profile per partner name, kept in the mod's own folder and reused:
         // a fresh one each time piled up in the system temp folder.
-        userDataDir: path.join(__dirname, '..', 'data', 'partners', (url.port || '80') + '-' + (botName.replace(/\W/g, '') || 'partner')),
+        userDataDir: path.join(FLATPAK ? path.join(process.env.HOME || '', '.var', 'app', FLATPAK, 'data', 'fh-partners') : path.join(__dirname, '..', 'data', 'partners'), (url.port || '80') + '-' + (botName.replace(/\W/g, '') || 'partner')),
         // Shutting down is ours to do (it leaves the world first), not puppeteer's.
         handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
     });

@@ -57,6 +57,20 @@ async function press(page, code, ms) {
         // Keep the test's roaming guards out of the way until the fights below.
         for (const p of [a, bot]) await p.evaluate(() => { for (const ev of $gameMap.events()) if (/guard|enemy|chaser/i.test(ev.event().name)) ev.erase(); });
 
+        //--- gear it finds --------------------------------------------------------
+        // 10/21 marathons: each piece its change of clothes handed back asked for another change, until the page froze.
+        const dressing = await bot.evaluate(async () => {
+            let n = 0;
+            const opt = Game_Actor.prototype.optimizeEquipments;
+            Game_Actor.prototype.optimizeEquipments = function () { n++; return opt.apply(this, arguments); };
+            $gameParty.gainItem($dataWeapons[7], 1); // Long sword
+            $gameParty.gainItem($dataArmors[8], 1); // Leather helmet
+            await new Promise((r) => setTimeout(r, 2000));
+            Game_Actor.prototype.optimizeEquipments = opt;
+            return { n, wearing: $gameParty.leader().equips().filter(Boolean).map((e) => e.name) };
+        });
+        check('the bot puts on gear it finds, once (' + dressing.n + ' changes: ' + dressing.wearing.join(', ') + ')', dressing.n >= 1 && dressing.n <= 2 && dressing.wearing.includes('Leather helmet'));
+
         //--- talking and orders -----------------------------------------------
         await sleep(1500);
         await a.evaluate(() => Coop.say('wait here a moment'));

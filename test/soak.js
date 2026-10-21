@@ -16,6 +16,23 @@ const SECONDS = Number(process.argv[2] || 150);
         const seen = { A: new Set(), B: new Set() };
         const started = Date.now();
         let tick = 0;
+        // Worlds are compared whenever both players are in it, not only at the end:
+        // a run that ends at the title (both dead) or offline still has to have agreed.
+        let checks = 0, agree = true;
+        const compare = async () => {
+            const live = async (p) => p.evaluate(() => !!(Coop.world && Coop.world.live)).catch(() => false);
+            if (!(await live(a)) || !(await live(b))) return;
+            let fa, fb;
+            for (let i = 0; i < 4; i++) {
+                if (i) await sleep(1000);
+                fa = await a.evaluate(() => Coop.world.fingerprint()); fb = await b.evaluate(() => Coop.world.fingerprint());
+                if (fa === fb) { checks++; return; }
+            }
+            agree = false;
+            const sa = new Set(fa.split(';')), sb = new Set(fb.split(';'));
+            console.log('only A:', [...sa].filter((k) => !sb.has(k)).slice(0, 20).join(' '));
+            console.log('only B:', [...sb].filter((k) => !sa.has(k)).slice(0, 20).join(' '));
+        };
         while (Date.now() - started < SECONDS * 1000) {
             tick++;
             for (const p of [a, b]) {
@@ -38,6 +55,7 @@ const SECONDS = Number(process.argv[2] || 150);
             if (tick % 120 === 0) {
                 const where = async (p) => p.evaluate(() => (SceneManager._scene ? SceneManager._scene.constructor.name : '') + (window.$gameMap ? ' map' + $gameMap.mapId() + ' ' + $gamePlayer.x + ',' + $gamePlayer.y : '') + (Coop.battle ? ' battle:' + Coop.battle.role : '') + (Coop.dead ? ' dead' : '') + ' hp' + (window.$gameParty && $gameParty.leader() ? $gameParty.leader().hp : '?'));
                 console.log(Math.round((Date.now() - started) / 1000) + 's  A: ' + await where(a) + '  |  B: ' + await where(b));
+                await compare();
             }
         }
         console.log('scenes A:', [...seen.A].join(', '));
@@ -52,23 +70,13 @@ const SECONDS = Number(process.argv[2] || 150);
         const ra = await report(a), rb = await report(b);
         console.log('A', JSON.stringify(ra));
         console.log('B', JSON.stringify(rb));
-        let agree = null;
-        if (ra.live && rb.live) {
-            await sleep(1500);
-            const fa = await a.evaluate(() => Coop.world.fingerprint()), fb = await b.evaluate(() => Coop.world.fingerprint());
-            agree = fa === fb;
-            if (!agree) {
-                const sa = new Set(fa.split(';')), sb = new Set(fb.split(';'));
-                console.log('only A:', [...sa].filter((k) => !sb.has(k)).slice(0, 20).join(' '));
-                console.log('only B:', [...sb].filter((k) => !sa.has(k)).slice(0, 20).join(' '));
-            }
-        }
-        console.log('worlds agree:', agree);
+        if (ra.live && rb.live) { await sleep(1500); await compare(); }
+        console.log('worlds agree:', agree, '(' + checks + ' checks)');
         const errs = [...a.errors, ...b.errors].filter((e) => !/physical_attack_animation/.test(e));
         console.log('script errors:', errs.length);
         for (const e of [...new Set(errs)].slice(0, 6)) console.log('   ', e.slice(0, 600));
         console.log('screenshots', await shot(a, 'soak-a'), await shot(b, 'soak-b'));
-        code = errs.length === 0 && !ra.stopped && !rb.stopped && agree !== false ? 0 : 1;
+        code = errs.length === 0 && !ra.stopped && !rb.stopped && agree && checks > 0 ? 0 : 1;
     } catch (e) { console.error(e); }
     if (s) await s.close();
     console.log(code ? 'SOAK FAILED' : 'SOAK OK');

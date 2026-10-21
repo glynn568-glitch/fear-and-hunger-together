@@ -15,6 +15,26 @@ const OUT = path.join(__dirname, 'out', 'twins');
 
 // file: relative to the repo. find must occur exactly once in it.
 const TWINS = {
+    'bot-dressing': {
+        why: '10/21 marathons froze the host: the bot\'s change of clothes handed pieces back, each asking for another change',
+        suite: 'ai', file: 'tools/bot-page.js',
+        find: ' && Coop.world.live && !BOT.dressing) {', put: ' && Coop.world.live) {',
+    },
+    'log-late': {
+        why: 'review 10/21: a second start (Play pressed twice) moved the running session\'s log away before finding the port taken',
+        suite: 'meterline', file: 'server.js',
+        find: 'let LOG = null;\n', put: 'let LOG = null;\nprocess.nextTick(() => openLog());\n',
+    },
+    'notes-cap': {
+        why: 'review 10/21: a page throwing in a loop could fill the host\'s disk with notes',
+        suite: 'meterline', file: 'room.js',
+        find: '                if (peer.notesN > NOTES_PER_MIN) continue;\n', put: '',
+    },
+    'flatpak-partner': {
+        why: 'his 10/21: a Steam Deck player could not call an AI partner in (its Chrome is a Flatpak)',
+        suite: 'deck', file: 'tools/bot.js',
+        find: "    ...(process.platform === 'linux' ? linuxBrowsers() : [])].find(", put: '    ].find(',
+    },
     'whose-scene': {
         why: 'world switches started other players\' scenes on everyone (the hound, the elevator, Trortur)',
         suite: 'scenes', file: 'client/state.js',
@@ -49,6 +69,16 @@ const TWINS = {
         why: 'the room kept players\' meters to its log and stopped passing them on: tools/stats.js heard nobody',
         suite: 'meterline', file: 'room.js',
         find: "            this.broadcast(msg, peer.id); // and passed on as before: tools/stats.js listens for it\n", put: '',
+    },
+    'host-notes': {
+        why: 'players\' notes stayed in their own games: a session could not be read back from the host\'s PC (10/21)',
+        suite: 'meterline', file: 'room.js',
+        find: "                console.log(who + line.slice(0, 300).replace(/[\\r\\n]+/g, ' '));\n", put: '',
+    },
+    'log-rotate': {
+        why: 'each start wrote over the last session\'s log, so his 10/20 session before the last one was gone',
+        suite: 'meterline', file: 'server.js',
+        find: "        try { fs.renameSync(n ? older(n) : LOG_FILE, older(n + 1)); } catch (e) { /* not there yet */ }\n", put: '',
     },
     'layout-once': {
         why: 'his 10/21: the Blood pit lizardman missing; any layout dice but three could be thrown again mid-run, changing a floor under everyone',

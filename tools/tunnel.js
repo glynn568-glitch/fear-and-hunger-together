@@ -187,6 +187,9 @@ class Tunnel {
             const proc = spawn(EXE, ['tunnel', '--no-autoupdate', ...service, '--url', 'http://127.0.0.1:' + this.port], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
             this.proc = proc;
             let said = '';
+            let partial = '';
+            let warned = 0;
+            let warnedAt = 0;
             const timer = setTimeout(() => { this.stop(); reject(new Error('no tunnel address after 40 seconds')); }, 40000);
             // Could not be started at all (an antivirus took the file, say): told, not a crash.
             proc.on('error', (err) => {
@@ -197,6 +200,18 @@ class Tunnel {
             proc.stderr.on('data', (d) => {
                 if (this.proc !== proc) return; // stopped: its address is no one's
                 said = (said + d).slice(-4000);
+                // Its warnings and errors go in the host's log once it is online: a friend's
+                // line that drops (closed 1006) is told apart from this PC's edge connection
+                // going down. At most 20 a minute.
+                const lines = (partial + d).split('\n');
+                partial = lines.pop();
+                if (this.url) {
+                    for (const line of lines) {
+                        if (!/\b(ERR|WRN)\b/.test(line)) continue;
+                        if (Date.now() - warnedAt > 60000) { warnedAt = Date.now(); warned = 0; }
+                        if (++warned <= 20) console.log('cloudflared: ' + line.replace(/^\S+Z\s+/, '').trim().slice(0, 300));
+                    }
+                }
                 if (/Registered tunnel connection/.test(said)) this.registered = true;
                 const address = addressIn(said);
                 if (address && !this.url) { this.url = address; this.ready = false; this.registered = /Registered tunnel connection/.test(said); clearTimeout(timer); this.watchPublished(); resolve(this.url); }
@@ -210,7 +225,11 @@ class Tunnel {
                 this.proc = null;
                 this.url = '';
                 if (!was) { console.log('cloudflared stopped (' + code + '): ' + said.trim().split('\n').pop()); reject(new Error(whyStopped(code, said))); }
-                else if (this.onDrop) this.onDrop();
+                else {
+                    // Why it went, for the host's log (a Steam Deck's tunnel dropped three times, 10/20, unexplained).
+                    console.log('cloudflared stopped (' + code + ') while online; it last said: ' + said.trim().split('\n').slice(-3).map((l) => l.replace(/^\S+Z\s+/, '').trim()).join(' | ').slice(0, 600));
+                    if (this.onDrop) this.onDrop();
+                }
             });
         })).finally(() => { this.starting = null; });
         return this.starting;

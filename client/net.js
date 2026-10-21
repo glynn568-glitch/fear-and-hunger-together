@@ -16,8 +16,21 @@ var Coop = {
 Coop.note = function (text) {
     Coop.log.push(text);
     if (Coop.log.length > 400) Coop.log.shift();
+    // And into the host's log, so a session can be read back from the host's PC
+    // afterwards. Kept while the line is down and sent once it is back.
+    Coop._notesOut.push({ at: Date.now(), text: String(text) });
+    if (Coop._notesOut.length > 200) Coop._notesOut.shift();
     console.log('[coop] ' + text);
 };
+Coop._notesOut = [];
+setInterval(function () {
+    const ws = Coop._ws;
+    if (!Coop._notesOut.length || !ws || ws.readyState !== 1) return;
+    const now = Date.now();
+    // A note held back by a dropped line says when it was made.
+    const lines = Coop._notesOut.splice(0, 50).map((n) => (now - n.at > 5000 ? '[' + new Date(n.at).toTimeString().slice(0, 8) + '] ' : '') + n.text);
+    Coop.send({ t: 'notes', lines });
+}, 2000);
 
 // Script errors go in the log too, for a bug report.
 window.addEventListener('error', function (e) {
@@ -35,7 +48,7 @@ Coop.emit = function (type, msg) {
     const list = Coop._handlers[type];
     if (!list) return;
     for (const fn of list) {
-        try { fn(msg); } catch (e) { console.error('[coop] handler for ' + type + ' failed', e); }
+        try { fn(msg); } catch (e) { console.error('[coop] handler for ' + type + ' failed', e); Coop.note('script error in the ' + type + ' handler: ' + (e && (e.stack || e.message) || e)); }
     }
 };
 

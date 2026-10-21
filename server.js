@@ -52,13 +52,28 @@ const SAVES = process.env.FH_SAVES || path.join(DATA, 'saves');
 // Everything the console shows (partners' lines included) also goes to a file,
 // so a session can be read back after the window is closed.
 fs.mkdirSync(path.dirname(SAVES), { recursive: true });
-const LOG = fs.createWriteStream(path.join(path.dirname(SAVES), 'server-' + PORT + '.log'), { flags: 'w' });
-LOG.on('error', () => { /* a log that cannot be written is no reason to stop */ });
+// The last five sessions stay readable too: each start moves the older logs up
+// one (server-8420.1.log is the session before this one). Only once this server
+// has the port: a second start that finds one running must not move its log away.
+const LOG_FILE = path.join(path.dirname(SAVES), 'server-' + PORT + '.log');
+const older = (n) => LOG_FILE.replace(/\.log$/, '.' + n + '.log');
+let LOG = null;
+const early = [];
+function openLog() {
+    if (LOG) return;
+    for (let n = 3; n >= 0; n--) {
+        try { fs.renameSync(n ? older(n) : LOG_FILE, older(n + 1)); } catch (e) { /* not there yet */ }
+    }
+    LOG = fs.createWriteStream(LOG_FILE, { flags: 'w' });
+    LOG.on('error', () => { /* a log that cannot be written is no reason to stop */ });
+    for (const line of early.splice(0)) LOG.write(line);
+}
 for (const level of ['log', 'error']) {
     const orig = console[level];
     console[level] = function (...args) {
         orig.apply(console, args);
-        LOG.write(new Date().toTimeString().slice(0, 8) + ' ' + args.map((a) => (typeof a === 'string' ? a : require('util').inspect(a))).join(' ') + '\n');
+        const line = new Date().toTimeString().slice(0, 8) + ' ' + args.map((a) => (typeof a === 'string' ? a : require('util').inspect(a))).join(' ') + '\n';
+        if (LOG) LOG.write(line); else early.push(line);
     };
 }
 
@@ -410,12 +425,15 @@ function bugReport() {
     // long session's report still shows what happened.
     const log = lines(path.join(data, 'server-' + PORT + '.log'));
     const isMeter = (l) => /^\S+ meter /.test(l);
+    // So do the players' own notes, which a long session has many of.
+    const isNote = (l) => /^\S+ note /.test(l);
     const text = [
         'Fear & Hunger Together ' + BUILD.version + ' (mod ' + BUILD.mod + '), game build ' + BUILD.build + ' (' + BUILD.fp + ')',
         'mode: ' + appState().mode + (room.relayOnly ? ', private' : '') + '; players here: ' + room.peers.size,
         'Node ' + process.version + ', ' + os.type() + ' ' + os.release() + ', ' + new Date().toISOString(),
-        '', '--- server log (end) ---', log ? log.filter((l) => !isMeter(l)).slice(-300).join('\n') : '(none)',
+        '', '--- server log (end) ---', log ? log.filter((l) => !isMeter(l) && !isNote(l)).slice(-300).join('\n') : '(none)',
         '', '--- meters (latest) ---', log ? log.filter(isMeter).slice(-8).join('\n') || '(none yet)' : '(none)',
+        '', '--- players\' notes (end) ---', log ? log.filter(isNote).slice(-150).join('\n') || '(none yet)' : '(none)',
         '', '--- launcher log (end) ---', tail(path.join(data, 'launcher.log'), 40),
     ].join('\n');
     const home = os.homedir();
@@ -686,6 +704,7 @@ wss.on('error', onListenError);
 require('net').createServer((socket) => server.emit('connection', socket))
     .on('error', () => { /* no IPv6 on this PC */ }).listen(PORT, '::1');
 server.listen(PORT, '127.0.0.1', () => {
+    openLog();
     console.log(`fh-coop serving ${GAME}`);
     console.log(`open http://localhost:${PORT}/`);
     // Started "with an AI partner": one is called in right away and waits at the title.

@@ -73,4 +73,22 @@ check('closing the game window stops the server and the start, so Steam sees it 
     const unz = wsl(`T=$(mktemp -d); cd "$T" && unzip -q "${REPO}/test/out/deck-zip/game.zip" && [ -x FearAndHunger-Together/play.sh ] && echo RUNNABLE; sh -n FearAndHunger-Together/play.sh && echo PARSES`);
     check('unzipped on Linux, play.sh can be started as it is', marked.length === 1 && /RUNNABLE/.test(unz.stdout) && /PARSES/.test(unz.stdout), JSON.stringify(marked) + ' ' + (unz.stdout + unz.stderr).trim());
 }
+
+// The AI partner on a Deck: its own Chrome is the Flatpak one too (10/21: a Deck player could not call one in,
+// "Chrome or Edge was not found"). A real Flatpak Chrome, run as a plain user, no model. Needs both in WSL.
+{
+    const user = spawnSync('wsl', ['-u', 'deck', '-e', 'sh', '-c', '[ -x /var/lib/flatpak/exports/bin/com.google.Chrome ] && echo ok'], { encoding: 'utf8', timeout: 30000 });
+    if (!/ok/.test(user.stdout || '')) console.log('PASS no deck user with a Flatpak Chrome in WSL: partner check skipped');
+    else {
+        const p = spawnSync('wsl', ['-u', 'deck', '-e', 'sh', '-c', `
+N=${REPO}/tools/node-linux-x64/bin/node; S=$(mktemp -d)
+cd ${REPO}
+FH_GAME="${GAME}" PORT=8548 FH_SAVES=$S FH_RELAY=0 PATH=/usr/bin:/bin $N server.js > $S/server.log 2>&1 &
+SP=$!; sleep 4
+PATH=/usr/bin:/bin ${process.env.FH_TWIN ? `FH_TWIN=${process.env.FH_TWIN} ` : ''}timeout 40 $N ${process.env.FH_TWIN ? '-r ' + REPO + '/test/twin-hook.js ' : ''}tools/bot.js http://localhost:8548/ --name Deckbot --brain none 2>&1 | grep -m1 -E 'waiting at the title|not found|Error'
+kill $SP`], { encoding: 'utf8', timeout: 90000 });
+        const said = ((p.stdout || '') + (p.stderr || '')).trim();
+        check('the AI partner starts in a Flatpak Chrome and comes to the title', /waiting at the title/.test(said), said.slice(-400));
+    }
+}
 process.exit(check.finish([]));
