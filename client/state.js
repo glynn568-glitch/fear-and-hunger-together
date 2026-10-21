@@ -179,7 +179,7 @@
     World.mine = new Set(); // 'sw12', 'ss1,5,A': world flags this machine turned on itself
     const ACTS = new Set([201, 353, 301, 129, 311, 312, 313, 314, 315, 321, 322, 126, 127, 128]);
     // The same done from a script line.
-    const ACTS_SCRIPT = /reserveTransfer|Scene_Gameover|addActor|removeActor|gainItem|loseItem|BattleManager\.setup|setHp|addState|changeEquip/;
+    const ACTS_SCRIPT = /reserveTransfer|Scene_Gameover|addActor|removeActor|gainItem|loseItem|BattleManager\.setup|setHp|addState|changeEquip|\$gamePlayer\.(locate|setPosition|moveStraight|moveDiagonally|jump|forceMoveRoute)/;
     const actsMemo = new WeakMap();
     function actsOnPlayer(list, seen) {
         if (!list) return false;
@@ -191,6 +191,10 @@
         let yes = false;
         for (const c of list) {
             if (ACTS.has(c.code) || ((c.code === 355 || c.code === 655) && ACTS_SCRIPT.test(String(c.parameters[0])))) { yes = true; break; }
+            // A move route on the player walks them (the lift's arrival walks its rider
+            // out: played here too, it walked the partner, and its own copy of the ride
+            // mixed with the rider's reports and left the cage hanging a tile up, 10/21).
+            if (c.code === 205 && c.parameters[0] === -1) { yes = true; break; }
             const ce = c.code === 117 && $dataCommonEvents[c.parameters[0]];
             if (ce && actsOnPlayer(ce.list, seen)) { yes = true; break; }
         }
@@ -235,6 +239,9 @@
         const mine = STARTED_AS.filter((id) => $gameSwitches.value(id));
         if (!mine.length) return '';
         for (const peer of Coop.others()) {
+            // A player under this one's own name is this tab's old line, which the host has
+            // not yet noticed is dead (back within seconds of a drop); this name replaces it.
+            if (Coop.name && String(peer.name).toLowerCase() === Coop.name.toLowerCase()) continue;
             if (peer.st && peer.st !== 'title' && peer.ini && peer.ini.some((id) => mine.indexOf(id) >= 0)) return peer.name;
         }
         return '';

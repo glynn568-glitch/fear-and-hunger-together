@@ -17,6 +17,8 @@
         '#coop-chat.open .line.gone { opacity: 0.85; }',
         '#coop-chat .who { color: #f2d28a; }',
         '#coop-chat .line.me .who { color: #b9ad98; }',
+        '#coop-chat .line.unsent, #coop-chat .line.unsent.gone { opacity: 0.7; }',
+        '#coop-chat .line.unsent::after { content: " (not sent yet)"; color: #9d8f7a; font-style: italic; }',
         '#coop-chat input { display: none; width: 100%; box-sizing: border-box; margin-top: 5px; pointer-events: auto;',
         '  font: inherit; color: #e8dcc0; background: rgba(20, 12, 10, 0.9); border: 1px solid #6b5a45; padding: 4px 8px; outline: none; }',
         '#coop-chat.open input { display: block; }',
@@ -52,19 +54,42 @@
         lines.appendChild(row);
         while (lines.children.length > KEEP) lines.removeChild(lines.firstChild);
         setTimeout(function () { row.classList.add('gone'); }, Math.max(FADE, text.length * 90));
+        return row;
     }
 
+    // A line is kept until the host says it arrived, and said again after a
+    // reconnect: one said while the line was down, or into a line that had
+    // died without a word, was lost (10/20). Until then it is marked, and it
+    // does not fade. The host passes each id on once.
+    const unsent = [];
+    const tag = Math.random().toString(36).slice(2, 8);
+    let said = 0;
     Coop.say = function (text) {
         text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-        if (!text || !Coop.connected) return false;
-        Coop.send({ t: 'chat', text });
-        show(Coop.name || 'You', text, true);
+        if (!text) return false;
+        const line = { id: tag + '.' + (++said), text, row: show(Coop.name || 'You', text, true) };
+        unsent.push(line);
+        if (Coop.connected) {
+            Coop.send({ t: 'chat', text, id: line.id });
+            // Marked only if no word comes back soon, so a good line does not flicker.
+            setTimeout(function () { if (unsent.indexOf(line) >= 0) line.row.classList.add('unsent'); }, 2500);
+        } else line.row.classList.add('unsent');
         return true;
     };
+    Coop.on('chatok', function (msg) {
+        const i = unsent.findIndex(function (l) { return l.id === msg.id; });
+        if (i < 0) return;
+        unsent[i].row.classList.remove('unsent');
+        unsent.splice(i, 1);
+    });
+    Coop.on('online', function () {
+        for (const l of unsent) Coop.send({ t: 'chat', text: l.text, id: l.id });
+    });
 
     Coop.on('chat', function (msg) {
         const peer = Coop.peers.get(msg.from);
-        const text = String(msg.text || '').slice(0, 200);
+        // Spaces at either end are dropped here too: not every sender is this page's own Coop.say.
+        const text = String(msg.text || '').trim().slice(0, 200);
         if (!peer || !text) return;
         show(peer.name, text, false);
         Coop.emit('heard', { from: msg.from, name: peer.name, text });
@@ -118,8 +143,9 @@
         if (closingKey && e.code === closingKey) { e.stopImmediatePropagation(); return; }
         if (e.code !== 'KeyY' || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
         const typing = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
-        // At the title too: players waiting there still talk to each other.
-        if (typing || !Coop.connected || !window.SceneManager) return;
+        // At the title too: players waiting there still talk to each other. And
+        // while the line is down: what is said goes once it is back.
+        if (typing || !window.SceneManager) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         open();

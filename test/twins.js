@@ -20,6 +20,56 @@ const TWINS = {
         suite: 'scenes', file: 'client/state.js',
         find: 'return actsOnPlayer(page.list);', put: 'return false;',
     },
+    'settle-start': {
+        why: 'his 10/20: the Cave Mother, just won in Enki\'s fight, fought him again at full health and left him stuck',
+        suite: 'refight', file: 'client/events.js',
+        find: "        if (hold && hold.k === 'talk' && hold.won) return;\n", put: '',
+    },
+    'hold-flush': {
+        why: 'the word that a beaten boss\'s scene was over could reach a partner before her "dead" switch',
+        suite: 'refight', file: 'client/events.js',
+        find: '        Coop.world.flush();\n        Coop.send(msg);', put: '        Coop.send(msg);',
+    },
+    'gnome-dead': {
+        why: 'a cave gnome one player killed was alive for the other (its dead switch was kept on one machine)',
+        suite: 'refight', file: 'client/census.json',
+        find: ',302,303,304,305,306,307,', put: ',302,303,307,',
+    },
+    'beaten-scene': {
+        why: 'a scene under way when its enemy was beaten in another fight started that fight again',
+        suite: 'refight', file: 'client/battle.js',
+        find: 'if (beaten && this._coopSince && this._coopSince <= beaten) {', put: 'if (false) {',
+    },
+    'meter-line': {
+        why: 'his 10/21 "high ping": nothing measured the line to the host or kept either player\'s numbers',
+        suite: 'meterline', file: 'room.js',
+        find: "this.send(peer, { t: 'rtt', at: msg.at });", put: '',
+    },
+    'meter-relay': {
+        why: 'the room kept players\' meters to its log and stopped passing them on: tools/stats.js heard nobody',
+        suite: 'meterline', file: 'room.js',
+        find: "            this.broadcast(msg, peer.id); // and passed on as before: tools/stats.js listens for it\n", put: '',
+    },
+    'layout-once': {
+        why: 'his 10/21: the Blood pit lizardman missing; any layout dice but three could be thrown again mid-run, changing a floor under everyone',
+        suite: 'slips', file: 'room.js',
+        find: "try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once || []; }", put: 'try { ONCE = [24, 25, 29]; }',
+    },
+    'player-route': {
+        why: 'his friend 10/20: the lift\'s arrival walked the partner and left the cage hanging a tile up, unusable',
+        suite: 'lift', file: 'client/state.js',
+        find: 'if (c.code === 205 && c.parameters[0] === -1) { yes = true; break; }', put: '',
+    },
+    'walk-buffer': {
+        why: 'his 10/21: a partner walking over a shaky line stopped between tiles whenever a step came late',
+        suite: 'walk', file: 'client/presence.js',
+        find: 'const WALK_DELAY = 200; // ms', put: 'const WALK_DELAY = 0; // ms',
+    },
+    'snake-slip': {
+        why: 'his 10/20: the Salmonsnake on map 184 moved him to map 11, away from his partner, into a fight they could not join',
+        suite: 'slips', file: 'client/fixes.js',
+        find: "const SNAKE_SLIP = { '39:263': 11, '184:263': 11 };", put: 'const SNAKE_SLIP = {};',
+    },
     'paste-box': {
         why: 'the Together link box took no clicks (0.1.0 to 0.1.3)',
         suite: 'paste', file: 'client/fixes.js',
@@ -48,7 +98,37 @@ const TWINS = {
     'dns-wait': {
         why: 'links were handed out before Cloudflare published them',
         suite: 'publish', file: 'tools/tunnel.js',
-        find: '        ask();\n    }\n\n    // Resolves once the address answers', put: '        done();\n    }\n\n    // Resolves once the address answers',
+        find: 'zoneServers().then(viaZone).catch(() => viaHttps());', put: 'done();',
+    },
+    'dns-authoritative': {
+        why: 'links were held up to 90 s: asked too early, the public resolver remembered "no such name" for a minute',
+        suite: 'publish', file: 'tools/tunnel.js',
+        find: 'zoneServers().then(viaZone).catch(() => viaHttps());', put: 'viaHttps();',
+    },
+    'quiet-line': {
+        why: 'a joiner\'s line that died without closing went unnoticed: his game played on alone for minutes',
+        suite: 'quietline', file: 'server.js',
+        find: 'if (Date.now() - heard > DEAD_AFTER) {', put: 'if (false) {',
+    },
+    'quiet-handshake': {
+        why: 'a try to reach the host whose handshake a dead line swallowed waited forever, so the joiner never got back',
+        suite: 'quietline', file: 'server.js',
+        find: ', handshakeTimeout: 10000 });', put: ' });',
+    },
+    'own-ghost': {
+        why: 'a joiner back before the host noticed its old line was dead took its own old self for another player and stayed out of the world',
+        suite: 'quietline', file: 'client/state.js',
+        find: 'if (Coop.name && String(peer.name).toLowerCase() === Coop.name.toLowerCase()) continue;', put: '',
+    },
+    'chat-resend': {
+        why: 'a chat line said while the line was down, or into a line that had died, was lost',
+        suite: 'chat', file: 'client/chat.js',
+        find: "for (const l of unsent) Coop.send({ t: 'chat', text: l.text, id: l.id });", put: '',
+    },
+    'chat-once': {
+        why: 'a chat line said again after a reconnect showed twice when it had arrived the first time',
+        suite: 'chat', file: 'room.js',
+        find: 'if (!id || !this.chatSeen.has(id)) this.broadcast(msg, peer.id);', put: 'this.broadcast(msg, peer.id);',
     },
     'service-address': {
         why: 'Cloudflare\'s own service, named in cloudflared\'s errors, became the link and the panel waited for nothing',
@@ -60,10 +140,40 @@ const TWINS = {
         suite: 'publish', file: 'client/together.js',
         find: 'if (dropSeen !== null && s.droppedAt && s.mode === \'local\') {', put: 'if (false) {',
     },
+    'hunger-rate': {
+        why: 'hunger drained at the solo rate in co-op, where nobody can pause',
+        suite: 'hunger', file: 'client/rules.js',
+        find: 'if (this._waitCount > 0 && isHungerDrain(this._list) && Coop.playingTogether()) {', put: 'if (false) {',
+    },
     'restart-host': {
         why: 'Stop hosting then Host online at once: the old cloudflared\'s exit took the new tunnel\'s place, and no link came',
         suite: 'humans', file: 'tools/tunnel.js', env: { FH_TEST_TUNNEL: '1', FH_TEST_RELAY: '1' },
         find: "if (this.proc !== proc) { reject(new Error('stopped')); return; }", put: '',
+    },
+    'name-trim': {
+        why: 'the box added the letter under its cursor on Enter, "O LORD " was not the prayer, and a Steam Deck player got no Black orb',
+        suite: 'scroll', file: 'client/fixes.js',
+        find: 'return this._name.trim();', put: 'return this._name;',
+    },
+    'typed-key': {
+        why: 'the space bar typed a space and also pressed the name box\'s OK: it finished the box when its cursor was on OK',
+        suite: 'scroll', file: 'client/fixes.js',
+        find: "for (const b of ['ok', 'cancel']) if (Input.isTriggered(b)) held[b] = true;", put: '',
+    },
+    'typing-enter': {
+        why: 'Enter after a typed word put the letter under the name box\'s grid cursor in: "o lord" became "o lordA"',
+        suite: 'scroll', file: 'client/fixes.js',
+        find: 'if (this._coopTyping && this.character()) SoundManager.playBuzzer();', put: 'if (false) SoundManager.playBuzzer();',
+    },
+    'verse-case': {
+        why: 'the scroll\'s verses were compared capitals and all: "o lord teach black orb" taught nothing',
+        suite: 'scroll', file: 'client/fixes.js',
+        find: 'actor.name().toUpperCase() === String(p[3]).toUpperCase();', put: 'actor.name() === String(p[3]);',
+    },
+    'chat-trim': {
+        why: 'a chat line from a sender that is not Coop.say kept the spaces at its ends',
+        suite: 'scroll', file: 'client/chat.js',
+        find: "const text = String(msg.text || '').trim().slice(0, 200);", put: "const text = String(msg.text || '').slice(0, 200);",
     },
 };
 

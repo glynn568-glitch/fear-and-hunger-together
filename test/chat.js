@@ -44,6 +44,55 @@ const { twoPlayers, checker, sleep, waitFor } = require('./common');
         await a.keyboard.press('Enter');
         await waitFor(b, () => [...document.querySelectorAll('#coop-chat .line')].some((l) => l.textContent === 'Ann: still here?'), 5000, 'B sees the line at the title');
         check('at the title screen too', await b.evaluate(() => SceneManager._scene instanceof Scene_Title) && await a.evaluate(() => SceneManager._scene instanceof Scene_Title));
+
+        // 10/20: a line said during a drop never arrived. Lines on A's screen, and B's own row.
+        const onA = (text) => a.evaluate((t) => [...document.querySelectorAll('#coop-chat .line')].filter((l) => l.textContent === t).length, text);
+        const rowB = (text) => b.evaluate((t) => { const l = [...document.querySelectorAll('#coop-chat .line')].find((r) => r.textContent === t); return l ? l.className : 'none'; }, text);
+        const say = async (text) => {
+            await b.evaluate(() => document.activeElement && document.activeElement.blur());
+            await b.keyboard.press('KeyY');
+            await sleep(300);
+            await b.keyboard.type(text, { delay: 25 });
+            await b.keyboard.press('Enter');
+        };
+        const arrives = (text) => waitFor(a, (t) => [...document.querySelectorAll('#coop-chat .line')].some((l) => l.textContent === t), 15000, 'A gets ' + text, text).then(() => true, () => false);
+        // B's line is down (held down, as a long drop is) when B says something.
+        await b.evaluate(() => {
+            window._holdLine = true;
+            const connect = Coop.connect;
+            Coop.connect = function () { if (window._holdLine) setTimeout(Coop.connect, 200); else connect(); };
+            Coop._ws.close();
+        });
+        await waitFor(b, () => !Coop.connected, 5000, 'B offline');
+        await say('are you there');
+        await sleep(1000);
+        check('a line said while the line is down is kept, marked not sent yet', /unsent/.test(await rowB('Bo: are you there')) && await onA('Bo: are you there') === 0, await rowB('Bo: are you there'));
+        await b.evaluate(() => { window._holdLine = false; });
+        check('...and arrives once B is back', await arrives('Bo: are you there'));
+        await waitFor(b, () => Coop.connected, 10000, 'B back');
+        await sleep(800);
+        check('...and is no longer marked on B\'s screen', !/unsent/.test(await rowB('Bo: are you there')), await rowB('Bo: are you there'));
+        // A line that died without a word (the page still thinks it is connected): whatever is
+        // sent into it is lost, until the dead line is noticed and B reconnects.
+        await b.evaluate(() => { Coop._ws.send = function () { /* into the void */ }; });
+        await say('lost in the wire');
+        await sleep(3500);
+        check('a line said into a dead line is marked not sent yet', /unsent/.test(await rowB('Bo: lost in the wire')) && await onA('Bo: lost in the wire') === 0, await rowB('Bo: lost in the wire'));
+        await b.evaluate(() => Coop._ws.close()); // the dead line noticed (server.js), and B reconnects
+        check('...and arrives once B is back', await arrives('Bo: lost in the wire'));
+        // A line that arrived, but the word back was lost in a drop: said again after the
+        // reconnect, and still shown once.
+        await waitFor(b, () => Coop.connected, 10000, 'B back again');
+        await b.evaluate(() => { window._receive = Coop._receive; Coop._receive = function (msg) { if (msg.t !== 'chatok') window._receive(msg); else window._lostAck = true; }; });
+        await say('only once');
+        const lost = await arrives('Bo: only once') && await waitFor(b, () => window._lostAck, 5000, 'the word back lost').then(() => true, () => false);
+        await sleep(3000);
+        check('a line that arrived but whose word back was lost...', lost && /unsent/.test(await rowB('Bo: only once')), await rowB('Bo: only once'));
+        await b.evaluate(() => { Coop._receive = window._receive; });
+        await b.evaluate(() => Coop._ws.close());
+        await waitFor(b, () => Coop.connected, 10000, 'B back a third time');
+        await sleep(2000);
+        check('...is said again after a reconnect but shown once', await onA('Bo: only once') === 1, (await onA('Bo: only once')) + ' times');
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

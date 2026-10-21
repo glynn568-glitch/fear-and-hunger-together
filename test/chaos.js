@@ -1,6 +1,6 @@
 // A friend's line to the internet that a test can break: a reverse proxy in
 // front of the host's link (the tunnel), which the friend's own server joins
-// through. Not a suite; test/humans.js uses it.
+// through. Not a suite; test/humans.js uses it, and test/quietline.js the quiet line below.
 //   stall(true)  everything held, sockets left open: Wi-Fi gone for a moment
 //   cut()        every connection closed, and refused until restore()
 //   delay(ms)    each message held that long more, in order
@@ -69,4 +69,41 @@ function chaosLink(port, target) {
     })));
 }
 
-module.exports = { chaosLink };
+// A line that goes quiet without closing, as a dropped line through the Cloudflare
+// tunnel did on 10/20: every connection stays open and whatever is sent is taken,
+// but nothing gets through either way, a close included. Plain TCP, so the pings
+// and their answers are the two servers' own, as through Cloudflare.
+//   quiet(true)   nothing through from now on; new connections are taken and swallowed too
+//   quiet(false)  through again; a connection whose other end closed meanwhile closes now
+//                 (quiet(false, ms): that long after, as when its far end next sends on it)
+//   hung()        connections still open whose sender's words were swallowed (a handshake, say)
+function quietLine(port, targetPort) {
+    const net = require('net');
+    const st = { quiet: false, pairs: new Set() };
+    const server = net.createServer((a) => {
+        const b = net.connect(targetPort, '127.0.0.1');
+        const pair = { a, b, dead: false, lost: false };
+        st.pairs.add(pair);
+        a.on('data', (d) => { if (!st.quiet) b.write(d); else pair.lost = true; });
+        b.on('data', (d) => { if (!st.quiet) a.write(d); });
+        const end = () => {
+            if (st.quiet) { pair.dead = true; return; }
+            st.pairs.delete(pair);
+            a.destroy(); b.destroy();
+        };
+        for (const s of [a, b]) { s.on('close', end); s.on('error', end); }
+    });
+    return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
+        url: 'http://localhost:' + port,
+        quiet(on, linger) {
+            st.quiet = !!on;
+            const dead = Array.from(st.pairs).filter((p) => p.dead);
+            const shut = () => { for (const p of dead) { st.pairs.delete(p); p.a.destroy(); p.b.destroy(); } };
+            if (!on) { if (linger) setTimeout(shut, linger); else shut(); }
+        },
+        hung() { return Array.from(st.pairs).filter((p) => p.lost && !p.dead).length; },
+        close() { for (const p of st.pairs) { p.a.destroy(); p.b.destroy(); } server.close(); },
+    })));
+}
+
+module.exports = { chaosLink, quietLine };

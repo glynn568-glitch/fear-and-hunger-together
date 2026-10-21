@@ -3,7 +3,8 @@
 //   direct    Hide my IP off: fight video straight between browsers
 //   join      the second player on their own PC, through their own server
 //   badlink   as shipped, over a poor line: 80 ms each way and 4 Mbit/s to each player
-//   internet  two people (test/humans.js) through a real Cloudflare tunnel: needs the internet
+//   internet  two people (test/humans.js) through a real Cloudflare tunnel, and hosting on Linux
+//             (test/deckhost.js): needs the internet
 //   twins     each fix taken back out (test/twins.js): its suite has to fail
 // A suite that fails, even one that passes when run again alone, fails the gate.
 // On a pass, test/out/gate.json names the commit; tools/release.js ships only that commit.
@@ -20,7 +21,7 @@ const MODES = {
     direct: {},
     join: { FH_TEST_RELAY: '1', FH_TEST_JOIN: '1' },
     badlink: { FH_TEST_RELAY: '1', FH_LAG: '80', FH_RATE: '500000' },
-    internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans'] },
+    internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans', 'deckhost'] },
     // Last, so every suite has just passed clean (FH_TWINS_CLEAN_RUN skips that control).
     twins: { runner: 'twins.js', FH_TWINS_CLEAN_RUN: '1' },
 };

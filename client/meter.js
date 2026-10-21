@@ -29,6 +29,17 @@
     let waitingStep = []; // press times not yet seen by a game step
     let waitingDraw = []; // press times seen by a step, not yet on screen
     let windowStart = performance.now();
+    const line = []; // round trips to the host this window, ms
+
+    // The line to the host (through the tunnel, and a joiner's own server):
+    // the host's relay answers at once, so this is the round trip a move or a
+    // fight command takes before anyone else can see it.
+    setInterval(function () {
+        if (Coop.connected && !document.hidden) Coop.send({ t: 'rtt', at: performance.now() });
+    }, 2000);
+    Coop.on('rtt', function (msg) {
+        if (typeof msg.at === 'number') line.push(performance.now() - msg.at);
+    });
 
     // A key press is stamped by the browser when the keyboard reported it.
     window.addEventListener('keydown', function (e) {
@@ -112,6 +123,7 @@
             keyToGameMs: middle(keyToStep), keyToGameWorstMs: top(keyToStep),
             keyToPictureMs: middle(keyToDraw), keyToPictureWorstMs: top(keyToDraw),
             keys: keyToStep.length,
+            lineMs: middle(line), lineWorstMs: top(line),
             stalls, stallWorstMs: Math.round(stallWorst),
             hidden: document.hidden,
             scene: SceneManager._scene ? SceneManager._scene.constructor.name : '',
@@ -128,7 +140,7 @@
         };
         M._frames = Coop.viewer ? Coop.viewer.frames : 0;
         frames = 0; steps = 0; lateSteps = 0; worstGap = 0; drawWorst = 0; stepCost = 0; stepWorst = 0; stalls = 0; stallWorst = 0;
-        keyToStep.length = 0; keyToDraw.length = 0;
+        keyToStep.length = 0; keyToDraw.length = 0; line.length = 0;
         windowStart = now;
         if (Coop.connected && !document.hidden) Coop.send({ t: 'stats', name: Coop.name, s: M.last });
         draw();
@@ -167,6 +179,7 @@
             'screen ' + s.screenHz + ' Hz   game ' + s.stepsPerSec + ' steps/s   late ' + s.lateSteps + '   worst gap ' + s.worstStepGapMs + ' ms',
             'step cost ' + s.stepCostMs + ' ms (worst ' + s.stepCostWorstMs + ')   draw worst ' + s.drawWorstMs + ' ms   stalls ' + s.stalls + (s.stalls ? ' (worst ' + s.stallWorstMs + ' ms)' : ''),
             'key press: ' + key,
+            'line to the host: ' + (s.lineMs == null ? 'not measured yet' : s.lineMs + ' ms round trip (worst ' + s.lineWorstMs + ')'),
             (s.watching ? 'watching partner: ' + s.watching + ' at ' + s.watchFps + ' fps   ' : '') + (s.streamingTo ? 'streaming to ' + s.streamingTo + (s.videoTo ? ' (live video)' : ' (relayed)') + '   ' : '') + (s.fight ? 'fight ' + s.fight + '   ' : '') + 'map ' + s.map + ' (' + s.events + ' events)   ' + s.window,
             s.gpu.slice(0, 70),
         ].join('\n');

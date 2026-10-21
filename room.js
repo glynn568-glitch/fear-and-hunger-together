@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const LAG = Number(process.env.FH_LAG || 0);
 const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
 const RATE = Number(process.env.FH_RATE || 0);
+const JITTER = Number(process.env.FH_JITTER || 0);
+const METER_LOG_MS = Number(process.env.FH_METER_LOG_MS) || 60000; // how often a player's meter goes in the log
 let ONCE = [];
 try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once || []; } catch (e) { /* no census yet */ }
 
@@ -23,6 +25,7 @@ class Room {
         this.baseStamp = 0; // the save the run was carried on from, if it was
         this.baseBy = '';
         this.owed = new Map(); // name -> fight results waiting for a player who dropped out, oldest first
+        this.chatSeen = new Map(); // ids of the last chat lines passed on, oldest first
         this.mapOwners = new Map(); // mapId -> peer id simulating that map's events
         this.dirty = false;
         this.relayOnly = process.env.FH_RELAY !== '0'; // private hosting (the default): no direct browser-to-browser video
@@ -162,12 +165,14 @@ class Room {
     // that long, give or take a third, in order: a slow link for the tests.
     // FH_RATE (bytes a second) narrows it: each message also waits for the ones
     // ahead of it, while the socket's own buffer stays empty, as behind a tunnel.
+    // FH_JITTER (ms) adds up to that much more to each message, still in order:
+    // a line that is now and then late, as on Wi-Fi.
     deliver(peer, data, binary) {
         const ws = peer.ws;
-        if (!LAG && !RATE) { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); return; }
+        if (!LAG && !RATE && !JITTER) { if (ws.readyState === 1) ws.send(data, { binary: !!binary }); return; }
         let start = Date.now();
         if (RATE) start = peer.wire = Math.max(peer.wire || 0, start) + data.length / RATE * 1000;
-        const due = Math.max(start + LAG * (0.67 + Math.random() * 0.66), (peer.lastDue || 0) + 1);
+        const due = Math.max(start + LAG * (0.67 + Math.random() * 0.66) + Math.random() * JITTER, (peer.lastDue || 0) + 1);
         peer.lastDue = due;
         // One queue per player, let out in order: separate timers can fire out of
         // order, and a real line (one TCP stream) never reorders.
@@ -535,12 +540,50 @@ class Room {
             if (target) this.send(target, msg);
             break;
         }
+        case 'chat': {
+            // A line said into a line that dropped is said again once the sender is back
+            // (client/chat.js): each is passed on once, and the sender is told it arrived.
+            const id = typeof msg.id === 'string' ? msg.id.slice(0, 24) : '';
+            if (!id || !this.chatSeen.has(id)) this.broadcast(msg, peer.id);
+            if (id) {
+                this.chatSeen.set(id, true);
+                if (this.chatSeen.size > 500) this.chatSeen.delete(this.chatSeen.keys().next().value);
+                this.send(peer, { t: 'chatok', id });
+            }
+            break;
+        }
         case 'relay': // the server's own word on private hosting, never a player's
             break;
+        case 'rtt': // a page timing its line to the host: answered at once, to that page only
+            this.send(peer, { t: 'rtt', at: msg.at });
+            break;
+        case 'stats': { // a player's own lag meter (every five seconds): a line a minute in the host's log
+            const now = Date.now();
+            if (msg.s && typeof msg.s === 'object' && now - (peer.statsAt || 0) >= METER_LOG_MS) {
+                peer.statsAt = now;
+                console.log('meter ' + (peer.name || 'player ' + peer.id) + ': ' + meterLine(msg.s));
+            }
+            this.broadcast(msg, peer.id); // and passed on as before: tools/stats.js listens for it
+            break;
+        }
         default: // everything else is relayed as-is
             this.broadcast(msg, peer.id);
         }
     }
+}
+
+// What a player's meter says, in one line: is it this machine, the line, or the fight picture.
+function meterLine(s) {
+    const n = (v) => (typeof v === 'number' ? v : '?');
+    const parts = [n(s.stepsPerSec) + ' steps/s', 'screen ' + n(s.screenHz) + ' Hz', 'late ' + n(s.lateSteps), 'stalls ' + n(s.stalls)];
+    if (s.lineMs != null) parts.push('line ' + n(s.lineMs) + ' ms (worst ' + n(s.lineWorstMs) + ')');
+    if (s.keyToPictureMs != null) parts.push('key to picture ' + n(s.keyToPictureMs) + ' ms');
+    if (s.watching) parts.push('watching ' + String(s.watching).slice(0, 20) + ' at ' + n(s.watchFps) + ' fps');
+    if (s.streamingTo) parts.push('streaming to ' + n(s.streamingTo));
+    if (s.hidden) parts.push('window hidden');
+    // Software drawing (no GPU in that browser) runs the game at a fraction of 60.
+    if (s.gpu) parts.push('gpu ' + String(s.gpu).slice(0, 48));
+    return parts.join(', ');
 }
 
 // A world write is [kind, key, value]: a switch or variable id, or a self

@@ -145,6 +145,79 @@
         _reserveTransfer.call(this, mapId, x, y, d, fadeType);
     };
 
+    // The Salmonsnake's second page on two of the Mines' three layouts (maps
+    // 39 and 184) moves the player to the first layout's map 11, a copy of
+    // the floor: the game's own slip. In co-op it took him away from his
+    // partner into a fight they could not see or join (10/20). It stays on
+    // the map it is on.
+    const SNAKE_SLIP = { '39:263': 11, '184:263': 11 };
+    const _command201 = Game_Interpreter.prototype.command201;
+    Game_Interpreter.prototype.command201 = function () {
+        const p = this._params;
+        if (p[0] === 0 && SNAKE_SLIP[this._mapId + ':' + this._eventId] === p[1] && this._mapId === $gameMap.mapId()) {
+            this._params = [0, this._mapId].concat(p.slice(2));
+        }
+        return _command201.call(this);
+    };
+
+    // A name box's text is compared letter for letter: the empty scroll's
+    // prayer works only as "O LORD", "TEACH", "BLACK ORB". But every Enter
+    // (A on a pad) also adds the letter under the box's cursor, and once the
+    // cursor has been on its space, finishing with Enter left "O LORD " and
+    // no prayer (a Steam Deck player, 10/20; Windows players hit it too). A
+    // space at either end is never meant, so it is left off; one made only
+    // of spaces counts as empty, as the game already handles.
+    Window_NameEdit.prototype.name = function () {
+        return this._name.trim();
+    };
+
+    // Typing into a name box (the game's keyboard plugin) fought its grid of
+    // letters. Space, Z and X type a letter and are also the grid's OK and
+    // Cancel: "O LORD" typed with the space bar came out "O ALORD" (the
+    // grid's letter went in too), or the box finished if its cursor was on
+    // OK, and X rubbed a letter out. And Enter after a typed word added the
+    // letter under the grid's cursor. Now a key that typed something does
+    // nothing else while it is held, and while the player is typing, OK puts
+    // in no grid letter (on the grid's OK it still finishes). Moving the
+    // cursor is using the grid again: OK puts its letter in, as before.
+    if (window.NameInputManager) {
+        Window_NameInput.prototype.processHandling = function () {
+            if (!this.isOpen() || !this.active) return;
+            if (this._coopAt !== undefined && this._index !== this._coopAt) this._coopTyping = false;
+            this._coopAt = this._index;
+            const held = this._coopHeld = this._coopHeld || {};
+            for (const b of Object.keys(held)) if (!Input.isPressed(b)) delete held[b];
+            if (NameInputManager.checkInputText()) {
+                this._coopTyping = true;
+                for (const b of ['ok', 'cancel']) if (Input.isTriggered(b)) held[b] = true;
+                if (this._editWindow.add(NameInputManager.getInputText())) SoundManager.playOk();
+                else SoundManager.playBuzzer();
+            }
+            if (Input.isRepeated('backspace')) this.processBack();
+            if (Input.isRepeated('cancel') && !held.cancel) this.processBack();
+            if (Input.isRepeated('ok') && !held.ok) {
+                if (this._coopTyping && this.character()) SoundManager.playBuzzer();
+                else this.processOk();
+            }
+        };
+    }
+
+    // The scroll's verses (common event 84 asks for them as the names of
+    // actors 25, 26 and 27) were compared capitals and all: "o lord teach
+    // black orb" taught nothing. Case no longer counts for those three. They
+    // are kept as typed, not put in capitals: one of the game's own verses
+    // is "Brown vial".
+    const VERSES = [25, 26, 27];
+    const _command111 = Game_Interpreter.prototype.command111;
+    Game_Interpreter.prototype.command111 = function () {
+        const p = this._params;
+        const actor = p[0] === 4 && p[2] === 1 && VERSES.includes(p[1]) && $gameActors.actor(p[1]);
+        if (!actor) return _command111.call(this);
+        this._branch[this._indent] = actor.name().toUpperCase() === String(p[3]).toUpperCase();
+        if (this._branch[this._indent] === false) this.skipBranch();
+        return true;
+    };
+
     // The game's speed check (common event 40, always running) sets the
     // player's speed with a one-command move route every seven frames or so,
     // and a forced route holds the player for that frame: about one press of

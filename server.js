@@ -403,13 +403,19 @@ function appState() {
 // PC's logs. Nothing that opens a door: link keys, API keys and the Windows
 // user name in paths are taken out.
 function bugReport() {
-    const tail = (file, n) => { try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).slice(-n).join('\n'); } catch (e) { return '(none)'; } };
+    const lines = (file) => { try { return fs.readFileSync(file, 'utf8').split(/\r?\n/); } catch (e) { return null; } };
+    const tail = (file, n) => { const l = lines(file); return l ? l.slice(-n).join('\n') : '(none)'; };
     const data = path.dirname(SAVES);
+    // The players' meters (a line each a minute) have their own short section, so a
+    // long session's report still shows what happened.
+    const log = lines(path.join(data, 'server-' + PORT + '.log'));
+    const isMeter = (l) => /^\S+ meter /.test(l);
     const text = [
         'Fear & Hunger Together ' + BUILD.version + ' (mod ' + BUILD.mod + '), game build ' + BUILD.build + ' (' + BUILD.fp + ')',
         'mode: ' + appState().mode + (room.relayOnly ? ', private' : '') + '; players here: ' + room.peers.size,
         'Node ' + process.version + ', ' + os.type() + ' ' + os.release() + ', ' + new Date().toISOString(),
-        '', '--- server log (end) ---', tail(path.join(data, 'server-' + PORT + '.log'), 300),
+        '', '--- server log (end) ---', log ? log.filter((l) => !isMeter(l)).slice(-300).join('\n') : '(none)',
+        '', '--- meters (latest) ---', log ? log.filter(isMeter).slice(-8).join('\n') || '(none yet)' : '(none)',
         '', '--- launcher log (end) ---', tail(path.join(data, 'launcher.log'), 40),
     ].join('\n');
     const home = os.homedir();
@@ -532,9 +538,17 @@ const joinHeaders = (j = JOIN) => (j.key ? { cookie: 'fhk=' + j.key, 'x-fh-join'
 // to the host falls behind they are dropped, as the page itself does, so
 // nothing piles up here.
 const BEHIND = 1500000;
+// A line to the host can die without a word: through the Cloudflare tunnel a
+// dead line is often never closed (10/20: the host gave up on a friend at
+// 20:39:02, and his game played on alone for minutes). So the host is pinged,
+// and a line that has brought nothing back for DEAD_AFTER is cut; the page
+// then reconnects as after any drop. Any bytes count, so a slow line busy
+// with a big message is not taken for a dead one.
+const PING_EVERY = 3000, DEAD_AFTER = 10000;
 function passOn(local, req) {
     const target = JOIN.origin.replace(/^http/, 'ws') + '/coop/ws' + new URL(req.url, 'http://x').search;
-    const up = new WebSocket(target, { headers: joinHeaders(), maxPayload: 32 * 1024 * 1024 });
+    // A dead line can swallow the handshake too: given up on, and tried again.
+    const up = new WebSocket(target, { headers: joinHeaders(), maxPayload: 32 * 1024 * 1024, handshakeTimeout: 10000 });
     const waiting = [];
     let failed = false;
     local.on('message', (data, isBinary) => {
@@ -543,7 +557,24 @@ function passOn(local, req) {
             up.send(data, { binary: isBinary });
         } else if (!isBinary) waiting.push(data);
     });
-    up.on('open', () => { for (const d of waiting.splice(0)) up.send(d, { binary: false }); });
+    let socket = null, heard = 0;
+    up.on('upgrade', (res) => { socket = res.socket; });
+    up.on('open', () => {
+        for (const d of waiting.splice(0)) up.send(d, { binary: false });
+        heard = Date.now();
+        if (socket) socket.on('data', () => { heard = Date.now(); });
+        const beat = setInterval(() => {
+            if (up.readyState !== WebSocket.OPEN) { clearInterval(beat); return; }
+            if (Date.now() - heard > DEAD_AFTER) {
+                clearInterval(beat);
+                console.log('nothing from the host for ' + Math.round((Date.now() - heard) / 1000) + ' s; the line is dead, reconnecting');
+                if (local.readyState === WebSocket.OPEN) local.send(JSON.stringify({ t: 'hostdown' }));
+                up.terminate();
+                return;
+            }
+            up.ping();
+        }, PING_EVERY);
+    });
     up.on('message', (data, isBinary) => {
         if (!isBinary && data.length > 16 && data.toString('utf8', 0, 16) === '{"t":"worldcopy"') { if (data.length <= 8 * 1024 * 1024) keepWorld(data); return; }
         if (local.readyState !== WebSocket.OPEN || isBinary && local.bufferedAmount > BEHIND) return;

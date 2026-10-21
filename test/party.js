@@ -40,6 +40,22 @@ async function press(page, code, ms) {
         check('B walks in A\'s line when A moves', g >= 1 && g <= 2, 'gap ' + g + ' A ' + await pos(a) + ' B ' + await pos(b));
         check('B is drawn walking, not jumping (no stray state)', await b.evaluate(() => Coop.partyLeader) === idA);
 
+        // In line, only walking is taken over: a tap stays in line, the action key and the menu are B's.
+        await press(b, 'ArrowLeft');
+        check('a quick tap of a direction keeps B in line', await b.evaluate(() => Coop.partyLeader) === idA);
+        check('B faces A from walking behind them', await b.evaluate(() => $gamePlayer.direction()) === 8);
+        await press(b, 'Enter');
+        await waitFor(b, () => $gameMessage.isChoice(), 5000, 'the partner menu, in line');
+        const inLine = await b.evaluate(() => $gameMessage._choices.slice());
+        check('in line, the action key still works (partner menu offers to leave)', inLine.includes('Leave the party'), JSON.stringify(inLine));
+        await b.evaluate(() => { $gameMessage.clear(); $gameMap._interpreter.clear(); });
+        await sleep(400);
+        await press(b, 'Escape');
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Menu, 5000, 'B\'s menu, in line');
+        check('in line, B opens their own menu', await b.evaluate(() => Coop.partyLeader) === idA);
+        await b.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(b, () => T.onMap(), 10000, 'B back on the map');
+
         // A goes through a door to another map: B follows onto the same spot.
         await a.evaluate(() => { $gamePlayer.reserveTransfer(74, 15, 22, 8, 0); });
         await waitFor(a, onMap, 30000, 'A on map 74', 74);

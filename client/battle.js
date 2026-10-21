@@ -643,6 +643,7 @@
             leaveSpectate();
             return;
         }
+        if (msg.won && msg.ev) Coop.events.markBeaten(msg.evMap, msg.ev);
         comeHome(b, msg);
         if (msg.won) Coop.toast('The fight is won. Anything it dropped went to ' + msg.by + ', who started it.', 5000);
     });
@@ -806,7 +807,27 @@
             Coop.note('event ' + this._eventId + ' is already in ' + (hold.name || 'someone') + "'s fight: going into that one");
             return true; // its won/fled/lost branches are skipped; the fight's owner plays them
         }
+        // This scene was under way before the enemy was beaten in someone else's
+        // fight (its player was pulled into that fight mid-scene, or stood in it
+        // meanwhile): the fight it was heading for is over.
+        const beaten = Coop.world.live && this._eventId && this._mapId === $gameMap.mapId() ? Coop.events.beatenAt(this._eventId) : 0;
+        if (beaten && this._coopSince && this._coopSince <= beaten) {
+            Coop.note('event ' + this._eventId + ' was beaten in another fight: not fought again');
+            return true;
+        }
         return _command301.call(this);
+    };
+    // When each scene began, so a fight won meanwhile can be told apart. A
+    // common event a scene calls counts from the scene.
+    const _interpreterSetup = Game_Interpreter.prototype.setup;
+    Game_Interpreter.prototype.setup = function (list, eventId) {
+        _interpreterSetup.call(this, list, eventId);
+        this._coopSince = Date.now();
+    };
+    const _setupChild = Game_Interpreter.prototype.setupChild;
+    Game_Interpreter.prototype.setupChild = function (list, eventId) {
+        _setupChild.call(this, list, eventId);
+        this._childInterpreter._coopSince = this._coopSince;
     };
     setInterval(function () {
         if (!joinAfter) return;
@@ -1329,7 +1350,7 @@
         for (const [id, g] of b.guests) {
             if (g.quit) continue;
             const state = guestState(b, id, g);
-            const end = Object.assign({ won: !!b.won, end: b.end || '', foes, by: Coop.name, fight: b.fight }, state);
+            const end = Object.assign({ won: !!b.won, end: b.end || '', foes, by: Coop.name, fight: b.fight, ev: b.eventId || 0, evMap: b.mapId || 0 }, state);
             if (Coop.peers.has(id)) Coop.sendTo(id, 'bend', end);
             else {
                 keepHandedOff(b.fight, g.name, end);
@@ -1353,7 +1374,7 @@
         }
         if (b.eventId && b.mapId === $gameMap.mapId()) {
             const ev = $gameMap.event(b.eventId);
-            Coop.events.sendHold(b.eventId, ev && ev._locked ? 'talk' : null);
+            Coop.events.sendHold(b.eventId, ev && ev._locked ? 'talk' : null, !!b.won);
         }
         Coop.battle = null;
         showTurn('', false);

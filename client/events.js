@@ -5,7 +5,8 @@
 (function () {
     const Ev = Coop.events = {
         owners: {}, // mapId -> player id simulating that map
-        holds: new Map(), // 'mapId:eventId' -> { by, k: 'talk' | 'battle' }
+        holds: new Map(), // 'mapId:eventId' -> { by, k: 'talk' | 'battle', won }
+        beaten: new Map(), // 'mapId:eventId' -> when someone else last won a fight with it
         _known: new Map(), // eventId -> 'x,y,d' last sent or received on this map
         _mapId: 0,
         _touch: new Set(), // puppet events that moved and may have reached the player
@@ -33,6 +34,8 @@
     // enemy stays where it is until they are back out of the fight, or five
     // minutes have passed without them (they are not coming back to it).
     const HOLD_GRACE = 300000;
+    // How long an enemy just beaten in someone else's fight cannot be started here.
+    const BEATEN_GUARD = 8000;
 
     // The player behind a hold, here now (back under a new id, too), or null.
     function holderOf(hold) {
@@ -53,6 +56,14 @@
             return null;
         }
         return hold;
+    };
+
+    // When someone else last won a fight with this event here (0: never).
+    Ev.beatenAt = function (eventId) {
+        return Ev.beaten.get($gameMap.mapId() + ':' + eventId) || 0;
+    };
+    Ev.markBeaten = function (mapId, eventId) {
+        Ev.beaten.set(mapId + ':' + eventId, Date.now());
     };
 
     //--- who the event goes after -------------------------------------------
@@ -123,9 +134,16 @@
 
     //--- holds: an event someone is talking to or fighting ------------------
 
-    function sendHold(eventId, kind) {
+    // won: the fight with it has just been won (sent once, as the fight ends).
+    function sendHold(eventId, kind, won) {
         if (!Coop.world.live) return;
-        Coop.send({ t: 'evh', m: $gameMap.mapId(), e: eventId, k: kind });
+        const msg = { t: 'evh', m: $gameMap.mapId(), e: eventId, k: kind };
+        if (won) msg.won = true;
+        // What the scene has just set (the boss's "dead" switch) goes out before
+        // the word that the scene is over: the world's writes leave once a frame,
+        // and a partner who heard "over" first could start the fight again.
+        Coop.world.flush();
+        Coop.send(msg);
     }
     Ev.sendHold = sendHold;
 
@@ -149,7 +167,9 @@
         if (msg.k === 'battle') Coop.note((Coop.peers.get(msg.from) || {}).name + ' is fighting event ' + msg.e + ' on map ' + msg.m);
         // The dead are using nothing (0.1.8 and before could still say they were).
         if (msg.k && (Coop.peers.get(msg.from) || {}).st === 'dead') return;
-        if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k, name: (Coop.peers.get(msg.from) || {}).name || '' });
+        if (msg.won) Ev.beaten.set(key, Date.now());
+        // A 'talk' hold that comes with a win is the winner's scene settling what the win changes.
+        if (msg.k) Ev.holds.set(key, { by: msg.from, k: msg.k, name: (Coop.peers.get(msg.from) || {}).name || '', won: !!msg.won });
         else if (Ev.holds.has(key) && Ev.holds.get(key).by === msg.from) Ev.holds.delete(key);
     });
 
@@ -158,7 +178,12 @@
     Coop.on('leave', function (peer) {
         for (const [key, hold] of Ev.holds) {
             if (hold.by !== peer.id) continue;
-            if (hold.k === 'battle') { if (!hold.gone) { hold.gone = Date.now(); hold.name = peer.name; } } else Ev.holds.delete(key);
+            if (hold.k === 'battle') { if (!hold.gone) { hold.gone = Date.now(); hold.name = peer.name; } } else {
+                // Gone while their win was still settling: what it set may come
+                // later (their game plays on), so the beaten enemy waits a while again.
+                if (hold.won) Ev.beaten.set(key, Date.now());
+                Ev.holds.delete(key);
+            }
         }
     });
     // Dead, or back at the title: they let go of whatever they were using
@@ -191,6 +216,14 @@
             }
             if (hold.gone) return;
         }
+        // Just beaten in someone else's fight, and their scene is still setting
+        // what the win changes (the Cave Mother's body, 10/20): started here now,
+        // it would be fought again at full health.
+        if (hold && hold.k === 'talk' && hold.won) return;
+        // Nor for a few seconds after: the line may bring what the win set a
+        // moment after the word that it is over.
+        const beaten = Coop.world.live ? Ev.beatenAt(this._eventId) : 0;
+        if (beaten && Date.now() - beaten < BEATEN_GUARD) return;
         _start.call(this);
     };
 

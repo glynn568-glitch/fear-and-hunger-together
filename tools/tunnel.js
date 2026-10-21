@@ -1,6 +1,7 @@
 // The link a friend joins by: a free Cloudflare quick tunnel to this PC's
 // server. cloudflared is fetched from its official releases the first time.
 // The address changes every time and dies with the tunnel.
+const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -56,6 +57,20 @@ function addressIn(said) {
     return m ? m[0] : '';
 }
 
+// The addresses of trycloudflare.com's own nameservers (kevin and marjory.ns.cloudflare.com
+// on 10/20), looked up once. FH_NS: stand-ins for them (tests), as address:port, comma-separated.
+let nameservers = null;
+function zoneServers() {
+    if (process.env.FH_NS) return Promise.resolve(process.env.FH_NS.split(','));
+    if (!nameservers) {
+        nameservers = dns.promises.resolveNs('trycloudflare.com').catch(() => ['kevin.ns.cloudflare.com', 'marjory.ns.cloudflare.com'])
+            .then((names) => Promise.all(names.slice(0, 4).map((n) => dns.promises.resolve4(n).then((a) => a[0], () => null))))
+            .then((found) => { const list = found.filter(Boolean); if (!list.length) throw new Error('no nameserver address'); return list; });
+        nameservers.catch(() => { nameservers = null; }); // looked up again next time
+    }
+    return nameservers;
+}
+
 // Why cloudflared stopped before it had an address, for the Together panel.
 function whyStopped(code, said) {
     if (/quick tunnel provisioning failed|failed to unmarshal quick Tunnel/i.test(said)) return 'Cloudflare gave out no link just now (it does on a busy day, or after many links in a short time). Try again in a minute.';
@@ -78,31 +93,59 @@ class Tunnel {
     // A new quick tunnel's name takes a moment to reach DNS (and on a bad day,
     // minutes: Cloudflare's "DNS Update Delays", 10/19/26). A friend whose PC
     // asks too early is told it does not exist, and Windows remembers that for
-    // a while. So the link is only handed out once Cloudflare's own DNS answers
-    // for it, asked over HTTPS so this PC caches nothing.
+    // a while. So the link is only handed out once DNS answers for it.
+    // Asked of trycloudflare.com's own nameservers, which keep nothing: a public
+    // resolver asked before the name exists remembers "no such name" for about a
+    // minute (10/20: the nameservers answered at 11 s, 1.1.1.1 at 64 s, and the
+    // link was held 90 s). Over HTTPS only where this PC cannot ask them.
     watchPublished() {
         const round = ++this.round;
         const name = new URL(this.url).hostname;
         const since = Date.now();
-        let failures = 0;
         const done = () => { if (round === this.round && !this.ready) { this.ready = true; if (this.onReady) this.onReady(); } };
-        const ask = () => {
-            if (round !== this.round || !this.url) return;
-            // After a minute and a half the link is handed out anyway: better a link
-            // that may need a minute more than none at all.
-            if (Date.now() - since > 90000) { done(); return; }
+        // After a minute and a half the link is handed out anyway: better a link
+        // that may need a minute more than none at all.
+        const gone = () => {
+            if (round !== this.round || !this.url) return true;
+            if (Date.now() - since > 90000) { done(); return true; }
+            return false;
+        };
+        let failures = 0;
+        const viaHttps = () => {
+            if (gone()) return;
             fetch((process.env.FH_DOH || 'https://cloudflare-dns.com/dns-query') + '?name=' + name + '&type=A', { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(5000) })
                 .then((r) => r.json())
                 .then((j) => {
                     if (round !== this.round) return;
-                    if (j.Status === 0 && Array.isArray(j.Answer) && j.Answer.length && this.registered) done(); else setTimeout(ask, 2000);
+                    if (j.Status === 0 && Array.isArray(j.Answer) && j.Answer.length && this.registered) done(); else setTimeout(viaHttps, 2000);
                 }, () => {
                     // Cannot ask (DNS over HTTPS blocked here): after a few tries, trust the usual few seconds.
                     if (round !== this.round) return;
-                    if (++failures >= 4 && this.registered) done(); else setTimeout(ask, 2500);
+                    if (++failures >= 4 && this.registered) done(); else setTimeout(viaHttps, 2500);
                 });
         };
-        ask();
+        // Every nameserver that answers must know the name: a friend's resolver may ask any of them.
+        let unanswered = 0;
+        const viaZone = (servers) => {
+            const askers = servers.map((s) => { const r = new dns.promises.Resolver({ timeout: 2000, tries: 1 }); r.setServers([s]); return r; });
+            const ask = () => {
+                if (gone()) return;
+                Promise.all(askers.map((r) => r.resolve4(name).then((a) => (a.length ? 'yes' : 'no'), (e) => (e.code === 'ENOTFOUND' || e.code === 'ENODATA' ? 'no' : 'none'))))
+                    .then((said) => {
+                        if (round !== this.round) return;
+                        if (said.every((s) => s === 'none')) {
+                            // No answer three times running: UDP port 53 is blocked here.
+                            if (++unanswered >= 3) { console.log('trycloudflare.com\'s nameservers do not answer here; asking over HTTPS'); viaHttps(); return; }
+                        } else {
+                            unanswered = 0;
+                            if (!said.includes('no') && this.registered) { done(); return; }
+                        }
+                        setTimeout(ask, 1000);
+                    });
+            };
+            ask();
+        };
+        zoneServers().then(viaZone).catch(() => viaHttps());
     }
 
     // Resolves once the address answers, or after `ms` either way.
@@ -120,11 +163,11 @@ class Tunnel {
         if (this.url) return Promise.resolve(this.url);
         if (this.starting) return this.starting;
         // FH_TUNNEL_FAKE: the tests get an address without the internet.
-        // FH_DOH: and a stand-in for Cloudflare's DNS, so the wait for the address to be published is the real one.
+        // FH_NS, FH_DOH: and stand-ins for Cloudflare's DNS, so the wait for the address to be published is the real one.
         if (process.env.FH_TUNNEL_FAKE) {
             this.url = process.env.FH_TUNNEL_FAKE;
             this.registered = true;
-            this.ready = !process.env.FH_DOH;
+            this.ready = !process.env.FH_DOH && !process.env.FH_NS;
             if (!this.ready) this.watchPublished();
             // FH_TUNNEL_FAKE_DROP: and it drops by itself that many ms after it works.
             const drop = Number(process.env.FH_TUNNEL_FAKE_DROP) || 0;

@@ -135,6 +135,34 @@
         this._peerId = peerId;
         this._placed = false;
         this._mapId = 0;
+        this._steps = []; // tiles they have stepped onto, still to be walked here
+        this._walking = false;
+    };
+
+    // A partner's steps are walked here a moment after they arrive, one after
+    // another. Their position comes once per step; on a shaky line (Wi-Fi, the
+    // tunnel) the next one is often a little late, and their character stopped
+    // between tiles until it came: the stutter he saw (10/21). With a step
+    // always in hand they walk without a break. Behind by more than two steps
+    // (a burst after a long stall), they walk faster until caught up.
+    const WALK_DELAY = 200; // ms
+    const CATCH_UP = 1.5; // speed while more than two steps behind
+    Game_CoopAvatar.prototype.update = function () {
+        const q = this._steps;
+        if (!this.isMoving()) {
+            if (q.length && (this._walking || q[0].at <= Date.now())) {
+                const s = q.shift();
+                this.setDirection(s.d);
+                this._x = s.x;
+                this._y = s.y;
+                this._walking = true;
+            } else if (!q.length) this._walking = false;
+        }
+        Game_Character.prototype.update.call(this);
+    };
+    Game_CoopAvatar.prototype.distancePerFrame = function () {
+        const d = Game_Character.prototype.distancePerFrame.call(this);
+        return this._steps.length > 2 ? d * CATCH_UP : d;
     };
 
     Game_CoopAvatar.prototype.peer = function () {
@@ -145,16 +173,24 @@
         if (this.characterName() !== p.cn || this.characterIndex() !== p.ci) this.setImage(p.cn || '', p.ci || 0);
         this.setMoveSpeed(p.sp || 4);
         this.setTransparent(!!p.tr);
-        const far = Math.abs(p.x - this._x) + Math.abs(p.y - this._y) > 2;
+        // Measured from the last tile they were known on, not from where their
+        // character has walked to here (it is a moment behind).
+        const last = this._steps.length ? this._steps[this._steps.length - 1] : { x: this._x, y: this._y };
+        const far = Math.abs(p.x - last.x) + Math.abs(p.y - last.y) > 2 || this._steps.length > 4;
         if (!this._placed || this._mapId !== p.m || far) {
+            this._steps.length = 0;
+            this._walking = false;
             this.locate(p.x, p.y);
+            this.setDirection(p.d || 2);
             this._placed = true;
             this._mapId = p.m;
+        } else if (p.x !== last.x || p.y !== last.y) {
+            this._steps.push({ x: p.x, y: p.y, d: p.d || 2, at: Date.now() + WALK_DELAY });
+        } else if (this._steps.length) {
+            last.d = p.d || 2;
         } else {
-            this._x = p.x;
-            this._y = p.y;
+            this.setDirection(p.d || 2);
         }
-        this.setDirection(p.d || 2);
         // Whoever walks behind them: placed the same way, a step behind.
         const fl = Array.isArray(p.fl) ? p.fl : [];
         this._trail = this._trail || [];

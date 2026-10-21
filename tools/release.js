@@ -19,7 +19,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const REPO = 'glynn568-glitch/fear-and-hunger-together';
-const ITCH = 'phosphopho/fear-and-hunger-together:windows';
+// One build for both: Linux and the Steam Deck start it with play.sh.
+const ITCH = ['windows', 'linux'].map((c) => 'phosphopho/fear-and-hunger-together:' + c);
 const BUTLER = process.env.BUTLER || 'D:\\Tools\\butler\\butler.exe';
 const PUBLIC = path.join(ROOT, 'dist', 'public');
 const BUILD = path.join(ROOT, 'dist', 'FearAndHunger-Together');
@@ -69,6 +70,10 @@ if (!args.has('--no-github')) {
     }
     const id = dry ? '0' : execFileSync('gh', ['api', 'user', '-q', '.id'], { encoding: 'utf8' }).trim();
     const who = ['-c', 'user.name=glynn568-glitch', '-c', `user.email=${id}+glynn568-glitch@users.noreply.github.com`];
+    // On top of what is published, whichever copy published it (0.1.7 and 0.1.8 went out from
+    // another tree, and this copy's push was refused). The files stay this commit's.
+    run('git', ['fetch', '-q', 'origin'], { cwd: PUBLIC });
+    run('git', ['reset', '-q', 'origin/main'], { cwd: PUBLIC });
     run('git', ['add', '-A'], { cwd: PUBLIC });
     run('git', [...who, 'commit', '-q', '-m', sourceOnly ? 'Source update (' + version + ')' : 'Fear & Hunger Together ' + version], { cwd: PUBLIC });
     run('git', ['push', '-q', 'origin', 'main'], { cwd: PUBLIC });
@@ -78,6 +83,6 @@ if (!args.has('--no-github')) {
 }
 
 // 4. itch: the unpacked build, so the itch app can patch it.
-if (!sourceOnly && !args.has('--no-itch')) run(BUTLER, ['push', BUILD, ITCH, '--userversion', version], { stdio: 'inherit' });
+if (!sourceOnly && !args.has('--no-itch')) for (const target of ITCH) run(BUTLER, ['push', BUILD, target, '--userversion', version], { stdio: 'inherit' });
 
 console.log(dry ? 'Dry run done.' : sourceOnly ? 'Public source updated.' : `Released ${version}.`);

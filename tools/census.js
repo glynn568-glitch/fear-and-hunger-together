@@ -38,6 +38,10 @@ const SW_PRIVATE_NAME = new RegExp([
 // Two-way switches that still describe the shared world: a character's body,
 // who is alive, and machinery that stays where it was left.
 const SW_WORLD_TWO_WAY = new RegExp([
+    // An enemy's death (the cave gnomes, 10/21: Gnome3Dead and the rest are also
+    // turned off, by the one autorun on map 165 that brings them all back): one
+    // player's kill has to stand for everyone, or it comes back to fight the other.
+    'Dead$', '_dead$',
     '_(arm|leg|paw)[RL12345]?$', '_(arm|leg)\\d', '_leg[RL]$', '_arm[RL]$', 'anal_?bleed', 'KILLED', '_curse$',
     '^Blood_golem', '^blood_golem$', '^guard1$', '^Night_[Ll]urch\\d$', '^door\\d', '^elevator_', '^MECHANISM',
     '^ballista', '^BUCKMAN_OFF$', '^Portal\\d_ON$',
@@ -130,6 +134,19 @@ for (const key of keys(self)) {
 // private; they are world state, and the first throw has to stand.
 const ONCE = [24, 25, 29];
 for (const id of ONCE) va[id] = 1;
+// So does every other layout dice the game throws when a run starts: which
+// version of a floor, which enemies stand where (the Blood pit's lizardman),
+// where D'arce and the others turn up. Shared but thrown again by a later
+// start event, a player's new throw changed the floor under everyone (10/21).
+// Not RanLevel1_1 and RanLevel1_3: the story sets those later on purpose.
+const LAYOUT_DICE = /^LEVEL|^Level\d|^level\d|^RanLevel|^RanThicket|^RanMahabre|^RanStaircase|^VILLAGE_random|VARIABLE$/;
+const STORY_SETS = new Set([121, 123]);
+for (const v of Object.values(usage.va)) {
+    if (!va[v.id] || ONCE.includes(v.id) || STORY_SETS.has(v.id) || !LAYOUT_DICE.test(v.name)) continue;
+    const how = keys(v.wVals);
+    const where = keys(v.w);
+    if (how.includes('set:rand') && how.every((k) => k === 'set:rand' || k === 'set:const') && where.every((k) => k === 'map:auto' || k === 'map:touch')) ONCE.push(v.id);
+}
 
 const census = {
     once: ONCE,

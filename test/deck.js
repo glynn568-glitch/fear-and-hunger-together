@@ -14,7 +14,8 @@ if (probe.error || !/ok/.test(probe.stdout || '')) {
     process.exit(0);
 }
 
-const REPO = '/mnt/d/Games/fh-coop';
+// This checkout, as WSL sees it (a worktree tests its own play.sh, not master's).
+const REPO = '/mnt/' + require('path').resolve(__dirname, '..').replace(/^([A-Za-z]):/, (m, d) => d.toLowerCase()).replace(/\\/g, '/');
 const GAME = '/mnt/d/SteamLibrary/steamapps/common/Fear & Hunger/www';
 const script = `
 set -e
