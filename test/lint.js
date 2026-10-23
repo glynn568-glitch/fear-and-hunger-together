@@ -28,6 +28,13 @@ for (const file of files) {
         if (crlf && crlf !== lines.length - 1) { bad++; console.log(`FAIL ${file} mixes CRLF and LF line ends`); }
     }
 }
+// Node 24's rmSync does nothing, and its cpSync writes elsewhere, in a folder whose
+// name is not plain ASCII (a player named José or Иван, say): never in what players run.
+for (const file of files.filter((f) => /\.js$/.test(f) && !/^test|^tools[\\/](package|release)\.js$/.test(f))) {
+    fs.readFileSync(path.join(ROOT, file), 'utf8').split('\n').forEach((line, i) => {
+        if (/\b(rmSync|cpSync)\s*\(|\{[^}]*\b(rmSync|cpSync)\b[^}]*\}\s*=\s*require/.test(line)) { bad++; console.log(`FAIL ${file}:${i + 1} uses fs.rmSync/cpSync (unlinkSync, or async fs.rm)`); }
+    });
+}
 // The release zip holds every script the packaged ones load or start.
 const pkg = require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'tools', 'package.js'), '--check'], { encoding: 'utf8' });
 if (pkg.status !== 0) { bad++; console.log('FAIL ' + pkg.stderr.trim()); }

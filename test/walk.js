@@ -4,7 +4,11 @@
 // once a step; a late one used to stop their character between tiles.
 const { twoPlayers, checker, sleep, waitFor } = require('./common');
 
-const STEPS = 16;
+// Several walks from a standstill: a late step stops them mostly as they set
+// off (once a few steps are queued, the queue carries them), so one long walk
+// is one throw of the dice.
+const STEPS = 8;
+const WALKS = 4;
 
 (async () => {
     const check = checker();
@@ -26,36 +30,42 @@ const STEPS = 16;
             };
         }, idA);
 
-        // A walks east without stopping.
-        const t0 = await a.evaluate((n) => new Promise((done) => {
-            let left = n;
-            const start = Date.now();
+        // A walks east without stopping, WALKS times, standing still in between.
+        await a.evaluate(() => {
             const _upd = Game_Player.prototype.update;
             Game_Player.prototype.update = function (active) {
-                if (left > 0 && !this.isMoving()) {
+                const w = window.__walk;
+                if (w && w.left > 0 && !this.isMoving()) {
                     this.setThrough(true); this.moveStraight(6); this.setThrough(false);
-                    left--;
-                    if (!left) setTimeout(() => done(Date.now() - start), 600);
+                    if (!--w.left) setTimeout(() => w.done(Date.now() - w.start), 600);
                 }
                 _upd.call(this, active);
             };
-        }), STEPS);
-        await sleep(2000);
+        });
+        const t0 = [];
+        for (let i = 0; i < WALKS; i++) {
+            t0.push(await a.evaluate((n) => new Promise((done) => { window.__walk = { left: n, start: Date.now(), done }; }), STEPS));
+            await sleep(1500);
+        }
 
         const seen = await b.evaluate(() => window.__seen);
-        const startX = 10, endX = 10 + STEPS;
-        const first = seen.findIndex((f) => f[1] > startX + 0.01);
-        const last = seen.findIndex((f) => f[1] >= endX - 0.001);
-        const walk = first >= 0 && last > first ? seen.slice(first, last) : [];
+        const walks = t0.map((t, i) => {
+            const startX = 10 + i * STEPS, endX = startX + STEPS;
+            const first = seen.findIndex((f) => f[1] > startX + 0.01);
+            const last = seen.findIndex((f) => f[1] >= endX - 0.001);
+            const walk = first >= 0 && last > first ? seen.slice(first, last) : [];
+            return { first, last, walk, a: t - 600, b: walk.length ? walk[walk.length - 1][2] - walk[0][2] : 0 };
+        });
+        const walk = [].concat(...walks.map((w) => w.walk));
         // A stop: a frame that began with them standing still (the engine counts it).
         const stalls = walk.filter((f) => f[3] > 0).length;
         const patterns = new Set(walk.filter((f) => f[0]).map((f) => f[4])).size;
-        const changes = walk.filter((f, i) => i && f[4] !== walk[i - 1][4]).length;
-        const took = walk.length ? walk[walk.length - 1][2] - walk[0][2] : 0;
-        check('B sees A walk the whole way', first >= 0 && last > first, 'first ' + first + ' last ' + last + ' of ' + seen.length);
-        check('without stopping between tiles', stalls <= 1, stalls + ' stalled frames in ' + walk.length + ' (A took ' + t0 + ' ms, B ' + took + ' ms)');
-        check('stepping as they walk (legs moving, not sliding)', patterns >= 3 && changes >= STEPS, patterns + ' patterns, ' + changes + ' changes');
-        check('at A\'s pace', took > 0 && Math.abs(took - (t0 - 600)) < 500, 'A ' + (t0 - 600) + ' ms, B ' + took + ' ms');
+        const changes = walks.reduce((n, w) => n + w.walk.filter((f, i) => i && f[4] !== w.walk[i - 1][4]).length, 0);
+        const paces = walks.map((w) => 'A ' + w.a + ' ms, B ' + w.b + ' ms').join('; ');
+        check('B sees A walk the whole way', walks.every((w) => w.first >= 0 && w.last > w.first), walks.map((w) => w.first + '..' + w.last).join(' ') + ' of ' + seen.length);
+        check('without stopping between tiles', stalls <= 1, stalls + ' stalled frames in ' + walk.length + ' (' + paces + ')');
+        check('stepping as they walk (legs moving, not sliding)', patterns >= 3 && changes >= STEPS * WALKS, patterns + ' patterns, ' + changes + ' changes');
+        check('at A\'s pace', walks.every((w) => w.b > 0 && Math.abs(w.b - w.a) < 500), paces);
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

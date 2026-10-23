@@ -3,9 +3,17 @@ const fs = require('fs');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 
+// A file's text as the game's own loader reads it: a UTF-8 or UTF-16 byte-order mark
+// (Notepad, PowerShell's Out-File, some editors and translation tools) is read past.
+function decodeText(buf) {
+    if (buf[0] === 0xff && buf[1] === 0xfe) return buf.toString('utf16le', 2);
+    if (buf[0] === 0xfe && buf[1] === 0xff) return Buffer.from(buf.subarray(2, buf.length - (buf.length % 2))).swap16().toString('utf16le');
+    return buf.toString('utf8').replace(/^﻿/, '');
+}
+
 const SETTINGS = (() => {
     let text;
-    try { text = fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf8'); } catch (e) { return {}; }
+    try { text = decodeText(fs.readFileSync(path.join(ROOT, 'settings.json'))); } catch (e) { return {}; }
     try { return JSON.parse(text); } catch (e) {
         console.error('settings.json could not be read, so it is ignored: ' + e.message + '\n(Backslashes in paths must be doubled: D:\\\\Games, not D:\\Games.)');
         return {};
@@ -20,7 +28,12 @@ function findGame() {
     const steams = [];
     if (process.platform === 'win32') {
         try {
-            const out = require('child_process').execSync('reg query "HKCU\\Software\\Valve\\Steam" /v SteamPath', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            // UTF-8 first: in the system's own code page (866 on a Russian PC) a Steam folder named in Cyrillic
+            // comes back mangled. Put back after, or a console the player started this from stays in UTF-8.
+            const { execSync } = require('child_process');
+            let was = '';
+            try { was = (/(\d+)\s*$/.exec(execSync('chcp', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) || [])[1] || ''; } catch (e) { /* no console */ }
+            const out = execSync((was ? 'chcp 65001 >nul & ' : '') + 'reg query "HKCU\\Software\\Valve\\Steam" /v SteamPath' + (was ? ' & chcp ' + was + ' >nul' : ''), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
             const m = /SteamPath\s+REG_SZ\s+(.+)/.exec(out);
             if (m) steams.push(m[1].trim());
         } catch (e) { /* no Steam in the registry */ }
@@ -63,7 +76,14 @@ function findGame() {
     return '';
 }
 
-module.exports = { findGame, SETTINGS };
+// One of the game's data files, decoded as the game's own loader does
+// (decodeText), where JSON.parse alone would stop on a byte-order mark.
+function readGameJson(file) {
+    const buf = fs.readFileSync(file);
+    try { return JSON.parse(decodeText(buf)); } catch (e) { throw new Error(file + ': ' + e.message); }
+}
+
+module.exports = { findGame, SETTINGS, readGameJson, decodeText };
 
 // For the start script:
 //   node tools/find-game.js             prints the game's www folder, or nothing
@@ -73,7 +93,7 @@ if (require.main === module) {
     if (i >= 0 && process.argv[i + 1]) {
         const file = path.join(ROOT, 'settings.json');
         let settings = {};
-        try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* start afresh */ }
+        try { settings = JSON.parse(decodeText(fs.readFileSync(file))); } catch (e) { /* start afresh */ }
         settings.game = path.resolve(process.argv[i + 1]);
         fs.writeFileSync(file, JSON.stringify(settings, null, 4) + '\n');
     } else {

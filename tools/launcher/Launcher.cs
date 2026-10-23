@@ -14,6 +14,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Management;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -130,6 +131,13 @@ static class Launcher
             if (said.Contains("was not found")) said = "Fear & Hunger was not found in the folders you picked.";
             // Port 8420 held by some other program: our server says "already running", but nothing of ours answers.
             else if (said.Contains("already running")) said = "Another program on this PC is using port " + Port + ". Close it, or restart the PC, and try again.";
+            // A crash: its error line, and where the rest is for a bug report.
+            else
+            {
+                string error = null;
+                try { error = File.ReadAllLines(LogFile).LastOrDefault(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^\w*Error\b")); } catch (Exception) { }
+                if (error != null) said = error + "\n\nThe whole of what it said is in " + LogFile;
+            }
             MessageBox.Show("The game could not start.\n\n" + said, Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
@@ -162,6 +170,8 @@ static class Launcher
         {
             WorkingDirectory = App, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
+            // Node writes UTF-8; read in the system's code page (866 on a Russian PC), a Cyrillic folder name in a message is garbage.
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
         };
         info.EnvironmentVariables["PORT"] = Port.ToString();
         info.EnvironmentVariables["FH_APP"] = "1";
@@ -383,7 +393,9 @@ static class Launcher
     {
         try
         {
-            string[] lines = File.ReadAllLines(LogFile);
+            // A crash's stack frames and Node's version footer would push its error line off the message.
+            string[] lines = File.ReadAllLines(LogFile).Where(l => l.Trim() != "" && l.Trim() != "^"
+                && !l.TrimStart().StartsWith("at ") && !l.StartsWith("Node.js v")).ToArray();
             int from = Math.Max(0, lines.Length - 8);
             return string.Join("\n", lines, from, lines.Length - from);
         }

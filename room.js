@@ -211,6 +211,14 @@ class Room {
         this.deliver(target, raw, true);
     }
 
+    // A pick from the partner panel, as tools/brain.js takes it. A key left
+    // empty means the one kept for that service (tools/brain.js keyFor).
+    mindPick(msg) {
+        const custom = msg.brain === 'openai-url';
+        return { brain: custom ? 'openai' : String(msg.brain || ''), model: String(msg.model || '').trim().slice(0, 120),
+            url: custom ? String(msg.url || '').trim().slice(0, 300) : '', key: String(msg.key || '').trim() };
+    }
+
     parkFile(name) {
         return path.join(this.saveDir, 'parked', String(name).toLowerCase().replace(/[^a-z0-9 _'-]/g, '') + '.json');
     }
@@ -233,7 +241,8 @@ class Room {
     }
 
     unpark(name) {
-        try { fs.rmSync(this.parkFile(name), { force: true }); } catch (e) { /* nothing parked */ }
+        // unlinkSync, not rmSync: Node 24's rmSync does nothing at all in a folder whose name is not plain ASCII (José, Иван).
+        try { fs.unlinkSync(this.parkFile(name)); } catch (e) { /* nothing parked */ }
     }
 
     // Good for twenty minutes: long enough to restart a browser, too short to be a save.
@@ -434,7 +443,7 @@ class Room {
                 say(why || 'An AI partner is on the way. It joins once you are in the dungeon. Press Y to talk to it, F8 to send it home.');
             };
             // Nothing to think with: the host is asked first, unless they chose none themselves.
-            const chosen = (require('./tools/find-game').SETTINGS.partner || {}).brain;
+            const chosen = (require('./tools/find-game').SETTINGS.partner || {}).brain || require('./tools/brain').savedMind().brain;
             if (msg.anyway || chosen || this.partners.names().length) { callIn(); break; }
             if (this.partners.asking) break; // a second F8 while the first is still looking
             this.partners.asking = true;
@@ -444,22 +453,36 @@ class Room {
             });
             break;
         }
-        case 'partnerkey': { // the host pasted an Anthropic key into the F8 panel
+        case 'partnerminds': // the host opened the partner panel: what could think here
             if (!this.partners || !peer.host) break;
-            const key = String(msg.key || '').trim();
-            const bad = (text) => this.send(peer, { t: 'partnerkeybad', text });
-            if (!/^sk-ant-[\w-]{20,}$/.test(key)) { bad('That does not look like an Anthropic key.'); break; }
+            require('./tools/brain').minds().then((m) => this.send(peer, Object.assign({ t: 'partnerminds' }, m)), () => {});
+            break;
+        case 'partnermodels': { // the models a service offers, for the panel's list
+            if (!this.partners || !peer.host) break;
+            const brain = require('./tools/brain');
+            const pick = this.mindPick(msg);
+            brain.listModels(pick).then((models) => this.send(peer, { t: 'partnermodels', brain: msg.brain, models: models.slice(0, 200) }),
+                (e) => this.send(peer, { t: 'partnermodels', brain: msg.brain, models: [], why: String(e && e.message || e).slice(0, 160) }));
+            break;
+        }
+        case 'partnermind': { // the host picked how a partner thinks: checked, then kept on this PC
+            if (!this.partners || !peer.host) break;
+            const brain = require('./tools/brain');
+            const pick = this.mindPick(msg);
+            const bad = (text) => this.send(peer, { t: 'partnermindbad', text });
+            if (pick.key && !/^[\x21-\x7e]{8,300}$/.test(pick.key)) { bad('That does not look like a key.'); break; }
+            if (pick.brain === 'openai' && !/^https?:\/\/\S+$/.test(pick.url)) { bad('Give the service\'s address, starting http:// or https://.'); break; }
             if (this.partners.checking) break; // Save pressed twice
             this.partners.checking = true;
-            const brain = require('./tools/brain');
-            brain.checkAnthropicKey(key).then((why) => {
+            brain.checkMind(pick).then((why) => {
                 this.partners.checking = false;
                 if (why) { bad(why); return; }
-                brain.saveKey(key);
-                this.send(peer, { t: 'partnerkeyok' });
-                if (this.partners.names().length) return;
-                this.send(peer, { t: 'partnernote', text: 'Key saved. ' + (this.partners.start(new Set([...this.peers.values()].filter((p) => p.named).map((p) => p.name.toLowerCase()))) || 'An AI partner is on the way.') });
-            });
+                brain.saveMind(pick);
+                this.send(peer, { t: 'partnermindok' });
+                const running = this.partners.names().length;
+                const taken = new Set([...this.peers.values()].filter((p) => p.named).map((p) => p.name.toLowerCase()));
+                this.send(peer, { t: 'partnernote', text: 'Saved. ' + (running ? 'Partners called in from now on think that way.' : (this.partners.start(taken) || 'An AI partner is on the way.')) });
+            }, (e) => { this.partners.checking = false; bad(String(e && e.message || e).slice(0, 160)); });
             break;
         }
         case 'leftworld':

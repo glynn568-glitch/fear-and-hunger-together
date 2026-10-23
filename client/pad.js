@@ -32,7 +32,7 @@
 
     // The mod's panels, when one is up: the D-pad moves between its controls.
     function panel() {
-        for (const sel of ['#coop-setup.on', '#coop-together.open']) {
+        for (const sel of ['#coop-setup.open', '#coop-together.open']) {
             const el = document.querySelector(sel);
             if (el) return el;
         }

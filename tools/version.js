@@ -14,7 +14,10 @@ const CENSUS = path.join(ROOT, 'client', 'census.json');
 // One data file as it is compared between players.
 function dataText(data, name) {
     // Line ends ignored: the same data unpacked on another system is the same game.
-    let text = fs.readFileSync(path.join(data, name), 'latin1').replace(/\r\n/g, '\n');
+    // A UTF-16 copy (some editors save one) is hashed as the UTF-8 it holds, so it matches a plain copy.
+    const buf = fs.readFileSync(path.join(data, name));
+    const utf16 = (buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff);
+    let text = (utf16 ? Buffer.from(require('./find-game').decodeText(buf), 'utf8') : buf).toString('latin1').replace(/^\xEF\xBB\xBF/, '').replace(/\r\n/g, '\n');
     // A copy decrypted for another mod (Mattie's asks for it) is still the same game.
     if (name === 'System.json') {
         try {
@@ -48,7 +51,7 @@ function fingerprint(game) {
     // same version may not have. Any real update changes the data anyway
     // (the editor rewrites System.json's versionId each time it saves).
     let build = '';
-    try { build = String(JSON.parse(fs.readFileSync(path.join(data, 'System.json'), 'utf8')).versionId || ''); } catch (e) { /* unreadable */ }
+    try { build = String(require('./find-game').readGameJson(path.join(data, 'System.json')).versionId || ''); } catch (e) { /* unreadable */ }
     return { fp: hash.digest('hex').slice(0, 16), build };
 }
 
@@ -66,9 +69,14 @@ function ensureCensus(game, fp) {
     for (const tool of ['scan.js', 'census.js']) {
         const res = spawnSync(process.execPath, [path.join(__dirname, tool)], { env, encoding: 'utf8' });
         if (res.status !== 0) {
-            const why = tool + ' failed: ' + (res.stderr || res.stdout).trim().split('\n').pop();
+            // The error's own line, not Node's version footer or a stack frame.
+            const said = (res.stderr || res.stdout || '').split(/\r?\n/).filter((l) => !/^Node\.js v/.test(l));
+            const why = tool + ' failed: ' + (said.find((l) => /^\w*Error\b/.test(l)) || said.filter((l) => l.trim()).pop() || (res.error ? res.error.message : 'exit ' + res.status));
             // The census itself is right; only the place names are missing, and the game runs without them.
             if (namesOnly) { console.log(why + ' (place names will be missing)'); return false; }
+            // The census already here is of the same game, a little different copy: one that
+            // plays (as a joiner shares by the host's census) beats no game at all.
+            if (have) { console.log(why + ' (the census already here is used; maps this copy changed may not share)'); return false; }
             throw new Error(why);
         }
     }

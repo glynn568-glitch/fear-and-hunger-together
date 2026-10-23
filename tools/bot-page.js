@@ -43,7 +43,8 @@ module.exports = function installBot(options) {
     function think(kind, text, limit) {
         if (typeof window.fhBrain !== 'function') return Promise.resolve(null);
         BOT.thinking++;
-        const ask = window.fhBrain(kind, text).then((r) => r || null, () => null);
+        const t0 = Date.now();
+        const ask = window.fhBrain(kind, text).then((r) => { if (r && kind !== 'battle' && BOT.talked) BOT.talked(Date.now() - t0); return r || null; }, () => null);
         const late = new Promise((r) => setTimeout(() => r(null), limit || 60000));
         return Promise.race([ask, late]).finally(() => { BOT.thinking--; });
     }
@@ -271,7 +272,12 @@ module.exports = function installBot(options) {
         if (!BOT.notes.length || Date.now() - BOT.lastNoteAt < NOTE_GAP || !Coop.world.live) return;
         BOT.lastNoteAt = Date.now();
         const text = BOT.notes.splice(0).join('\n') + '\n' + situation() + '\nRemark only if it is worth it.';
-        think('note', text).then((r) => { if (r && r.say) speak(r.say, false); if (r && r.use) obey({ use: r.use }, null); });
+        think('note', text).then((r) => {
+            // A need is said even soon after another line; only "quiet" holds it.
+            if (!r) { const need = plainNote(text); if (need && !BOT.quiet) speak(need, true); return; }
+            if (r.say) speak(r.say, false);
+            if (r.use) obey({ use: r.use }, null);
+        });
     }, 1000);
 
     //--- who to stay with -----------------------------------------------------
@@ -443,7 +449,7 @@ module.exports = function installBot(options) {
         const rows = [];
         rows.push('Turn ' + brief.turn + '. You choose for ' + brief.you + '.' + (err ? ' Your last choice could not be used (' + err + '); choose again.' : ''));
         rows.push('Your side: ' + brief.allies.map((a) => a.i + ' ' + a.name + (a.player ? ' (' + a.player + ')' : '') + ' ' + a.how + ' ' + a.hp + '/' + a.mhp + (a.states.length ? ' [' + a.states.join(', ') + ']' : '')).join('; '));
-        rows.push('Enemies: ' + brief.enemies.map((e) => e.i + ' ' + e.name + ' ' + e.how + (e.states.length ? ' [' + e.states.join(', ') + ']' : '')).join('; '));
+        rows.push('Enemies: ' + brief.enemies.map((e) => e.i + ' ' + e.name + ' ' + e.how + (e.states.length ? ' [' + e.states.join(', ') + ']' : '') + (e.strikes ? ' (attacks)' : '') + (e.ends ? ' (bring it down and the enemy falls)' : '') + ' ' + e.hit + '% to hit, about ' + Math.max(1, Math.round(e.blows)) + ' blows').join('; '));
         if (brief.log.length) rows.push('Lately: ' + brief.log.join(' / '));
         const opts = ['attack with ' + brief.attack.weapon + ' (target an enemy number)', 'guard'];
         for (const k of brief.skills) if (k.usable) opts.push('skill ' + k.id + ' ' + k.name + (k.about ? ': ' + k.about : ''));
@@ -453,14 +459,23 @@ module.exports = function installBot(options) {
         return rows.join('\n');
     }
 
-    // Rules of thumb when there is no answer: an arm first, then the head,
-    // then whatever still stands.
+    // Rules of thumb when there is no answer, the way players fight: heal
+    // whoever on our side is about to die, finish a part that is nearly off,
+    // take the head only when it is easy to hit (a guard's is, once both legs
+    // are off), else the parts that strike, then the body. On a guard that is
+    // the cleaver arm, the stinger, then the torso, as players fight it.
     function fallbackPick(brief) {
         // A wind-up (the guard's step closer before its charge): guard this turn.
-        if (/takes a step closer|prepares for|readies|raises (his|her|its) arms/i.test(brief.log[brief.log.length - 1] || '')) return { do: 'guard' };
+        if (brief.tell || brief.round.some((l) => /takes a step closer|prepares for|readies|raises (his|her|its) arms/i.test(l))) return { do: 'guard' };
+        const heal = HEALS.map((id) => brief.items.find((it) => it.id === id)).find(Boolean);
+        const dying = brief.allies.filter((a) => a.how !== 'down' && a.hp < a.mhp * 0.25).sort((a, b) => a.hp / a.mhp - b.hp / b.mhp)[0];
+        if (heal && dying) return { do: 'item', id: heal.id, target: dying.i };
         const alive = brief.enemies.filter((e) => e.how !== 'gone');
-        const by = (re) => alive.find((e) => re.test(e.name));
-        const target = by(/arm/i) || by(/head/i) || alive.find((e) => !/torso/i.test(e.name)) || alive[0];
+        // Worth a blow: a part that strikes, or one whose loss ends the enemy (head, torso, a
+        // body with no parts). Of those, the one that takes fewest blows, a striker on a tie.
+        const kills = (e) => e.ends || /head|torso/i.test(e.name) || !/\[/.test(e.name);
+        const worth = alive.filter((e) => e.strikes || kills(e));
+        const target = (worth.length ? worth : alive).sort((a, b) => a.blows - b.blows || b.strikes - a.strikes)[0];
         return { do: 'attack', target: target ? target.i : 0 };
     }
 
@@ -474,10 +489,31 @@ module.exports = function installBot(options) {
         return pick;
     }
 
+    // A model that keeps a fight waiting (Grok Build: 9-25 s a turn) hands its
+    // fight turns to the rules of thumb, which play the same parts and guard on
+    // the same tells, and keeps the talking. Two quick answers to talk in a row
+    // (under 3 s) give it its fights back.
+    const SLOW = 8000; // ms: slow when the middle of the last three turns (of two, the quicker) is slower than this
+    BOT.fightMs = [];
+    BOT.talkMs = [];
+    BOT.slowFights = function () {
+        const last = BOT.fightMs.slice(-3).sort((x, y) => x - y);
+        return last.length >= 2 && last[Math.floor((last.length - 1) / 2)] > SLOW;
+    };
+    BOT.talked = function (ms) {
+        BOT.talkMs = BOT.talkMs.concat([ms]).slice(-2);
+        if (BOT.talkMs.length === 2 && BOT.talkMs.every((t) => t < 3000)) BOT.fightMs = [];
+    };
     function decide(brief, err) {
         const t0 = Date.now();
+        const timed = (p) => p.then((r) => { BOT.fightMs.push(r ? Date.now() - t0 : THINK_LIMIT); if (BOT.fightMs.length > 6) BOT.fightMs.shift(); return r; });
+        if (!err && BOT.slowFights()) {
+            const pick = fallbackPick(brief);
+            BOT.picks.push({ ms: Date.now() - t0, pick, model: false, slow: true });
+            return Promise.resolve(pick);
+        }
         // A second refusal goes straight to the rules of thumb.
-        const asked = err ? Promise.resolve(null) : think('battle', briefText(brief, err), THINK_LIMIT);
+        const asked = err ? Promise.resolve(null) : timed(think('battle', briefText(brief, err), THINK_LIMIT));
         return asked.then(function (r) {
             const pick = validPick(brief, r) || fallbackPick(brief);
             BOT.picks.push({ ms: Date.now() - t0, pick, model: !!validPick(brief, r) });
@@ -486,6 +522,7 @@ module.exports = function installBot(options) {
             return pick;
         });
     }
+    BOT.decide = decide;
 
     // A guest's turn in someone else's fight arrives as a message.
     Coop.on('to:bturn', function (msg) {
@@ -598,11 +635,81 @@ module.exports = function installBot(options) {
         const pending = BOT.notes.splice(0);
         const text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + ' says to you: "' + msg.text + '"';
         think('chat', text).then(function (r) {
+            r = r || plainReply(msg.text);
             if (!r) return;
             obey(r, peer);
             speak(r.say, true);
         });
     });
+
+    // Without a model (or when it fails): the orders a partner gives, read from
+    // their words, with a word back so they know it was taken.
+    function bagFind(words, kinds) {
+        const me = $gameParty.leader();
+        const all = $gameParty.allItems().concat(me ? me.equips().filter(Boolean) : []).filter((it) => it && it.name);
+        if (/\b(food|eat|something to eat|meat)\b/.test(words)) {
+            const food = all.filter(isFood).filter((f) => !spoils(f)).sort((a, b) => filling(a) - filling(b));
+            if (food.length) return food[0];
+        }
+        if (/\b(heal|healing|herb|medicine|potion)\b/.test(words)) {
+            const id = HEALS.find((h) => $gameParty.hasItem($dataItems[h]));
+            if (id) return $dataItems[id];
+        }
+        if (/\b(bandage|cloth)\b/.test(words) && $gameParty.hasItem($dataItems[8])) return $dataItems[8];
+        // By name: the whole name, else any long word of it ("the sword" for Long sword).
+        const kinded = all.filter((it) => kinds.indexOf(kindOf(it)) >= 0);
+        const part = (it) => it.name.toLowerCase().split(/\W+/).some((w) => w.length >= 4 && new RegExp('\\b' + w + 's?\\b').test(words));
+        return kinded.find((it) => words.includes(it.name.toLowerCase())) || kinded.find(part) || null;
+    }
+    function plainReply(text) {
+        const t = ' ' + String(text || '').toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+        const has = (re) => re.test(t);
+        if (!window.$gameParty) return null;
+        // "Don't wait", "never mind": better no answer than the opposite order. "I'll use a herb
+        // on you" is the speaker's own plan, not an order.
+        if (has(/\b(don't|dont|do not|never|no need|can't|cant|cannot)\b|^ i\b|\b(i'll|i will|i'm going to|let me)\b/)) return null;
+        // Leaving cannot be undone: only the plain order, the whole line.
+        if (/^ (go home|you can go home|you're dismissed|dismissed) $/.test(t)) return { order: 'leave', say: 'Farewell.' };
+        if (Coop.dead && has(/\blet (it )?go\b/)) return { order: 'let go', say: 'Take my things.' };
+        if (has(/\b(join (my |the )?party|fall in|get in line|join me)\b/)) return { order: 'party', say: 'In line.' };
+        if (has(/\b(give|hand|pass|toss) (it |that |them |those )?(over )?(to )?me\b|\bcan i (have|get|borrow|take)\b/)) {
+            const it = bagFind(t, ['item', 'weapon', 'armor']);
+            if (it) return { give: { kind: kindOf(it), id: it.id }, say: 'Here, ' + it.name + '.' };
+            // "Give me a second" names nothing to give.
+            return /\b(food|meat|heal|herb|medicine|potion|bandage|cloth)\b/.test(t) ? { say: 'I have none.' } : null;
+        }
+        if (has(/\b(eat|drink|use (your|the|a|an|some|that)|heal yourself|bandage yourself|patch yourself)\b/)) {
+            const it = bagFind(t, ['item']);
+            return it ? { use: it.id, say: '' } : { say: 'I have nothing for that.' };
+        }
+        if (has(/\b(shut up|be quiet|quiet down|shush|hush|shh+)\b/)) return { order: 'quiet', say: '' };
+        if (has(/\b(you can talk|talk again|you can speak)\b/)) return { order: 'talk', say: 'Fine.' };
+        // "Stay close" and "search with me" are following, so following is read first.
+        if (has(/\b(follow|come (here|with me|along|back)|^ come $|stay close|stay behind|stay with me|regroup|back to me|this way|over here)\b/)) return { order: 'follow', say: 'Coming.' };
+        if (has(/\b(explore|look around|go scout|split up|go (look|search|loot)|search (around|alone|on your own))\b/)) return { order: 'explore', say: 'I will look around.' };
+        if (has(/\b(wait|stay (here|put|there|back)|hold (on|up|here|position)|freeze)\b|^ stop\b/)) return { order: 'wait', say: 'Waiting here.' };
+        if (has(/\b(how are you|you ok|you okay|status|are you hurt|your health)\b/)) {
+            const me = $gameParty.leader();
+            const ails = conditionsOf(me);
+            return { say: me.hp + ' of ' + me.mhp + ', ' + hunger(me) + (ails.length ? ', ' + ails.slice(0, 2).join(', ') : '') + '.' };
+        }
+        if (has(/\b(what do you have|what have you got|inventory|your bag|carrying)\b/)) {
+            const names = $gameParty.items().map((it) => it.name).slice(0, 5);
+            return { say: names.length ? names.join(', ') + '.' : 'Nothing.' };
+        }
+        return null;
+    }
+    BOT.plainReply = plainReply;
+    BOT.plainPick = fallbackPick;
+
+    // What it would have asked a model to put in words: its needs, said plainly.
+    function plainNote(text) {
+        const needs = [];
+        if (/You have no food/.test(text)) needs.push("I'm out of food.");
+        for (const m of text.matchAll(/Ask your partner for (.+?), plainly/g)) if (m[1] !== 'some') needs.push('I need ' + m[1] + '.');
+        if (/close to death .* nothing to heal with/.test(text)) needs.push('Nearly dead. Nothing to heal with.');
+        return needs.join(' ');
+    }
 
     // What a reply asks this partner to do, beyond talking.
     function obey(r, peer) {

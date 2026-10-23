@@ -7,11 +7,11 @@ const os = require('os');
 const zlib = require('zlib');
 const { WebSocketServer, WebSocket } = require('ws');
 
-const { findGame, SETTINGS } = require('./tools/find-game');
+const { findGame, SETTINGS, readGameJson } = require('./tools/find-game');
 const GAME = findGame();
 // The first game only: Termina, or any other RPG Maker game in the folder picked, is not it.
 let gameTitle = '';
-try { gameTitle = String(JSON.parse(fs.readFileSync(path.join(GAME, 'data', 'System.json'), 'utf8')).gameTitle || ''); } catch (e) { /* no game there */ }
+try { gameTitle = String(readGameJson(path.join(GAME, 'data', 'System.json')).gameTitle || ''); } catch (e) { /* no game there */ }
 const otherGame = gameTitle && (!/fear\s*&?\s*hunger/i.test(gameTitle) || /termina|\b2\b/i.test(gameTitle));
 if (!GAME || !fs.existsSync(path.join(GAME, 'index.html')) || otherGame) {
     console.error('Fear & Hunger was not found' + (GAME ? ' at ' + GAME : '') + (otherGame ? ' (that folder holds "' + gameTitle + '")' : '') + '.\n'
@@ -24,6 +24,11 @@ const BUILD = Object.assign(fingerprint(GAME), modPrint());
 // Each data file's hash: players compare them to find the maps they cannot share enemies on.
 const FILE_HASHES = JSON.stringify(fileHashes(GAME));
 if (ensureCensus(GAME, BUILD.fp)) console.log('This copy of the game is a different build from the last one seen here; the census was rebuilt for it.');
+// Left with a census of another copy (its rebuild failed): two players must not share by
+// different ones, so a host on one hands it to every joiner, and a joiner on one takes the host's.
+let censusFp = '';
+try { censusFp = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).fp || ''; } catch (e) { /* none */ }
+const CENSUS_STALE = censusFp !== BUILD.fp;
 const { Room } = require('./room'); // reads the census
 const { Partners } = require('./partners');
 const { Tunnel } = require('./tools/tunnel');
@@ -150,7 +155,7 @@ function indexHtml(req, url) {
     html = html.replace(/<link\b[^>]*\brel="(icon|apple-touch-icon)"[^>]*>\s*/gi, '');
     html = html.replace('<title>', linkCard(req, url) + '\n        $&');
     // Which build this copy is; the host compares it with its own.
-    const build = { fp: BUILD.fp, build: BUILD.build, mod: BUILD.mod, version: BUILD.version, joined: !!JOIN };
+    const build = { fp: BUILD.fp, build: BUILD.build, mod: BUILD.mod, version: BUILD.version, joined: !!JOIN, stale: CENSUS_STALE };
     html = html.replace('<title>', '<script>window.COOP_BUILD = ' + JSON.stringify(build) + ';</script>\n        $&');
     html = html.replace('<script type="text/javascript" src="js/libs/pixi.js">',
         '<script type="text/javascript" src="coop/shim.js"></script>\n        $&');
@@ -365,7 +370,7 @@ room.partners.onFail = (name, why) => {
 };
 wss.on('connection', (ws, req) => {
     const q = new URL(req.url, 'http://x').searchParams;
-    const theirs = { fp: q.get('fp') || '', build: q.get('build') || '?', mod: q.get('mod') || '', version: q.get('v') || '?' };
+    const theirs = { fp: q.get('fp') || '', build: q.get('build') || '?', mod: q.get('mod') || '', version: q.get('v') || '?', stale: q.get('stale') === '1' };
     // Another release of the game, or of this mod, cannot share a world. The
     // same release with data files that differ (a mod, a changed install) can:
     // the host's census then decides what is shared, on both sides.
@@ -376,8 +381,9 @@ wss.on('connection', (ws, req) => {
         ws.close(4001, 'version');
         return;
     }
-    const differs = theirs.fp !== BUILD.fp;
-    if (differs) console.log('a player whose game files differ from this one\'s joined (theirs ' + theirs.fp + ', ours ' + BUILD.fp + '); they share by this census');
+    // A stale census on the host's own side is the census everyone shares by: only a joiner's counts.
+    const differs = theirs.fp !== BUILD.fp || ((theirs.stale || CENSUS_STALE) && !isHost(req));
+    if (differs) console.log('a player whose game files or census differ from this one\'s joined (theirs ' + theirs.fp + (theirs.stale ? ', census of another copy' : '') + ', ours ' + BUILD.fp + (CENSUS_STALE ? ', census of another copy' : '') + '); they share by this census');
     if (JOIN) {
         // A joining server is for its own PC's player only.
         if (!isHost(req)) { ws.close(4004, 'not from this PC'); return; }
@@ -439,7 +445,7 @@ function bugReport() {
     const home = os.homedir();
     return text.split(home).join('~')
         .replace(/([?&]k=)[0-9a-zA-Z]+/g, '$1(key)').replace(/fhk=[0-9a-zA-Z]+/g, 'fhk=(key)')
-        .replace(/\b(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, '$1(rest of key)').replace(/\bxai-[A-Za-z0-9_-]+/g, 'xai-(key)');
+        .replace(/\b(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, '$1(rest of key)').replace(/\bxai-[A-Za-z0-9_-]+/g, 'xai-(key)').replace(/\bAIza[A-Za-z0-9_-]{20,}/g, 'AIza(key)');
 }
 
 // The page reconnects by itself, through whatever this server now is.
@@ -642,7 +648,8 @@ function keepWorld(data) {
         fs.renameSync(file + '.tmp', file);
         // The last twenty beds of a run are plenty to carry it on from.
         const beds = fs.readdirSync(dir).map((n) => /^world@(\d+)\.json$/.exec(n)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
-        for (const old of beds.slice(20)) fs.rmSync(path.join(dir, `world@${old}.json`), { force: true });
+        // unlinkSync, not rmSync: Node 24's rmSync does nothing at all in a folder whose name is not plain ASCII (José, Иван).
+        for (const old of beds.slice(20)) try { fs.unlinkSync(path.join(dir, `world@${old}.json`)); } catch (e) { /* gone already */ }
     } catch (e) { console.error('could not keep a copy of the run: ' + e.message); }
 }
 
@@ -705,6 +712,8 @@ require('net').createServer((socket) => server.emit('connection', socket))
     .on('error', () => { /* no IPv6 on this PC */ }).listen(PORT, '::1');
 server.listen(PORT, '127.0.0.1', () => {
     openLog();
+    // Hermes's proxy, if a partner thinks with it, is this server's to stop (only now: a second start must not).
+    require('./tools/brain').ownHermes(PORT);
     console.log(`fh-coop serving ${GAME}`);
     console.log(`open http://localhost:${PORT}/`);
     // Started "with an AI partner": one is called in right away and waits at the title.

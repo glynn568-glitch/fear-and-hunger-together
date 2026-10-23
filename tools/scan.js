@@ -3,10 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const GAME = require('./find-game').findGame();
+const { findGame, readGameJson } = require('./find-game');
+const GAME = findGame();
 const DATA = path.join(GAME, 'data');
 const OUT = path.join(__dirname, '..', 'data');
-const load = (name) => JSON.parse(fs.readFileSync(path.join(DATA, name), 'utf8'));
+const load = (name) => readGameJson(path.join(DATA, name));
 
 const sys = load('System.json');
 const usage = { sw: {}, va: {} };

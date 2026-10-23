@@ -200,6 +200,12 @@ const TWINS = {
         suite: 'scroll', file: 'client/fixes.js',
         find: 'actor.name().toUpperCase() === String(p[3]).toUpperCase();', put: 'actor.name() === String(p[3]);',
     },
+    'slow-host': {
+        why: 'a host who took over 25 s on their own move left the AI partner never asked for its turn',
+        suite: 'plain', file: 'client/battle.js',
+        find: '            if (newTurn) b.ctlAt = Date.now();\n            const who = controller(b);\n',
+        put: '            const who = controller(b);\n            if (newTurn) b.ctlAt = Date.now();\n',
+    },
     'chat-trim': {
         why: 'a chat line from a sender that is not Coop.say kept the spaces at its ends',
         suite: 'scroll', file: 'client/chat.js',

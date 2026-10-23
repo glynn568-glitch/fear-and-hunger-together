@@ -115,7 +115,7 @@ Coop.connect = function () {
     if (Coop.refused) return; // another build, or a dead link: retrying cannot help
     const b = window.COOP_BUILD || {};
     const query = '?fp=' + encodeURIComponent(b.fp || '') + '&build=' + encodeURIComponent(b.build || '')
-        + '&mod=' + encodeURIComponent(b.mod || '') + '&v=' + encodeURIComponent(b.version || '');
+        + '&mod=' + encodeURIComponent(b.mod || '') + '&v=' + encodeURIComponent(b.version || '') + (b.stale ? '&stale=1' : '');
     const ws = new WebSocket(scheme + location.host + '/coop/ws' + query);
     ws.binaryType = 'arraybuffer';
     Coop._ws = ws;

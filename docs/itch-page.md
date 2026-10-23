@@ -17,6 +17,8 @@
 
 Co-op for **Fear & Hunger** (the first game). Up to four players share one dungeon as separate characters: split up or stick together, fight side by side, and drag each other back from death at the ritual circles.
 
+**Early access.** Expect bugs. Report them and I'll fix them fast.
+
 Made for playing with friends. If nobody's free, or you want a fourth, you can call in an AI partner. It only shows up when you ask. It takes whichever character nobody has and lives under the same rules you do: it fights its own turns, gets hungry, binds its own wounds, takes orders, and talks in character.
 
 **Free. A fan mod, not made or endorsed by Miro Haverinen.** None of the game's files are included: every player needs their own copy of Fear & Hunger (Steam or itch), and nothing in the game's folder is changed. The screenshots show Fear & Hunger, which belongs to Miro Haverinen.
@@ -41,8 +43,8 @@ Windows may say "Windows protected your PC" the first time, because the program 
 - Fear & Hunger on Steam or itch, for every player, the same version (the mod checks).
 - Windows, with Edge or Chrome.
 - The first time you host online, the mod downloads Cloudflare's tunnel program (about 55 MB) from Cloudflare's official releases and checks it against their published checksum.
-- Optional, for an AI partner that talks: Claude Code signed in on this PC, an Anthropic API key, or a local model in Ollama. Without one it still follows and fights, silently.
+- Optional, for an AI partner that talks: Claude Code, Codex (ChatGPT login) or Grok Build signed in on this PC, an API key from Anthropic, xAI (Grok), OpenAI, Google (Gemini) or OpenRouter, Hermes Agent (SuperGrok or Nous Portal), or a local model in Ollama or LM Studio. Pick it in the game. Without one it still follows, fights and takes orders typed in plain words.
 
-### Found a bug?
+### Bugs
 
-Press **Ctrl+Shift+B** in the game and paste what it copies into a report on GitHub. It holds the versions and the end of your logs, with link keys and your Windows user name left out.
+Press **Ctrl+Shift+B** in game and paste it into a GitHub report. It leaves out your link keys and Windows user name. I fix reports as fast as I can.

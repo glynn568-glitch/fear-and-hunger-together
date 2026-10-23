@@ -1130,18 +1130,48 @@
         return b.states().map((s) => s.name).filter((n) => n && n !== n.toUpperCase());
     }
     const battleLog = [];
+    const battleLogTurn = []; // the round each line was shown in
     const _addText = Window_BattleLog.prototype.addText;
     Window_BattleLog.prototype.addText = function (text) {
         _addText.call(this, text);
         const line = Coop.plainText ? Coop.plainText(text).text : String(text);
-        if (line && battleLog[battleLog.length - 1] !== line) battleLog.push(line);
-        if (battleLog.length > 40) battleLog.shift();
+        if (line && battleLog[battleLog.length - 1] !== line) { battleLog.push(line); battleLogTurn.push($gameTroop.turnCount()); }
+        if (battleLog.length > 40) { battleLog.shift(); battleLogTurn.shift(); }
+    };
+    // A tell: the enemy shows what comes next round. In this game that is a move that does no
+    // harm and trails off ("Salmonsnake is tensing up...", "The stinger is pulsating..."), or
+    // anything that sets up the grab and its coin flip (common event 4).
+    let tellTurn = -1;
+    const _startAction = BattleManager.startAction;
+    BattleManager.startAction = function () {
+        const subject = this._subject, action = subject && subject.currentAction();
+        const item = action && action.item();
+        if (subject && subject.isEnemy() && item && DataManager.isSkill(item)
+            && ((item.damage.type === 0 && /\.\.\.\s*$/.test(item.name)) || item.effects.some((f) => f.code === 44 && f.dataId === 4))) tellTurn = $gameTroop.turnCount();
+        _startAction.call(this);
+    };
+    const _command117 = Game_Interpreter.prototype.command117;
+    Game_Interpreter.prototype.command117 = function () {
+        if (this._params[0] === 4 && $gameParty.inBattle()) tellTurn = $gameTroop.turnCount();
+        return _command117.call(this);
     };
     const _battleStart = BattleManager.startBattle;
     BattleManager.startBattle = function () {
         battleLog.length = 0;
+        battleLogTurn.length = 0;
+        tellTurn = -1;
         _battleStart.call(this);
     };
+
+    // Part index -> the health share (%) at which a troop page wipes out every part.
+    function endsAt() {
+        const out = {};
+        for (const page of $gameTroop.troop().pages) {
+            const c = page.conditions;
+            if (c.enemyValid && page.list.some((cmd) => cmd.code === 331 && cmd.parameters[0] === -1 && cmd.parameters[1] === 1 && cmd.parameters[3] >= 999)) out[c.enemyIndex] = c.enemyHp;
+        }
+        return out;
+    }
 
     Coop.battleBrief = function (actor) {
         const b = Coop.battle;
@@ -1152,12 +1182,28 @@
         const brief = {
             turn: $gameTroop.turnCount() + 1,
             you: actor.name(),
-            enemies: $gameTroop.members().map((e, i) => ({ i, name: e.name(), how: condition(e), states: stateNames(e) })).filter((e) => e.how !== 'gone' || /\[/.test(e.name)),
+            // hit: the chance a plain attack lands on that part (a guard's head 44% until both legs are off).
+            // strikes: the part has moves of its own (a guard's cleaver arm and stinger; its legs have none).
+            // blows: attacks it would take to cut it off with this weapon, misses counted.
+            // ends: the troop's own pages end the whole enemy when this part falls to a share of
+            // its health (a guard's torso at 75%: "TORSO DESTROYED", 9999 to every part).
+            enemies: $gameTroop.members().map((e, i) => {
+                const hit = Math.max(0, Math.min(1, actor.hit * (1 - e.eva)));
+                const swing = new Game_Action(actor);
+                swing.setAttack();
+                const dmg = Math.max(1, swing.evalDamageFormula(e) * swing.calcElementRate(e));
+                const at = endsAt()[i];
+                const left = at == null ? e.hp : e.hp - e.mhp * at / 100;
+                return { i, name: e.name(), how: condition(e), states: stateNames(e), hit: Math.round(hit * 100), strikes: e.enemy().actions.length > 0, ends: at != null, blows: Math.ceil(Math.max(1, left) / dmg) / Math.max(0.05, hit) };
+            }).filter((e) => e.how !== 'gone' || /\[/.test(e.name)),
             allies: $gameParty.battleMembers().map((a, i) => ({ i, name: a.name(), player: whose(a), hp: a.hp, mhp: a.mhp, how: condition(a), states: stateNames(a) })),
             attack: { weapon: (actor.weapons()[0] || { name: 'bare hands' }).name },
             skills: actor.skills().filter((k) => k.name).map((k) => ({ id: k.id, name: k.name, usable: actor.canUse(k), about: String(k.description || '').replace(/\s+/g, ' ').trim().slice(0, 140) })),
             items: [],
             log: battleLog.slice(-12),
+            // What the round just played showed (a wind-up there means guard now).
+            round: battleLog.filter((l, i) => battleLogTurn[i] === $gameTroop.turnCount()),
+            tell: tellTurn === $gameTroop.turnCount(),
         };
         const list = function () {
             return $gameParty.items().filter((it) => it.occasion === 0 || it.occasion === 1).filter((it) => actor.canUse(it))
@@ -1310,14 +1356,17 @@
         const b = Coop.battle;
         if (b && b.role === 'owner' && b.guests.size) {
             holdInventory(b, inventoryOwner(b));
-            const who = controller(b);
-            const key = who + ':' + (BattleManager.actor() ? BattleManager.actor().actorId() : 0);
             // Which action is being chosen: a character with two actions a turn chooses twice.
             const turnKey = (BattleManager.isInputting() && BattleManager.actor() ? BattleManager.actor().actorId() + '.' + BattleManager.actor()._actionInputIndex : 0) + ':' + BattleManager.isInputting();
-            if (turnKey !== b.turnKey) {
+            const newTurn = turnKey !== b.turnKey;
+            // Stamped before asking whose it is: a turn just begun has not been sat on,
+            // however long the one before it took.
+            if (newTurn) b.ctlAt = Date.now();
+            const who = controller(b);
+            const key = who + ':' + (BattleManager.actor() ? BattleManager.actor().actorId() : 0);
+            if (newTurn) {
                 b.turnKey = turnKey;
                 b.turnSeq = (b.turnSeq || 0) + 1;
-                b.ctlAt = Date.now();
                 // A partner who chooses by message is told what they are choosing about.
                 const peer = who && who !== Coop.id ? Coop.peers.get(who) : null;
                 if (peer && peer.bot && BattleManager.actor()) Coop.sendTo(who, 'bturn', { actor: BattleManager.actor().actorId(), seq: b.turnSeq, brief: Coop.battleBrief(BattleManager.actor()) });

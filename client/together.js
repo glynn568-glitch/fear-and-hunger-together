@@ -40,7 +40,7 @@
         + '<div class="row"><button class="big" data-do="join">Join</button></div></div>'
         + '<div data-part="leave" hidden><div class="row"><button data-do="leave">Leave their game</button></div></div>'
         + '<div data-part="import"><h3>Single-player saves</h3><div class="row"><button data-do="import">Bring mine in</button></div></div>'
-        + '<div data-part="partner"><h3>AI partner</h3><div class="row"><button data-do="partner">Call one in</button><button data-do="home">Send one home</button></div></div>'
+        + '<div data-part="partner"><h3>AI partner</h3><div class="row"><button data-do="partner">Call one in</button><button data-do="home">Send one home</button><button data-do="mind">How it thinks</button></div></div>'
         + '<div class="why"></div>'
         + '<div class="row" style="justify-content: space-between"><button data-do="report">Copy a bug report</button><button data-do="close">Close</button></div>';
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(box));
@@ -136,6 +136,8 @@
             Coop.send({ t: 'partner', on: true });
         } else if (what === 'home') {
             Coop.send({ t: 'partner', on: false });
+        } else if (what === 'mind') {
+            Coop.openPartnerSetup();
         } else if (what === 'import') {
             busy = true;
             why.classList.remove('bad');

@@ -25,10 +25,12 @@ const sha256 = (buf) => require('crypto').createHash('sha256').update(buf).diges
 
 async function fetchCloudflared() {
     if (!BUILD) throw new Error('hosting online is not available on this system (' + process.platform + ' ' + process.arch + ')');
+    // unlinkSync, not rmSync: Node 24's rmSync does nothing at all in a folder whose name is not plain ASCII (José, Иван).
+    const remove = (file) => { try { fs.unlinkSync(file); } catch (e) { /* not there */ } };
     // A copy already here is used only if it is that exact build.
     if (fs.existsSync(EXE)) {
         if (sha256(fs.readFileSync(EXE)) === BUILD.sha256) return;
-        fs.rmSync(EXE, { force: true });
+        remove(EXE);
     }
     let body;
     try {
@@ -41,9 +43,9 @@ async function fetchCloudflared() {
     fs.writeFileSync(tmp, body);
     if (BUILD.archive) {
         const out = require('child_process').spawnSync('tar', ['-xzf', tmp, '-C', __dirname], { stdio: 'ignore' });
-        fs.rmSync(tmp, { force: true });
+        remove(tmp);
         if (out.status !== 0 || !fs.existsSync(EXE) || sha256(fs.readFileSync(EXE)) !== BUILD.sha256) {
-            fs.rmSync(EXE, { force: true });
+            remove(EXE);
             throw new Error('could not unpack cloudflared, or what was inside did not match Cloudflare\'s published checksum');
         }
     } else fs.renameSync(tmp, EXE);

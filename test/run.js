@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'ai-resume', 'partner', 'setup', 'soak'];
+const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'sleep', 'rules', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'setup', 'soak'];
 // The public copy has no oldsaves (it loads real players' saves, kept private).
 const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL.filter((n) => n === 'lint' || fs.existsSync(path.join(__dirname, n + '.js')));
 const jobs = Math.max(1, Number(process.env.FH_TEST_JOBS) || Math.min(6, Math.floor(os.cpus().length / 2)));

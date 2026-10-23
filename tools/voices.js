@@ -4,6 +4,7 @@
 // ships with the mod), for the AI partner to speak in that voice.
 const fs = require('fs');
 const path = require('path');
+const { readGameJson } = require('./find-game');
 
 const SPEAKER = { mercenary: 'Cahara', knight: "D'arce", priest: 'Enki', outlander: 'Ragnvaldr' };
 const IDENTITY = { mercenary: 246, knight: 242, priest: 243, outlander: 244 }; // who-am-I switches in the intro
@@ -18,10 +19,10 @@ function lists(dataDir) {
     for (const file of fs.readdirSync(dataDir)) {
         const m = /^Map(\d+)\.json$/.exec(file);
         if (!m || !EARLY.test(names[Number(m[1])] || '')) continue;
-        const map = JSON.parse(fs.readFileSync(path.join(dataDir, file), 'utf8'));
+        const map = readGameJson(path.join(dataDir, file));
         for (const ev of map.events || []) if (ev) for (const page of ev.pages) out.push({ kind: 'map', list: page.list });
     }
-    for (const ev of JSON.parse(fs.readFileSync(path.join(dataDir, 'CommonEvents.json'), 'utf8'))) {
+    for (const ev of readGameJson(path.join(dataDir, 'CommonEvents.json'))) {
         if (ev) out.push({ kind: /FEAR|Miasma/i.test(ev.name) ? 'fear' : 'talk', list: ev.list });
     }
     return out;
@@ -51,7 +52,7 @@ function linesOf(character, dataDir) {
 
 // The intro the game tells for this character, choices shown as "[either: ... | ...]".
 function introOf(character, dataDir) {
-    const map = JSON.parse(fs.readFileSync(path.join(dataDir, `Map${String(INTRO_MAP).padStart(3, '0')}.json`), 'utf8'));
+    const map = readGameJson(path.join(dataDir, `Map${String(INTRO_MAP).padStart(3, '0')}.json`));
     for (const ev of map.events || []) {
         if (!ev) continue;
         for (const page of ev.pages) {

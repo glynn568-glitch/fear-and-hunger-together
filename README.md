@@ -11,7 +11,7 @@ Folders named below are inside the download's `app` folder (in the source code, 
 - **Fear & Hunger** from Steam or itch, for every player (Windows, Steam Deck or Linux). The mod finds it through Steam or the itch app; if it can't, it asks you for the folder once. Everyone needs the same version of the game: the mod checks, and says so if not.
 - **This mod**, for every player, the same version.
 - **Chrome, Edge, Opera or Brave** to play in.
-- For an AI partner that talks and thinks, any one of: **Claude Code** signed in on this PC (https://claude.com/claude-code), an **Anthropic API key** (paste it when F8 asks), or **Ollama** running a local model. The partner finds whichever you have. Without any, it still follows and fights, silently.
+- For an AI partner that talks and thinks, any one of: **Claude Code**, **Codex** (the ChatGPT/Codex app or CLI, ChatGPT login) or **Grok Build** signed in on this PC, an API key from **Anthropic, xAI (Grok), OpenAI, Google (Gemini) or OpenRouter** (paste it when F8 asks), **Hermes Agent** signed in (its proxy, for your SuperGrok or Nous Portal plan), or a local model in **Ollama** or **LM Studio**. The partner finds whichever you have, and **How it thinks** in the Together panel picks another. Without any, it still follows, fights and takes orders typed in plain words; it just doesn't talk back much.
 
 Everything else comes in the box, except one thing: the first time you host online, the mod downloads Cloudflare's tunnel program (cloudflared, about 55 MB) from Cloudflare's official releases and checks it against their published checksum.
 
@@ -81,21 +81,34 @@ It joins as whichever character nobody has taken, and plays them: it walks with 
 
 ### What runs it
 
-It finds its own: Claude Code if it is installed, else an Anthropic key (pasted at F8 and kept in `app\data\partner-key.txt`, the `key` field, or `ANTHROPIC_API_KEY`), else a local Ollama, else none. To pick one yourself, set it in `app\settings.json` under `"partner"`. Leave a field empty for the default.
+Pick it in the game: **How it thinks** in the Together panel (F8 opens the same panel when nothing is found). Choose one, paste a key if it needs one, and the model list fills from the service itself, fastest first; the key and model are checked with one short question before anything is kept. The pick and the keys stay on this PC in `app\data\partner-mind.json`.
+
+| Choice | What it needs | Speed and cost |
+|---|---|---|
+| Claude Code | Claude Code installed and signed in (https://claude.com/claude-code) | About 1-3 s a decision. Counts against your Claude plan. |
+| Codex | The ChatGPT/Codex app or the Codex CLI, signed in with ChatGPT | About 1-3 s a decision. Counts against your ChatGPT plan. Runs from a Codex folder of its own: your AGENTS.md, settings and plugins stay out of it. |
+| Grok Build | Grok Build installed and signed in (`grok login`) | About 5 s to answer, 10-25 s a fight turn; a partner that slow fights by the same rules a careful player uses (instantly) and keeps the model for talking. Counts against your Grok plan. |
+| Anthropic, xAI Grok, OpenAI, Google Gemini, OpenRouter | An API key from that service | About 1-2 s on the fast models. Paid by use; the small models cost far less. |
+| Hermes | Hermes Agent installed and signed in to Grok (SuperGrok) or Nous Portal (`hermes model`) | Under 1 s a decision on Grok's fast model. The mod starts Hermes's proxy itself, a plain relay with no agent tools. Counts against that plan. |
+| Ollama, LM Studio | The program running on this PC with a model loaded | Free. Speed depends on your graphics card; small models play worse. |
+| Other | Any service that speaks the OpenAI chat API: its address, key and model | Depends on the service. |
+| No model | Nothing | Free. Follows, fights by the rules a careful player uses, takes orders typed in plain words. |
+
+Without a pick it finds its own: Claude Code, else an Anthropic key, else a key in `XAI_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) or `OPENROUTER_API_KEY`, else Codex, else Grok Build, else Ollama, else LM Studio, else Hermes's proxy if it is already running, else none. `app\settings.json` under `"partner"` overrides all of that. Leave a field empty for the default.
 
 | Field | Meaning |
 |---|---|
-| `brain` | `claude` (Claude Code on this PC, signed in with your Claude account; the default when installed), `anthropic` (the Anthropic API, with `key` or `ANTHROPIC_API_KEY`), `openai` (any OpenAI-style service: OpenAI, Grok at `https://api.x.ai/v1`, or a local model in Ollama or LM Studio), or `none` (follows and fights by rule of thumb, never talks). |
-| `model` | For Claude Code: `sonnet` (default, about 1 second a decision), `opus` (2 to 3 seconds, a little sharper, uses more of your plan), or `haiku` (cheapest, but slower and weaker in fights). For the Anthropic API the same short names work, or a full model name (default `claude-sonnet-5-5`). For other services: their model name, for example `llama3.1`. |
-| `effort` | How hard Claude thinks: `low` (default) to `high`. Higher is slower. |
-| `url`, `key` | `key`: your Anthropic key, or for `openai` the service's key (or set `OPENAI_API_KEY` / `XAI_API_KEY`). `url`: for `openai`, the service address. A local Ollama is found on its own. |
+| `brain` | `claude` (Claude Code), `codex-cli` (Codex), `grok-cli` (Grok Build), `anthropic`, `xai`, `openai`, `gemini`, `openrouter` (those services' APIs), `ollama`, `lmstudio` (a model on this PC), `hermes` (Hermes Agent's proxy), `openai` with a `url` (any other OpenAI-style service), or `none`. |
+| `model` | For Claude Code: `sonnet` (default, about 1 second a decision), `opus` (2 to 3 seconds, a little sharper, uses more of your plan), or `haiku` (cheapest, but slower and weaker in fights). For the Anthropic API the same short names work, or a full model name (default `claude-sonnet-5-5`). For the other services: a model name from their list; left empty, the fastest one in the service's own list is taken. |
+| `effort` | How hard the model thinks: `low` (default) to `high`. Higher is slower. Services that don't take it are asked without it. |
+| `url`, `key` | `key`: the service's key (a key pasted at F8 is kept apart, in `app\data\partner-mind.json`). `url`: for `openai`, another service's address. |
 | `name` | What it is called in the game. Default `Claude`. |
 | `character` | `knight`, `mercenary`, `priest` or `outlander`, if it is free. |
 | `follow` | The name of the player it sticks with, when there are several of you. |
 
 The same options work on the command line, which overrides the file: `node tools/bot.js --model sonnet --char priest`.
 
-**Cost.** Every decision and every reply is one request to the model. With Claude Code this counts against your Claude plan's usage. With an API key you pay per request; Sonnet and Haiku cost far less than Opus. A local model through Ollama costs nothing but plays worse.
+**Cost.** Every decision and every reply is one request to the model. With Claude Code this counts against your Claude plan's usage. With Grok Build, against your Grok plan. With an API key you pay per request; the small fast models cost far less than the big ones. A local model costs nothing but plays worse.
 
 **What it sends.** The model is told what the partner sees: the fight, what is said in the chat, dialogue it overhears, its bag and yours as far as you mention them. Nothing else from your PC.
 
@@ -120,7 +133,7 @@ The same options work on the command line, which overrides the file: `node tools
 - Hosting online uses a free Cloudflare quick tunnel. The link changes every time and dies when you close the game. **Hide my IP address** is on by default: everything goes through the tunnel, fight video included (60 pictures a second, at most 1.5 Mbit/s of upload for each player watching, less on a slow line). Turn it off and the players' browsers connect to each other directly, asking public address servers (Google's and Cloudflare's STUN servers) for a route; each player's IP address is then visible to the others.
 - Saves live in `app\data\saves` on the host's PC (a friend's saves too), not in the game's own save folder.
 - Found a bug? Press Ctrl+Shift+B (or **Copy a bug report** in the Together panel) and paste what it copies into your report: the versions, the end of this PC's logs and what the game was doing. Link keys, API keys and your Windows user name are left out. The full logs are `app\data\server-8420.log` and `app\data\launcher.log`.
-- An API key pasted at F8 sits in `app\data\partner-key.txt` in plain text. Delete that file to forget it; don't share it.
+- API keys pasted at F8 sit in `app\data\partner-mind.json` in plain text. Delete that file to forget them; don't share it.
 
 ## For tinkerers
 
