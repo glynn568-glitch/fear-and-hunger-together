@@ -160,6 +160,74 @@
         return _command201.call(this);
     };
 
+    // A bear trap compares its tile with variables a parallel event fills with
+    // each watched character's tile. On the prisons (maps 6, 37) and map 172 the
+    // crossbow's own parallel writes its tile into the elite guard's (or the
+    // skeleton's) pair every frame, after the copier, so the trap only ever sees
+    // the crossbow and the elite guard walks over it (his report, 10/25). Any
+    // other parallel page that fills a trap's pair from another character gets
+    // spare variables of its own (past the game's list, so nothing else reads them).
+    function trapOwners(map) {
+        const owner = {};
+        for (const ev of map.events) {
+            if (!ev || !/^bearTrap/.test(ev.name)) continue;
+            for (const page of ev.pages) {
+                let vars = [];
+                for (const c of page.list) {
+                    const p = c.parameters;
+                    if (c.code === 111 && p[0] === 1 && p[2] === 1) vars.push(p[3]);
+                    if (c.code === 212 && p[0] > 0) { for (const v of vars) owner[v] = p[0]; vars = []; }
+                    if (c.code === 412 && c.indent === 0) vars = [];
+                }
+            }
+        }
+        return owner;
+    }
+    // Variable <- a character's map X/Y (type 5) in a parallel page.
+    function tileCopies(page, fn) {
+        if (page.trigger !== 4) return;
+        for (const c of page.list) {
+            const p = c.parameters;
+            if (c.code === 122 && p[0] === p[1] && p[3] === 3 && p[4] === 5 && p[5] > 0) fn(p[0], p[5]);
+        }
+    }
+    function untangleTrapVars(map) {
+        const owner = trapOwners(map);
+        // Only a real tangle: two events fill the same pair from two characters.
+        const writers = {};
+        for (const ev of map.events) {
+            if (!ev || /^bearTrap/.test(ev.name)) continue;
+            for (const page of ev.pages) tileCopies(page, (v, ch) => { (writers[v] = writers[v] || new Set()).add(ev.id + ':' + ch); });
+        }
+        const tangled = (v) => {
+            const all = [...(writers[v] || [])].map((k) => k.split(':').map(Number));
+            return all.some(([e, ch]) => ch === owner[v] && all.some(([e2, ch2]) => e2 !== e && ch2 !== ch));
+        };
+        // A plugin (Olivia_MetaControls) reads every variable's name, so the spares get blank ones.
+        const names = $dataSystem.variables;
+        let spare = names.length;
+        const take = () => { names[spare] = names[spare] || ''; return spare++; };
+        for (const ev of map.events) {
+            if (!ev || /^bearTrap/.test(ev.name)) continue;
+            for (const page of ev.pages) {
+                const mine = {};
+                tileCopies(page, (v, ch) => { if (owner[v] && ch !== owner[v] && tangled(v)) mine[v] = mine[v] || take(); });
+                if (!Object.keys(mine).length) continue;
+                page.list = page.list.map((c) => {
+                    const p = c.parameters.slice();
+                    if (c.code === 122) {
+                        if (p[0] === p[1] && mine[p[0]]) p[0] = p[1] = mine[p[0]];
+                        if (p[3] === 1 && mine[p[4]]) p[4] = mine[p[4]];
+                    } else if (c.code === 111 && p[0] === 1) {
+                        if (mine[p[1]]) p[1] = mine[p[1]];
+                        if (p[2] === 1 && mine[p[3]]) p[3] = mine[p[3]];
+                    } else return c;
+                    return Object.assign({}, c, { parameters: p });
+                });
+            }
+        }
+    }
+
     // A name box's text is compared letter for letter: the empty scroll's
     // prayer works only as "O LORD", "TEACH", "BLACK ORB". But every Enter
     // (A on a pad) also adds the letter under the box's cursor, and once the
@@ -266,4 +334,118 @@
     const again = function () { if (!SceneManager._stopped && SceneManager._scene) SceneManager.requestUpdate(); };
     document.addEventListener('visibilitychange', again);
     for (const t of ['join', 'online', 'entered']) Coop.on(t, function () { if (document.hidden) again(); });
+
+    // The engine drops every picture not drawn in the last frame from the card at each check
+    // (maxIdle 1), and the game caches 10 M pixels. So each fight decoded and uploaded every
+    // 2074x1382 battler sheet again, and the map its tiles after: 290+ ms frames on a Steam Deck.
+    ImageCache.limit = Math.max(ImageCache.limit, 40e6);
+    const _createRenderer = Graphics._createRenderer;
+    Graphics._createRenderer = function () {
+        _createRenderer.apply(this, arguments);
+        if (this._renderer && this._renderer.textureGC) this._renderer.textureGC.maxIdle = 5 * 60 * 60;
+    };
+
+    // Every window paints its back pixel by pixel (adjustTone), twice as it opens: most of what a
+    // fight start still cost after the pictures stayed on the card. The same skin, size and tone
+    // always give the same back, so each is painted once and copied after.
+    const backs = new Map();
+    const _refreshBack = Window.prototype._refreshBack;
+    Window.prototype._refreshBack = function () {
+        const m = this._margin, w = this._width - m * 2, h = this._height - m * 2, skin = this._windowskin;
+        if (!(w > 0 && h > 0 && skin && skin.isReady() && skin._url)) return _refreshBack.call(this);
+        const key = skin._url + '|' + w + 'x' + h + '|' + this._colorTone.join(',');
+        let done = backs.get(key);
+        if (!done) {
+            _refreshBack.call(this);
+            done = this._windowBackSprite.bitmap.canvas;
+            if (backs.size >= 64) backs.clear();
+            backs.set(key, done);
+            return;
+        }
+        const bitmap = new Bitmap(w, h);
+        bitmap.context.drawImage(done, 0, 0);
+        bitmap._setDirty();
+        this._windowBackSprite.bitmap = bitmap;
+        this._windowBackSprite.setFrame(0, 0, w, h);
+        this._windowBackSprite.move(m, m);
+    };
+
+    // Weapons that say they stun, bleed or poison set it as the WIELDER's chance to suffer it
+    // (state rate), so they did nothing. They now do it to what they hit, at modest rates. The
+    // enemy bleed was never used by anything; it was 10% of max HP a turn for the whole fight
+    // (a boss killer), now 5% for four turns. Both follow the host's balance switch. The load
+    // cannot be undone, so the original and the patched form are both kept and the one
+    // $dataWeapons / $dataStates hold is swapped when that choice arrives or changes.
+    const ON_HIT = { 3: { 28: 0.2 }, 15: { 28: 0.2 }, 38: { 28: 0.12, 29: 0.35 }, 39: { 28: 0.12, 29: 0.35 },
+        32: { 29: 0.45 }, 33: { 29: 0.45 }, 44: { 29: 0.25 }, 46: { 29: 0.25 }, 40: { 17: 0.2 }, 41: { 17: 0.25 } };
+    Coop.weaponOnHit = ON_HIT;
+    const weaponOn = {}, weaponOff = {};
+    let bleedOn = null, bleedOff = null;
+    let balanceOn = true;
+    Coop.balance = true;
+    function applyBalance() {
+        if (typeof $dataWeapons !== 'undefined' && $dataWeapons) {
+            const table = balanceOn ? weaponOn : weaponOff;
+            for (const id in table) $dataWeapons[id] = table[id];
+        }
+        if (bleedOn && typeof $dataStates !== 'undefined' && $dataStates) $dataStates[29] = balanceOn ? bleedOn : bleedOff;
+    }
+    Coop.setBalance = function (on) {
+        balanceOn = !!on;
+        Coop.balance = balanceOn;
+        applyBalance();
+    };
+    const _onLoad = DataManager.onLoad;
+    DataManager.onLoad = function (object) {
+        _onLoad.apply(this, arguments);
+        if (object === $dataMap && Array.isArray(object.events) && window.$dataSystem) untangleTrapVars(object);
+        if (object === $dataWeapons) {
+            for (const id in ON_HIT) {
+                if (weaponOff[id]) continue;
+                const w = $dataWeapons[id];
+                // Only the weapon the table means: it still carries the mistaken rate.
+                if (!w || !w.traits.some((t) => t.code === 13 && ON_HIT[id][t.dataId])) continue;
+                weaponOff[id] = JSON.parse(JSON.stringify(w));
+                for (const sid in ON_HIT[id]) {
+                    if (!w.traits.some((t) => t.code === 32 && t.dataId === +sid)) w.traits.push({ code: 32, dataId: +sid, value: ON_HIT[id][sid] });
+                }
+                weaponOn[id] = w;
+            }
+            applyBalance();
+        }
+        if (object === $dataStates && !bleedOff && $dataStates[29] && /bleed/i.test($dataStates[29].name)) {
+            const s = $dataStates[29];
+            bleedOff = JSON.parse(JSON.stringify(s));
+            s.traits = s.traits.map((t) => (t.code === 22 && t.dataId === 7 ? { code: 22, dataId: 7, value: -0.05 } : t));
+            s.autoRemovalTiming = 2; s.minTurns = 4; s.maxTurns = 4;
+            bleedOn = s;
+            applyBalance();
+        }
+    };
+
+    // Silver coins stopped at 99 like any item, and a long run finds more. Coins only, up to 999
+    // (the shops read the count into a variable, which has no cap).
+    const COIN = 59;
+    const _maxItems = Game_Party.prototype.maxItems;
+    Game_Party.prototype.maxItems = function (item) {
+        return item && DataManager.isItem(item) && item.id === COIN ? 999 : _maxItems.call(this, item);
+    };
+    const _drawItemNumber = Window_ItemList.prototype.drawItemNumber;
+    Window_ItemList.prototype.drawItemNumber = function (item, x, y, width) {
+        if (!(this.needsNumber() && $gameParty.numItems(item) > 99)) return _drawItemNumber.call(this, item, x, y, width);
+        this.drawText(':', x, y, width - this.textWidth('000'), 'right');
+        this.drawText($gameParty.numItems(item), x, y, width, 'right');
+    };
+
+    // A few sound files are mastered far hotter than the rest (measured: punch1 is ~14 dB over
+    // the median, and every mace or morning star swing plays it). Levels set by ear.
+    const SE_GAIN = { punch1: 0.09, 'Dark_orb1_245883__sarithule__roper1911-heavy-beam-weapon-de-clicked_01': 0.12 };
+    Coop.seGain = SE_GAIN;
+    for (const name of ['playSe', 'playStaticSe']) {
+        const orig = AudioManager[name];
+        AudioManager[name] = function (se) {
+            const g = se && SE_GAIN[se.name];
+            return orig.call(this, g ? Object.assign({}, se, { volume: se.volume * g }) : se);
+        };
+    }
 })();

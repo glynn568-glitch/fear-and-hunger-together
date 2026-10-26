@@ -35,18 +35,18 @@ async function reopen(browser, port, name, label) {
         check('a floor is rolled once per world: the second roll is undone', rolled[0] === 2 && rolled[1] === 2, 'A ' + rolled[0] + ', B ' + rolled[1]);
 
         //--- a bed save, then B dies and tries to load it back into the live run ---
-        await b.evaluate(() => { $gameParty.gainItem($dataItems[1], 2); $gameParty.gainItem($dataWeapons[1], 1); });
+        await b.evaluate(() => { $gameParty.gainItem($dataItems[1], 2); $gameParty.gainItem($dataWeapons[1], 1); $gameParty.gainItem($dataItems[59], 300); });
         await a.evaluate(() => { $gameSystem.onBeforeSave(); DataManager.saveGame(1); });
         await waitFor(b, () => StorageManager.exists(1), 8000, 'B saved alongside');
         await b.evaluate(() => SceneManager.goto(Scene_Gameover));
         await waitFor(b, () => SceneManager._scene instanceof Scene_CoopDead, 8000, 'B dead');
         await sleep(1000);
-        const before = await a.evaluate(() => ({ items: $gameParty.numItems($dataItems[1]), weapons: $gameParty.numItems($dataWeapons[1]) }));
+        const before = await a.evaluate(() => ({ items: $gameParty.numItems($dataItems[1]), weapons: $gameParty.numItems($dataWeapons[1]), coins: $gameParty.numItems($dataItems[59]) }));
         await hold(b, 'Escape', 2600);
         await waitFor(b, () => SceneManager._scene instanceof Scene_Title, 10000, 'B gave the character up');
         await waitFor(a, (n) => $gameParty.numItems($dataItems[1]) === n + 2, 8000, 'A inherits', before.items);
-        const got = await a.evaluate(() => ({ items: $gameParty.numItems($dataItems[1]), weapons: $gameParty.numItems($dataWeapons[1]) }));
-        check('what a given-up character carried and wore passes to the partner', got.items === before.items + 2 && got.weapons >= before.weapons + 1 && /What they carried is yours now/.test(await toast(a)), JSON.stringify(before) + ' -> ' + JSON.stringify(got));
+        const got = await a.evaluate(() => ({ items: $gameParty.numItems($dataItems[1]), weapons: $gameParty.numItems($dataWeapons[1]), coins: $gameParty.numItems($dataItems[59]) }));
+        check('what a given-up character carried and wore passes to the partner, 300 coins and all', got.items === before.items + 2 && got.weapons >= before.weapons + 1 && got.coins === Math.min(999, before.coins + 300) && /What they carried is yours now/.test(await toast(a)), JSON.stringify(before) + ' -> ' + JSON.stringify(got));
 
         await b.evaluate(() => { DataManager.loadGame(1); $gamePlayer.reserveTransfer($gameMap.mapId(), $gamePlayer.x, $gamePlayer.y); $gamePlayer.requestMapReload(); SceneManager.goto(Scene_Map); });
         await waitFor(b, () => SceneManager._scene instanceof Scene_Title && !SceneManager.isSceneChanging(), 20000, 'B is sent back to the title');

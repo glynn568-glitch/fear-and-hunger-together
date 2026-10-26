@@ -12,11 +12,25 @@ async function press(page, code, ms) {
 
 (async () => {
     const check = checker();
+    let persona = '';
+    try {
+        const brain = require('../tools/brain');
+        if (typeof brain.personaBody === 'function') {
+            persona = ['mercenary', 'knight', 'priest', 'outlander'].map((c) => brain.personaBody({ name: 'Claude', character: c })).join('\n');
+        }
+    } catch (e) { persona = ''; }
+    check('the persona names a want and has no refuse or bargain',
+        /What you want: silver and coin/.test(persona) && /What you want: Le'garde/.test(persona) && /What you want: rites and knowledge/.test(persona) && /What you want: the grudge you carry/.test(persona) && !/refus/i.test(persona) && !/bargain/i.test(persona),
+        (persona || '(no persona)').slice(0, 240));
+    check('both humans are partners and the newest order stands',
+        /Neither outranks the other/.test(persona) && /newest order stands/.test(persona) && /alone in a fight/.test(persona) && /Going with Enki, pho\./.test(persona) && /address the one you are answering by name/.test(persona) && !/refus/i.test(persona) && !/bargain/i.test(persona),
+        (persona || '(no persona)').slice(0, 500));
     const port = 8441;
     const server = await startServer(port);
     const browser = await launch();
     let a, bot;
     const asked = [];
+    let slowBattle = 0; // the next battle answer waits this long; 0 is the usual short pause
     try {
         a = await openPlayer(browser, `http://localhost:${port}/?name=Ann`, 'Ann');
         bot = await openPlayer(browser, `http://localhost:${port}/?name=Claude`, 'bot');
@@ -27,7 +41,9 @@ async function press(page, code, ms) {
         await bot.exposeFunction('fhBrainCharacter', () => {});
         await bot.exposeFunction('fhBrain', async (kind, text) => {
             asked.push({ kind, text });
-            await sleep(300);
+            const stall = kind === 'battle' ? slowBattle : 0;
+            if (stall) slowBattle = 0;
+            await sleep(stall || 300);
             if (kind === 'battle') {
                 const m = /(\d+) Guard \[left arm\] (?!gone)/.exec(text);
                 return { do: 'attack', target: m ? Number(m[1]) : 0, say: 'The arm first.' };
@@ -38,6 +54,9 @@ async function press(page, code, ms) {
                 if (/"[^"]*follow[^"]*"$/.test(text)) return { say: 'Right behind you.', order: 'follow' };
                 if (/"[^"]*torch[^"]*"$/.test(text)) return { say: 'Take it.', give: { kind: 'item', id: 5 } };
                 if (/"[^"]*explore[^"]*"$/.test(text)) return { say: 'I will look around.', order: 'explore' };
+                const quoted = /"([^"]*)"\s*$/.exec(text);
+                const gid = quoted && /\b(b\d+)\b/.exec(quoted[1]);
+                if (gid) return { goal: gid[1], say: '' };
                 return { say: 'Mm.' };
             }
             if (kind === 'choice') return { pick: 1, say: '' };
@@ -182,9 +201,13 @@ async function press(page, code, ms) {
 
         //--- hunger and the bag -----------------------------------------------
         check('it starts with the torch the intro hands out', await bot.evaluate(() => $gameParty.numItems($dataItems[5]) === 1));
+        const hungerAt = asked.length;
         await bot.evaluate(() => { const me = $gameParty.leader(); me.changeExp(95, false); $gameParty.gainItem($dataItems[16], 1); }); // Dried meat
         await waitFor(bot, () => $gameParty.numItems($dataItems[16]) === 0 && $gameParty.leader().currentExp() > 100, 15000, 'the bot eats when hungry');
         check('hungry, it eats from its own bag', true, 'hunger now ' + (await bot.evaluate(() => $gameParty.leader().currentExp())));
+        const whileFed = asked.slice(hungerAt);
+        const ateQuiet = await bot.evaluate(() => (BOT.journal || []).some((l) => /^ate /.test(l)));
+        check('hungry with food in its own bag, it eats without asking', ateQuiet && !whileFed.some((q) => /You are hungry|no food|Ask your partner/.test(q.text)), whileFed.map((q) => q.text.slice(0, 80)).join(' || ') || (ateQuiet ? 'ate, no ask' : 'no journal'));
         await bot.evaluate(() => { $gameParty.leader().changeExp(85, false); });
         await sleep(12000);
         check('hungry with nothing to eat, it is told to ask for food', asked.some((q) => q.kind === 'note' && /no food/.test(q.text)), (asked.filter((q) => q.kind === 'note').pop() || {}).text);
@@ -212,6 +235,141 @@ async function press(page, code, ms) {
         const seenRow = await bot.evaluate(() => BOT.situationText ? BOT.situationText() : '');
         check('the model is told which enemies are in sight', /Enemies in sight: |No enemy in sight\./.test(seenRow), seenRow.slice(-160));
 
+        //--- what is around it, and a goal it walks off to do -------------------
+        const planted = await bot.evaluate(() => {
+            try {
+            const ann = Coop.others().find((p) => !p.bot);
+            if (ann && ann.m === $gameMap.mapId()) $gamePlayer.locate(ann.x, ann.y);
+            BOT.mode = 'follow';
+            BOT.errand = null;
+            BOT.goal = null;
+            BOT.forage = null;
+            const px = $gamePlayer.x, py = $gamePlayer.y;
+            const step = (x, y, nx, ny) => {
+                const dx = nx - x, dy = ny - y;
+                if (Math.abs(dx) + Math.abs(dy) !== 1) return false;
+                const d = dx === 1 ? 6 : dx === -1 ? 4 : dy === 1 ? 2 : 8;
+                return $gameMap.isValid(nx, ny) && $gameMap.isPassable(x, y, d) && $gameMap.isPassable(nx, ny, 10 - d);
+            };
+            const armed = (x, y) => $gameMap.eventsXy(x, y).some((ev) => {
+                const page = ev.page();
+                if (!page || ev._erased) return false;
+                return /beartrap|spike_trap/i.test((page.image && page.image.characterName) || '');
+            });
+            // A solid event blocks the tile. A touch event starts when stepped on (the entrance's
+            // region reveal sits on the south line; the cheat tile sits on the north). East and west first.
+            const hazard = (x, y) => armed(x, y) || $gameMap.eventsXy(x, y).some((ev) => {
+                if (!ev || ev._erased) return false;
+                return ev.isNormalPriority() || ev.isTriggerIn([1, 2]);
+            });
+            // Walking distance, not a straight ray: the open tiles around it, by steps.
+            const far = new Map([[px + ',' + py, 0]]);
+            const queue = [[px, py]];
+            while (queue.length) {
+                const [x, y] = queue.shift(), d = far.get(x + ',' + y);
+                if (d >= 8) continue;
+                for (const [dx, dy] of [[1, 0], [-1, 0], [0, -1], [0, 1]]) {
+                    const nx = x + dx, ny = y + dy, k = nx + ',' + ny;
+                    if (far.has(k) || !step(x, y, nx, ny) || hazard(nx, ny)) continue;
+                    far.set(k, d + 1); queue.push([nx, ny]);
+                }
+            }
+            const find = (dists, taken) => {
+                for (const dist of dists) {
+                    for (const [k, d] of far) {
+                        if (d !== dist) continue;
+                        const [x, y] = k.split(',').map(Number);
+                        if (taken.some((s) => s.x === x && s.y === y) || (ann && ann.x === x && ann.y === y)) continue;
+                        return { x, y, dist };
+                    }
+                }
+                return null;
+            };
+            const circleAt = find([2, 3, 1], []);
+            const bodyAt = find([6, 5, 7], circleAt ? [circleAt] : []);
+            if (!circleAt || !bodyAt) return { why: 'no open tiles', circleAt, bodyAt };
+            const blank = (list, selfSwitch, through) => ({
+                conditions: { actorId: 1, actorValid: false, itemId: 1, itemValid: false, selfSwitchCh: 'A', selfSwitchValid: !!selfSwitch, switch1Id: 1, switch1Valid: false, switch2Id: 1, switch2Valid: false, variableId: 1, variableValid: false, variableValue: 0 },
+                directionFix: false, image: { tileId: 0, characterName: '', direction: 2, pattern: 1, characterIndex: 0 }, list,
+                moveFrequency: 3, moveRoute: { list: [{ code: 0, parameters: [] }], repeat: true, skippable: false, wait: false },
+                moveSpeed: 3, moveType: 0, priorityType: through ? 0 : 1, stepAnime: false, through: !!through, trigger: 0, walkAnime: true,
+            });
+            const add = (name, spot, pages) => {
+                const id = $dataMap.events.length;
+                $dataMap.events[id] = { id, name, note: '', x: spot.x, y: spot.y, pages };
+                $gameMap._events[id] = new Game_Event($gameMap.mapId(), id);
+                return id;
+            };
+            for (const ev of $gameMap.events()) {
+                const page = ev.page();
+                if (page && page.list.some((c) => c.code >= 125 && c.code <= 128)) BOT.visited.add($gameMap.mapId() + ':' + ev.eventId());
+            }
+            const circle = add('circle1', circleAt, [blank([{ code: 121, indent: 0, parameters: [2445, 2445, 0] }, { code: 0, indent: 0, parameters: [] }], false, true)]);
+            const body = add('body', bodyAt, [
+                blank([{ code: 126, indent: 0, parameters: [37, 0, 0, 1] }, { code: 123, indent: 0, parameters: ['A', 0] }, { code: 0, indent: 0, parameters: [] }], false, false),
+                blank([{ code: 0, indent: 0, parameters: [] }], true, false),
+            ]);
+            const sit = BOT.situationText();
+            return { body, circle, sit, bodyAt, circleAt, cheese: $gameParty.numItems($dataItems[37]), goal: BOT.goal && BOT.goal.id };
+            } catch (e) { return { why: String(e && e.stack || e).slice(0, 400) }; }
+        });
+        const around = planted && planted.sit ? (planted.sit.split('Around you:')[1] || '') : '';
+        check('the situation lists a nearby body and a circle with ids',
+            !!(planted && !planted.why && around.includes('b' + planted.body) && around.includes('c' + planted.circle) && /ritual circle (?:un)?spent/.test(around)),
+            JSON.stringify(planted && planted.why ? planted : { body: planted && planted.body, circle: planted && planted.circle, around: around.slice(0, 240) }));
+        let aimed = null;
+        if (planted && planted.body) {
+            await a.evaluate((id) => Coop.say('check the body b' + id), planted.body);
+            for (let i = 0; i < 25 && !(aimed && aimed.goal); i++) {
+                await sleep(200);
+                aimed = await bot.evaluate((id) => ({ goal: BOT.goal && BOT.goal.id, visited: BOT.visited.has($gameMap.mapId() + ':' + id), mode: BOT.mode }), planted.body);
+            }
+            await a.evaluate(() => Coop.say('wait here'));
+            let dropped = null;
+            for (let i = 0; i < 20 && !(dropped && dropped.mode === 'wait'); i++) {
+                await sleep(200);
+                dropped = await bot.evaluate(() => ({ goal: BOT.goal && BOT.goal.id, mode: BOT.mode }));
+            }
+            check('an order mid-goal drops the goal at once', !!(aimed && aimed.goal === 'b' + planted.body && !aimed.visited && dropped && !dropped.goal && dropped.mode === 'wait'), JSON.stringify({ aimed, dropped }));
+            // Back beside Ann, outside the forage radius, so the next goal is what walks there.
+            await bot.evaluate(() => {
+                const ann = Coop.others().find((p) => !p.bot);
+                if (ann && ann.m === $gameMap.mapId()) $gamePlayer.locate(ann.x, ann.y);
+                BOT.forage = null;
+                BOT.goal = null;
+            });
+            await a.evaluate(() => Coop.say('follow me'));
+            let following = false;
+            for (let i = 0; i < 30 && !following; i++) { await sleep(200); following = await bot.evaluate(() => BOT.mode === 'follow'); }
+            await a.evaluate((id) => Coop.say('check the body b' + id), planted.body);
+            let looted = null;
+            for (let i = 0; i < 40 && !(looted && looted.gone && looted.cheese > planted.cheese); i++) {
+                await sleep(500);
+                looted = await bot.evaluate((id) => ({
+                    cheese: $gameParty.numItems($dataItems[37]),
+                    gone: !(BOT.situationText().split('Around you:')[1] || '').includes('b' + id),
+                    journal: (BOT.journal || []).filter((l) => /searched the body/.test(l)),
+                    at: [$gamePlayer.x, $gamePlayer.y],
+                    goal: BOT.goal && BOT.goal.id,
+                }), planted.body);
+            }
+            check('a goal walks it to that body and the body leaves the list', !!(looted && looted.gone && looted.cheese > planted.cheese && looted.journal.length), JSON.stringify(looted));
+            await bot.evaluate((ids) => {
+                for (const id of ids) if (id && $gameMap._events[id]) $gameMap._events[id] = null;
+                if ($gameMap._interpreter) $gameMap._interpreter.clear();
+                if ($gameMessage) $gameMessage.clear();
+                if ($gameTemp) $gameTemp.clearCommonEvent();
+                BOT.goal = null;
+                BOT.forage = null;
+                BOT.looting = null;
+                BOT.mode = 'follow';
+                BOT.errand = null;
+            }, [planted.body, planted.circle]);
+        } else {
+            check('an order mid-goal drops the goal at once', false, 'no body planted');
+            check('a goal walks it to that body and the body leaves the list', false, 'no body planted');
+        }
+
         //--- a fight Ann starts: the bot is a guest ---------------------------
         await a.evaluate(() => {
             window.picks = [];
@@ -223,23 +381,56 @@ async function press(page, code, ms) {
         const bx = await bot.evaluate(() => [$gamePlayer.x, $gamePlayer.y]);
         await a.evaluate((x, y) => { $gamePlayer.locate(x, y + 1); }, bx[0], bx[1]);
         await sleep(600);
+        slowBattle = 7000;
         await a.evaluate(() => { BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
         await waitFor(bot, () => SceneManager._scene instanceof Scene_CoopSpectate, 10000, 'the bot is pulled into Ann\'s fight');
         await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor() && BattleManager.actor().actorId() === 1, 20000, 'Ann chooses first');
         await press(a, 'KeyZ'); await press(a, 'KeyZ'); await press(a, 'KeyZ');
-        await waitFor(a, () => window.picks.length > 0, 15000, 'the bot sends its move');
-        const p1 = await a.evaluate(() => ({ picks: window.picks, target: window.knightTarget, enemy: $gameTroop.members()[window.knightTarget] && $gameTroop.members()[window.knightTarget].name() }));
-        check('as a guest, its chosen move is set on the owner\'s machine', p1.picks[0].actor === 3 && p1.picks[0].r === '' && p1.enemy === 'Guard [left arm]', JSON.stringify(p1));
+        await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor() && BattleManager.actor().actorId() === 3, 15000, 'the partner\'s turn');
+        // It is still thinking, and it sends no keys of its own. Empty notes from the
+        // watching page would keep the last one young, so that stamp stays old: past
+        // five seconds her back used to rewind the turn, and the move came in for one that was gone.
+        await a.evaluate(() => {
+            const g = [...Coop.battle.guests.values()][0];
+            if (!g) return;
+            const stale = Date.now() - 6000;
+            Object.defineProperty(g, 'inputAt', { configurable: true, get() { return stale; }, set() {} });
+        });
+        await press(a, 'KeyX'); await press(a, 'KeyX');
+        const held = await a.evaluate(() => {
+            const g = Coop.battle && [...Coop.battle.guests.values()][0];
+            return { phase: BattleManager._phase, id: BattleManager.actor() && BattleManager.actor().actorId(), inputAge: g ? Date.now() - g.inputAt : -1 };
+        });
+        let p1 = { picks: [] };
+        try {
+            await waitFor(a, () => window.picks.length > 0, 15000, 'the bot sends its move');
+            p1 = await a.evaluate(() => ({ picks: window.picks, target: window.knightTarget, enemy: $gameTroop.members()[window.knightTarget] && $gameTroop.members()[window.knightTarget].name() }));
+        } catch (e) { p1 = { picks: [], err: String(e.message || e) }; }
+        check('as a guest, its chosen move is set on the owner\'s machine', !!(p1.picks[0] && p1.picks[0].actor === 3 && p1.picks[0].r === '' && p1.enemy === 'Guard [left arm]'), JSON.stringify(p1));
+        const markFight = asked.length;
+        await a.evaluate(() => Coop.say('what enemy is that'));
+        let mid = null;
+        for (let i = 0; i < 30 && !mid; i++) { await sleep(300); mid = asked.slice(markFight).find((q) => q.kind === 'chat' && /what enemy is that/.test(q.text)); }
+        check('a question during a fight is answered with the fight in front of it, and with what it cannot do',
+            !!mid && /Guard \[/.test(mid.text) && /HP/.test(mid.text) && /cannot climb/.test(mid.text) && /stay still/.test(mid.text),
+            mid && mid.text.slice(0, 500));
         const brief = asked.find((q) => q.kind === 'battle');
         check('the fight is described in words, wounds without numbers', brief && /Enemies: 0 Guard \[torso\] unhurt/.test(brief.text) && /skill 66 Fast attack/.test(brief.text) && !/1300/.test(brief.text), brief && brief.text.slice(0, 400));
         // The round plays out and comes back to Ann.
+        let roundOk = false;
         try {
             await waitFor(a, () => (BattleManager._phase === 'input' && BattleManager.actor() && BattleManager.actor().actorId() === 1) || BattleManager._phase === 'battleEnd', 30000, 'the next round, or the fight won');
-            check('the round plays out after its move', true);
+            // The two backs had to leave the partner choosing. Ann already up means they took the turn.
+            roundOk = held.phase === 'input' && held.id === 3;
+            check('the round plays out after its move', roundOk, roundOk ? '' : 'back had already left the partner\'s turn');
         } catch (e) {
             const st = await a.evaluate(() => { const s = SceneManager._scene; const w = {}; for (const k in s) if (s[k] && s[k].active !== undefined && s[k].isOpen) w[k] = (s[k].active ? 'A' : '') + (s[k].isOpen() ? 'O' : '') + (s[k].visible ? 'V' : ''); return { phase: BattleManager._phase, windows: w, busy: s.isAnyInputWindowActive(), log: s._logWindow && s._logWindow.isBusy(), msg: $gameMessage.isBusy() }; });
             check('the round plays out after its move', false, JSON.stringify(st));
         }
+        const pk = p1.picks[0];
+        check('Ann pressing back while a slow partner chooses does not rewind its turn, and the move still lands',
+            held.phase === 'input' && held.id === 3 && !!pk && pk.actor === 3 && pk.r === '' && roundOk,
+            JSON.stringify({ held, pick: pk ? { actor: pk.actor, r: pk.r } : null, round: roundOk }));
         // Now and then the round itself kills the guard; then "won" is the true report.
         const wonInRound = await a.evaluate(() => BattleManager._phase === 'battleEnd' && $gameTroop.isAllDead());
         await a.evaluate(() => { if (BattleManager._phase !== 'battleEnd') BattleManager.abort(); });
@@ -346,7 +537,10 @@ async function press(page, code, ms) {
         }
         console.log('screenshot', await shot(bot, 'ai-errand'));
         const back = await a.evaluate(() => ({ dead: Coop.dead, scene: SceneManager._scene.constructor.name, hp: $gameParty.leader().hp }));
-        const spent = await bot.evaluate(() => [409, 476, 486, 2046, 2445].filter((s) => $gameSwitches.value(s)));
+        // The circle is spent when Ann's "I am up" reaches the caller, a line's length after she is.
+        const spentNow = () => bot.evaluate(() => [409, 476, 486, 2046, 2445].filter((s) => $gameSwitches.value(s)));
+        for (let i = 0; i < 25 && !(await spentNow()).length; i++) await sleep(200);
+        const spent = await spentNow();
         check('it walked to a ritual circle and called Ann back', !back.dead && spent.length === 1, JSON.stringify(back) + ' circles spent ' + spent + ' in ' + Math.round((Date.now() - t0) / 1000) + ' s');
         check('it walked: no jumps on the way', jumps === 0, jumps + ' jumps');
 
@@ -380,6 +574,106 @@ async function press(page, code, ms) {
         // another version of the floor. Either way it must go through and finish.
         // (The bot plans by the run's own rolls, which may name another entrance than the map 1 the test chose.)
         check('from the next map it found the door, came through and called Ann back', back2 && plan2.hops.length === 1 && plan2.hops[0].startsWith('4>') && maps.has(4) && maps.size >= 2, plan2.hops.join() + ', maps seen ' + [...maps] + ', ' + Math.round((Date.now() - t1) / 1000) + ' s');
+
+        //--- talk it was not part of, and talk that is about it ---------------
+        await bot.evaluate(() => {
+            BOT.mode = 'wait';
+            BOT.waitFor = null;
+            BOT.notes.splice(0);
+            if (BOT.aside) BOT.aside.splice(0);
+            BOT.addressed = null;
+            BOT.lastNoteAt = Date.now();
+            Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 40, mhp: 100 });
+        });
+        await sleep(6000);
+        await bot.evaluate(() => { BOT.notes.splice(0); if (BOT.aside) BOT.aside.splice(0); BOT.addressed = null; BOT.lastNoteAt = Date.now(); });
+        const beforeOver = asked.length;
+        await a.evaluate(() => Coop.say('Enki, look at this'));
+        for (let i = 0; i < 20; i++) {
+            await sleep(500);
+            await bot.evaluate(() => { BOT.notes.splice(0); BOT.lastNoteAt = Date.now(); });
+        }
+        const leaked = asked.slice(beforeOver).filter((q) => /Enki, look at this/.test(q.text));
+        const markHear = asked.length;
+        await a.evaluate(() => Coop.say('Claude, what did you hear'));
+        let carried = null;
+        for (let i = 0; i < 30 && !carried; i++) { await sleep(300); carried = asked.slice(markHear).find((q) => q.kind === 'chat'); }
+        check('overheard chat waits for the next real call and never starts one',
+            leaked.length === 0 && !!carried && /Overheard:/.test(carried.text) && /Enki, look at this/.test(carried.text),
+            'leaked ' + leaked.length + (carried ? ' ' + carried.text.slice(0, 240) : ' no chat'));
+
+        const markAbout = asked.length;
+        await a.evaluate(() => Coop.say('Claude is slow'));
+        await sleep(1500);
+        const aboutCalls = asked.length - markAbout;
+        await a.evaluate(() => Coop.say('you, grab that'));
+        let youCall = null;
+        for (let i = 0; i < 30 && !youCall; i++) { await sleep(300); youCall = asked.slice(markAbout).find((q) => q.kind === 'chat' && /you, grab that/.test(q.text)); }
+        await bot.evaluate(() => { BOT.mode = 'follow'; BOT.addressed = null; });
+        await a.evaluate(() => Coop.say('Darce, wait'));
+        let nick = false;
+        for (let i = 0; i < 20 && !nick; i++) { await sleep(200); nick = await bot.evaluate(() => BOT.mode === 'wait'); }
+        const markNext = asked.length;
+        await a.evaluate(() => Coop.say('and bring the torch'));
+        let nextCall = null;
+        for (let i = 0; i < 30 && !nextCall; i++) { await sleep(300); nextCall = asked.slice(markNext).find((q) => q.kind === 'chat'); }
+        check('you, a short name, and the next line are for it; talk about it is not',
+            aboutCalls === 0 && !!youCall && nick && !!nextCall, 'about ' + aboutCalls + ' you ' + !!youCall + ' nick ' + nick + ' next ' + !!nextCall);
+        await sleep(600);
+        await bot.evaluate(() => {
+            if (BOT.giving) BOT.giving = null;
+            Coop.leaveParty();
+            Coop.peers.delete(4242);
+            BOT.with = 0;
+            BOT.mode = 'follow';
+            BOT.addressed = null;
+            BOT.waitFor = null;
+            BOT.fightOrder = null;
+            if (window.keepAlive) { clearInterval(window.keepAlive); window.keepAlive = 0; }
+        });
+
+        //--- dead: one line, then silence; let go is silent; revival talks ----
+        const linesBefore = await bot.evaluate(() => BOT.lines.length);
+        await bot.evaluate(() => {
+            const me = $gameParty.leader();
+            me.setHp(0);
+            me.addState(me.deathStateId());
+            SceneManager.goto(Scene_Gameover);
+        });
+        let oneLine = false;
+        for (let i = 0; i < 25 && !oneLine; i++) {
+            await sleep(200);
+            oneLine = await bot.evaluate((n) => Coop.dead && BOT.lines.length === n + 1 && BOT.lines[BOT.lines.length - 1] === 'Dead.', linesBefore);
+        }
+        const askedDead = asked.length;
+        await a.evaluate(() => Coop.say('are you alive'));
+        await sleep(2000);
+        const sit = await bot.evaluate(() => BOT.situationText());
+        const quietDead = asked.length === askedDead;
+        await bot.evaluate(() => {
+            const ann = Coop.others().find((p) => !p.bot);
+            Coop.emit('to:revive', { from: ann.id, m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y, by: 'Ann' });
+        });
+        await waitFor(bot, () => !Coop.dead && SceneManager._scene instanceof Scene_Map && !BOT.deadSilent, 15000, 'called back');
+        const askedLive = asked.length;
+        await a.evaluate(() => Coop.say('Claude, you are back'));
+        let backCall = null;
+        for (let i = 0; i < 30 && !backCall; i++) { await sleep(300); backCall = asked.slice(askedLive).find((q) => q.kind === 'chat'); }
+        await bot.evaluate(() => {
+            const me = $gameParty.leader();
+            me.setHp(0);
+            me.addState(me.deathStateId());
+            SceneManager.goto(Scene_Gameover);
+        });
+        let deadAgain = false;
+        for (let i = 0; i < 25 && !deadAgain; i++) { await sleep(200); deadAgain = await bot.evaluate(() => Coop.dead && BOT.deadSilent); }
+        const linesLet = await bot.evaluate(() => BOT.lines.length);
+        await a.evaluate(() => Coop.say('let it go'));
+        await sleep(1500);
+        const afterLet = await bot.evaluate(() => ({ lines: BOT.lines.length, dead: Coop.dead }));
+        check('dead, it says one line and then nothing, the brief says DEAD, let go is silent, and a revival talks again',
+            oneLine && quietDead && /DEAD/.test(sit) && !/nothing wrong/.test(sit) && !!backCall && deadAgain && afterLet.lines === linesLet && !afterLet.dead,
+            'one ' + oneLine + ' quiet ' + quietDead + ' deadAgain ' + deadAgain + ' back ' + !!backCall + ' let ' + JSON.stringify(afterLet) + ' sit ' + sit.slice(0, 160));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish([a, bot].filter(Boolean));
     await browser.close();

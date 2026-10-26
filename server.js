@@ -364,6 +364,7 @@ const wss = new WebSocketServer({
     verifyClient: (info) => sameOrigin(info.req) && allowed(info.req, new URL(info.req.url, 'http://x')),
 });
 room.partners = new Partners(PORT, SETTINGS);
+room.partners.parked = (name) => !!room.readParked(name);
 // A partner that could not start, or fell over: the host hears why.
 room.partners.onFail = (name, why) => {
     for (const p of room.peers.values()) if (p.host) room.send(p, { t: 'partnernote', text: name + ' could not stay: ' + String(why).slice(0, 160) });

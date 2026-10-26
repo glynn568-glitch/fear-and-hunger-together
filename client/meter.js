@@ -131,7 +131,8 @@
             events: window.$gameMap && Coop.world.live ? $gameMap.events().length : 0,
             streamingTo: Coop.stream ? Coop.stream.watchers.size : 0,
             watching: Coop.viewer && Coop.viewer.active ? (Coop.viewer.video ? 'video' : Coop.viewer.clip ? 'relayed video' : 'stills') : '',
-            watchFps: Coop.viewer && Coop.viewer.active ? Math.round((Coop.viewer.frames - (M._frames || 0)) / secs) : 0,
+            // A new picture restarts the viewer's count; then all of it is this window's.
+            watchFps: Coop.viewer && Coop.viewer.active ? Math.round((Coop.viewer.frames - (Coop.viewer.frames >= (M._frames || 0) ? M._frames || 0 : 0)) / secs) : 0,
             videoTo: Coop.stream && Coop.stream.onVideo ? Coop.stream.onVideo.size : 0,
             fight: b ? b.role + (b.guests ? ':' + b.guests.size : '') : '',
             others: Coop.peers.size,

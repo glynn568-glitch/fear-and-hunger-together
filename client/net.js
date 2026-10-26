@@ -195,6 +195,12 @@ Coop._receive = function (msg) {
         if (peer) peer.name = msg.name;
         break;
     }
+    case 'nameok':
+        // Whose game sets the run. Kept here: the reply can arrive before the
+        // later scripts have registered, and they must not miss it.
+        Coop.decides = !!msg.decides;
+        Coop.emit('nameok', msg);
+        break;
     case 'nametaken':
         // Someone here already has it; this player has to pick another.
         if (Coop.name.toLowerCase() === String(msg.name).toLowerCase()) Coop.name = '';

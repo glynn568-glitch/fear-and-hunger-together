@@ -41,11 +41,36 @@
 
     // "Partner Arrows" in the game's Options, under General: on unless turned
     // off, and kept with the game's other options on this PC.
+    // "Balance changes" is the same kind of option. It is this PC's preference
+    // for when this PC's player is the one whose game sets the run. The row is
+    // hidden otherwise (a joiner's tick must not look like it does anything).
     ConfigManager.coopPointer = true;
+    let balanceChoice = true;
+    Object.defineProperty(ConfigManager, 'coopBalance', {
+        configurable: true,
+        get: function () { return balanceChoice; },
+        set: function (v) {
+            const on = !!v;
+            if (on === balanceChoice) return;
+            balanceChoice = on;
+            if (!(window.Coop && Coop.decides)) return;
+            if (Coop.setBalance) Coop.setBalance(on);
+            if (Coop.connected) Coop.send({ t: 'balance', on: on });
+        },
+    });
     const _makeData = ConfigManager.makeData;
-    ConfigManager.makeData = function () { const config = _makeData.call(this); config.coopPointer = this.coopPointer; return config; };
+    ConfigManager.makeData = function () {
+        const config = _makeData.call(this);
+        config.coopPointer = this.coopPointer;
+        config.coopBalance = this.coopBalance;
+        return config;
+    };
     const _applyData = ConfigManager.applyData;
-    ConfigManager.applyData = function (config) { _applyData.call(this, config); this.coopPointer = config.coopPointer !== false; };
+    ConfigManager.applyData = function (config) {
+        _applyData.call(this, config);
+        this.coopPointer = config.coopPointer !== false;
+        this.coopBalance = config.coopBalance !== false;
+    };
     // The game's options list (YEP_OptionsCore) loads after this file, so the
     // option joins it once the game boots. It copies an ON/OFF option's code.
     const _bootStart = Scene_Boot.prototype.start;
@@ -56,11 +81,24 @@
         const cat = cats.find((c) => c.Name === 'General') || cats[0];
         const list = cat.OptionsList;
         const like = list.find((o) => o.Symbol === 'commandRemember');
-        if (!like || list.some((o) => o.Symbol === 'coopPointer')) return;
-        const at = list.findIndex((o) => o.Symbol === 'none');
-        list.splice(at < 0 ? list.length : at, 0, Object.assign({}, like, {
-            Name: 'Partner Arrows', Symbol: 'coopPointer', HelpDesc: JSON.stringify('Arrows at the edge of the screen point to partners off it.'),
-        }));
+        if (!like) return;
+        const put = (extra) => {
+            if (list.some((o) => o.Symbol === extra.Symbol)) return;
+            const at = list.findIndex((o) => o.Symbol === 'none');
+            list.splice(at < 0 ? list.length : at, 0, Object.assign({}, like, extra));
+        };
+        put({ Name: 'Partner Arrows', Symbol: 'coopPointer', HelpDesc: JSON.stringify('Arrows at the edge of the screen point to partners off it.') });
+        put({
+            Name: 'Balance changes', Symbol: 'coopBalance',
+            HelpDesc: JSON.stringify('Weapons do what their text says; two soul stones can call a partner back. Set by the host for everyone.'),
+            ShowHide: JSON.stringify('show = !!(window.Coop && Coop.decides);'),
+        });
+        // nameok can have landed already. The saved choice becomes the run's then.
+        if (window.Coop && Coop.decides && Coop.setBalance && Coop.connected) {
+            const on = ConfigManager.coopBalance !== false;
+            Coop.setBalance(on);
+            Coop.send({ t: 'balance', on: on });
+        }
     };
 
     const MARGIN = 20; // game pixels from the edge of the screen

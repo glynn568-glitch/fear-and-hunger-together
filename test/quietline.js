@@ -33,8 +33,10 @@ const KEY = 'quietline';
         await waitFor(b, () => T.onMap(), 60000, 'joiner on map');
         await b.evaluate(() => { T.settle(); T.begin(); });
         await waitFor(b, () => Coop.world.live, 10000, 'joiner live');
-        await sleep(800);
-        check('the joiner plays in the host\'s world through the line', await a.evaluate(() => Coop.peersHere().length) === 1 && await b.evaluate(() => Coop.peersHere().length) === 1);
+        // Through the joiner's own server, seeing each other can take more than a moment.
+        const together = async () => (await a.evaluate(() => Coop.peersHere().length)) === 1 && (await b.evaluate(() => Coop.peersHere().length)) === 1;
+        for (let i = 0; i < 50 && !(await together()); i++) await sleep(200);
+        check('the joiner plays in the host\'s world through the line', await together());
 
         // The line goes quiet. Nothing is closed; the host lets go after its own pings (15-30 s).
         await b.evaluate(() => { const toast = Coop.toast; window._toasts = []; Coop.toast = function (text) { window._toasts.push(text); return toast.apply(this, arguments); }; });

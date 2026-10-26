@@ -1,7 +1,7 @@
 //=============================================================================
 // fh-coop: dying. While another player is still alive, death is not the end:
 // the dead player watches them, and can be called back at a ritual circle.
-// Calling someone back spends the circle. Nobody left alive ends the run.
+// Calling someone back spends the circle, or two soul stones carried there. Nobody left alive ends the run.
 //=============================================================================
 (function () {
     // Each ritual circle and the switch the game turns on once it is used up.
@@ -208,14 +208,26 @@
         return !!window.$dataMap && /^circle\d/i.test(ev.event().name);
     }
 
+    // Soul stones carried to a circle are spent in the circle's place, so the circle stays
+    // (and a spent circle can still call someone back). Two, about half a recruit's price.
+    // Not on Hard, whose beds offer no saving either: no undo there.
+    const STONES = 2, HARD = 2190;
+    function soulStone() {
+        // Off with the host's balance switch: two stones never stand in for a circle.
+        if (Coop.balance === false) return null;
+        const item = $dataItems[115];
+        return item && /soul stone/i.test(item.name) && $gameParty.numItems(item) >= STONES && !$gameSwitches.value(HARD) ? item : null;
+    }
+    Coop.soulStone = soulStone;
+
     // The circle is spent when the dead player's machine says they are up,
     // not when the call goes out: a call nobody answers costs nothing.
-    let calling = null; // { peerId, switchId, name, at, limb, giver, timer }
+    let calling = null; // { peerId, switchId, name, at, limb, giver, stone, timer }
     // at: where the circle was used, { m, x, y }; giver: the actor whose limb it is.
-    function revive(peer, switchId, at, limb, giver) {
+    function revive(peer, switchId, at, limb, giver, stone) {
         if (calling) clearTimeout(calling.timer);
-        calling = { peerId: peer.id, switchId, name: peer.name, at, limb, giver, timer: setTimeout(function () {
-            if (calling) Coop.toast(calling.name + ' did not answer. The circle is untouched.', 5000);
+        calling = { peerId: peer.id, switchId, name: peer.name, at, limb, giver, stone, timer: setTimeout(function () {
+            if (calling) Coop.toast(calling.name + ' did not answer. ' + (calling.stone ? 'The soul stones are untouched.' : 'The circle is untouched.'), 5000);
             calling = null;
         }, 6000) };
         Coop.sendTo(peer.id, 'revive', { m: at.m, x: at.x, y: at.y, by: Coop.name, limb });
@@ -223,7 +235,10 @@
     Coop.on('to:revived', function (msg) {
         if (!calling || calling.peerId !== msg.from) return;
         clearTimeout(calling.timer);
-        $gameSwitches.setValue(calling.switchId, true);
+        // Called with stones: two stones, if they are still in the bag now (dropped or handed
+        // over during the call: the circle pays instead).
+        const stone = calling.stone && soulStone();
+        if (stone) $gameParty.loseItem(stone, STONES); else $gameSwitches.setValue(calling.switchId, true);
         // The limb they came back with was this player's.
         const giver = msg.limb && calling.limb === msg.limb && $gameActors.actor(calling.giver);
         if (giver) {
@@ -232,7 +247,7 @@
         }
         $gameScreen.startFlash([150, 20, 20, 200], 90);
         $gameScreen.startShake(4, 6, 60);
-        Coop.toast('The circle goes dark. ' + calling.name + ' draws breath.', 5000);
+        Coop.toast((stone ? 'The soul stones crumble to dust. ' : 'The circle goes dark. ') + calling.name + ' draws breath.', 5000);
         calling = null;
     });
 
@@ -243,7 +258,7 @@
     Coop.on('to:limbless', function (msg) {
         if (!calling || calling.peerId !== msg.from) return;
         clearTimeout(calling.timer);
-        gift = { peerId: calling.peerId, switchId: calling.switchId, name: calling.name, at: calling.at };
+        gift = { peerId: calling.peerId, switchId: calling.switchId, name: calling.name, at: calling.at, stone: calling.stone };
         calling = null;
     });
     // The limbs this actor still has to give.
@@ -267,7 +282,7 @@
         giftOffer = null;
         if (!g || !limb || !spareLimbs($gameActors.actor(g.giver)).includes(limb)) return;
         const peer = Coop.peers.get(g.peerId);
-        if (peer && peer.st === 'dead' && !$gameSwitches.value(g.switchId)) revive(peer, g.switchId, g.at, limb, g.giver);
+        if (peer && peer.st === 'dead' && (g.stone ? soulStone() : !$gameSwitches.value(g.switchId))) revive(peer, g.switchId, g.at, limb, g.giver, g.stone);
     };
 
     // Everything a party is carrying or wearing, as plain counts.
@@ -298,7 +313,7 @@
         for (const [key, table] of [['items', $dataItems], ['weapons', $dataWeapons], ['armors', $dataArmors]]) {
             for (const id in msg[key] || {}) {
                 const item = table[Number(id)];
-                const count = Math.min(99, Number(msg[key][id]) || 0);
+                const count = Math.min($gameParty.maxItems(item), Number(msg[key][id]) || 0);
                 if (item && item.name && count > 0) { $gameParty.gainItem(item, count); n += count; }
             }
         }
@@ -311,7 +326,7 @@
     // Using a live circle while a partner lies dead offers to spend it on
     // them. The offer runs as an ordinary event script so every message
     // plugin the game uses treats it like any other choice.
-    let offer = null; // { peerId, eventId, switchId }
+    let offer = null; // { peerId, eventId, switchId, stone }
     let bypass = false;
 
     // A message and a choice as event commands; each choice runs its script, if any.
@@ -338,7 +353,7 @@
         const ev = $gameMap.event(o.eventId);
         if (n === 0) {
             const peer = Coop.peers.get(o.peerId);
-            if (peer && peer.st === 'dead' && !$gameSwitches.value(o.switchId)) revive(peer, o.switchId, { m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y });
+            if (peer && peer.st === 'dead' && (o.stone ? soulStone() : !$gameSwitches.value(o.switchId))) revive(peer, o.switchId, { m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y }, null, null, o.stone);
         } else if (n === 1 && ev) {
             bypass = true;
             ev.start();
@@ -351,10 +366,11 @@
         if (!bypass && Coop.world.live && this._trigger === 0 && isCircle(this) && !$gameMap.isEventRunning()) {
             const dead = deadPeers();
             const switchId = dead.length ? circleSwitch(this) : 0;
-            if (switchId && !$gameSwitches.value(switchId)) {
-                offer = { peerId: dead[0].id, eventId: this._eventId, switchId };
+            const stone = !!(switchId && soulStone());
+            if (switchId && (stone || !$gameSwitches.value(switchId))) {
+                offer = { peerId: dead[0].id, eventId: this._eventId, switchId, stone };
                 const name = dead[0].name;
-                $gameMap._interpreter.setup(choiceList(['The circle could call ' + name + ' back from the dark.', 'It would be spent.'],
+                $gameMap._interpreter.setup(choiceList(['The circle could call ' + name + ' back from the dark.', stone ? 'Two of your soul stones would be spent in its place.' : 'It would be spent.'],
                     [['Call ' + name + ' back', 'Coop.circleAnswer(0)'], ['Use the circle yourself', 'Coop.circleAnswer(1)'], ['Step away', null]]), 0);
                 return;
             }

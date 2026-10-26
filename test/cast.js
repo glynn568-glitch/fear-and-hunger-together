@@ -49,6 +49,21 @@ async function press(page, code) {
         await waitFor(b, () => $gameParty.leader().currentExp() > 95, 8000, 'B has eaten');
         const fed = await b.evaluate(() => $gameParty.leader().currentExp());
         check('food used on a partner feeds them', fed > 95 && (await a.evaluate(() => $gameParty.numItems($dataItems[16]))) === 0, JSON.stringify(second) + ' hunger ' + fed);
+
+        //--- their fight begins as the food is on its way: it comes back -----
+        const bId = await b.evaluate(() => Coop.id);
+        await b.evaluate(() => { window.__realBattle = Coop.battle; Coop.battle = { role: 'host' }; });
+        await a.evaluate((id) => {
+            const item = $dataItems[16];
+            $gameParty.gainItem(item, 1);
+            $gameParty.consumeItem(item);
+            Coop.castItem(id, item, $gameParty.leader());
+        }, bId);
+        await waitFor(a, () => $gameParty.numItems($dataItems[16]) === 1, 5000, 'the food back in A\'s bag').catch(() => {});
+        const back = await a.evaluate(() => $gameParty.numItems($dataItems[16]));
+        const ate = await b.evaluate(() => $gameParty.leader().currentExp());
+        await b.evaluate(() => { Coop.battle = window.__realBattle; });
+        check('food that lands mid-fight goes back to the giver, uneaten', back === 1 && ate === fed, 'bag ' + back + ' hunger ' + fed + ' -> ' + ate);
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

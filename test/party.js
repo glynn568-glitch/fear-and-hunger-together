@@ -101,6 +101,35 @@ async function press(page, code, ms) {
         check('and B\'s companion came back with B', await b.evaluate(() => $gameParty._actors.join()) === '3,2');
         await b.evaluate(() => { $gameParty.removeActor(2); $gamePlayer.refresh(); });
 
+        // B's fight while A is stuck in an event: it waits, then A is in it.
+        await a.evaluate(() => {
+            $gameMap._interpreter.setup([{ code: 230, indent: 0, parameters: [9999] }, { code: 0, indent: 0, parameters: [] }], 0);
+        });
+        await waitFor(b, (id) => { const p = Coop.peers.get(id); return p && p.st === 'event'; }, 8000, 'B sees A busy in an event', idA);
+        await b.evaluate(() => { BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
+        await sleep(5000);
+        const held = await b.evaluate(() => ({
+            started: !!(Coop.battle && Coop.battle.started),
+            phase: BattleManager._phase,
+            guests: Coop.battle && Coop.battle.guests ? Coop.battle.guests.size : -1,
+        }));
+        const aStill = await a.evaluate(() => SceneManager._scene instanceof Scene_Map);
+        await a.evaluate(() => { if ($gameMap._interpreter) $gameMap._interpreter.clear(); });
+        let joined = false;
+        try {
+            await waitFor(a, () => SceneManager._scene instanceof Scene_CoopSpectate, 12000, 'A joins once the event ends');
+            await waitFor(b, () => Coop.battle && Coop.battle.started && Coop.battle.guests.size === 1, 12000, 'B\'s fight starts with A in it');
+            joined = true;
+        } catch (e) { joined = false; }
+        check('a party member\'s fight waits while the leader is busy, then the leader is in it',
+            aStill && held.guests === 0 && !held.started && held.phase !== 'input' && joined, JSON.stringify(held) + ' map ' + aStill + ' joined ' + joined);
+        await b.evaluate(() => { if (BattleManager._phase && BattleManager._phase !== 'battleEnd') BattleManager.abort(); });
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 20000, 'A back on the map after the held fight');
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 20000, 'B back on the map after the held fight');
+        await a.evaluate(() => T.settle());
+        await b.evaluate(() => T.settle());
+        await sleep(800);
+
         // The menu lineup: A's character after B's own; Equip opens on it, to look.
         await b.evaluate(() => SceneManager.push(Scene_Menu));
         await waitFor(b, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene._statusWindow && SceneManager._scene._statusWindow.maxItems() === 2, 8000, 'A in B\'s menu lineup');
@@ -137,6 +166,79 @@ async function press(page, code, ms) {
         });
         check('Equip shows A\'s character and gear, every command shut', viewed.id === 1 && viewed.slots && viewed.shut, JSON.stringify(viewed));
         console.log('screenshot', await shot(b, 'party-equip'));
+        // Shut means shut when pressed, not only drawn grey (10/24: a soul equipped on a mate left
+        // the viewer's bag for a copy that was thrown away; Clear would hand the mate's gear over).
+        // The slot window tells the item list which row it is on in update(), the frame before OK.
+        // Pressing OK with no frame leaves that row at -1 and the preview throws, which is not the bug.
+        const pressed = await b.evaluate(() => {
+            const sc = SceneManager._scene, cw = sc._commandWindow, sw = sc._slotWindow, iw = sc._itemWindow;
+            const soul = $dataArmors[36];
+            $gameParty.gainItem(soul, 1);
+            const bag = () => JSON.stringify($gameParty.allItems().map((it) => it.name + $gameParty.numItems(it)));
+            const gear = () => sc.actor().equips().map((e) => (e ? e.name : '-')).join(',');
+            const before = { bag: bag(), gear: gear() };
+            const ok = (win) => { win.update(); win.processOk(); };
+            const command = (symbol) => {
+                cw.activate();
+                cw.select(cw.findSymbol(symbol));
+                ok(cw);
+            };
+            const opened = [];
+            command('equip');
+            if (sw.active) opened.push('equip');
+            const slot = sw._actor.equipSlots().indexOf(soul.etypeId);
+            let picked = -1;
+            if (slot >= 0) {
+                sw.activate();
+                sw.select(slot);
+                ok(sw);
+                iw.activate();
+                picked = iw._data ? iw._data.indexOf(soul) : -1;
+                if (picked >= 0) { iw.select(picked); ok(iw); }
+            }
+            command('optimize');
+            command('clear');
+            const after = { bag: bag(), gear: gear() };
+            return { opened, picked, slot, same: before.bag === after.bag && before.gear === after.gear, before, after };
+        });
+        check('pressing Equip, Optimize or Clear on a party mate does nothing to either bag', pressed.same && pressed.picked >= 0, JSON.stringify(pressed));
+        await b.evaluate(() => SceneManager.pop());
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Menu, 8000, 'back in the menu');
+        // Row 0 is B. The mate's row opened Equip by itself; B's own row needs OK on the Equip command first, which is what arms the lineup.
+        await b.evaluate(() => {
+            const scene = SceneManager._scene;
+            const cw = scene._commandWindow, sw = scene._statusWindow;
+            sw.deactivate();
+            cw.activate();
+            cw.select(cw.findSymbol('equip'));
+            cw.processOk();
+            sw.select(0);
+            sw.processOk();
+        });
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Equip && SceneManager._scene._actor && SceneManager._scene._actor.actorId() === 3, 8000, 'Equip on B');
+        await sleep(300);
+        const own = await b.evaluate(() => {
+            const sc = SceneManager._scene, cw = sc._commandWindow, sw = sc._slotWindow, iw = sc._itemWindow;
+            const soul = $dataArmors[36];
+            if (!$gameParty.hasItem(soul)) $gameParty.gainItem(soul, 1);
+            const bag = () => JSON.stringify($gameParty.allItems().map((it) => it.name + $gameParty.numItems(it)));
+            const gear = () => sc.actor().equips().map((e) => (e ? e.name : '-')).join(',');
+            const before = { bag: bag(), gear: gear() };
+            const ok = (win) => { win.update(); win.processOk(); };
+            cw.activate();
+            cw.select(cw.findSymbol('equip'));
+            ok(cw);
+            const slot = sw._actor.equipSlots().indexOf(soul.etypeId);
+            if (slot < 0) return { actor: sc.actor().actorId(), picked: -1, slot, changed: false, before, after: before };
+            sw.activate();
+            sw.select(slot);
+            ok(sw);
+            const picked = iw._data ? iw._data.indexOf(soul) : -1;
+            if (picked >= 0) { iw.select(picked); ok(iw); }
+            const after = { bag: bag(), gear: gear() };
+            return { actor: sc.actor().actorId(), picked, slot, changed: before.bag !== after.bag && before.gear !== after.gear && after.gear.indexOf(soul.name) >= 0, before, after };
+        });
+        check('equipping on your own character from the lineup still changes your gear', own.actor === 3 && own.changed, JSON.stringify(own));
         await b.evaluate(() => SceneManager.pop());
         await waitFor(b, () => SceneManager._scene instanceof Scene_Menu, 8000, 'back in the menu');
         check('after looking, the menu is B\'s own again', await b.evaluate(() => $gameParty.menuActor().actorId()) === 3);
@@ -145,6 +247,65 @@ async function press(page, code, ms) {
         await b.evaluate(() => SceneManager.goto(Scene_Map));
         await waitFor(b, () => T.onMap(), 10000, 'B back on the map');
         check('A\'s actors in B\'s world were not touched', await b.evaluate(() => $gameParty._actors.join() === '3' && !$gameParty.members().some((m) => m.actorId() === 1)));
+
+        // Item -> use on A, from B's own item menu. One egg leaves B's bag. The hunger lands on A's machine.
+        await a.evaluate(() => { $gameParty.leader().changeExp(80, false); T.settle(); });
+        const hungry = await a.evaluate(() => $gameParty.leader().currentExp());
+        await b.evaluate(() => { const egg = $dataItems[15]; $gameParty.loseItem(egg, 99); $gameParty.gainItem(egg, 2); });
+        const snap = await b.evaluate(() => ({ eggs: $gameParty.numItems($dataItems[15]), exp3: $gameActors.actor(3).currentExp(), hp3: $gameActors.actor(3).hp, exp1: $gameActors.actor(1).currentExp() }));
+        await b.evaluate(() => SceneManager.push(Scene_Menu));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene._statusWindow && SceneManager._scene._statusWindow.maxItems() === 2, 8000, 'A in the lineup to be fed');
+        await b.evaluate(() => SceneManager.push(Scene_Item));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Item && SceneManager._scene._itemWindow && SceneManager._scene._actorWindow, 8000, 'the item menu');
+        const fed = await b.evaluate(() => {
+            try {
+                const scene = SceneManager._scene;
+                const cat = scene._categoryWindow, iw = scene._itemWindow, aw = scene._actorWindow;
+                cat.select(0);
+                cat.update();
+                const idx = (iw._data || []).indexOf($dataItems[15]);
+                if (idx < 0) return { error: 'no egg', names: (iw._data || []).map((it) => it && it.name) };
+                iw.select(idx);
+                iw.processOk();
+                const targets = aw.maxItems();
+                aw.select($gameParty.size());
+                const touched = [];
+                const _exp = Game_Actor.prototype.changeExp;
+                const _apply = Game_Action.prototype.apply;
+                Game_Actor.prototype.changeExp = function () { touched.push('exp' + this.actorId()); return _exp.apply(this, arguments); };
+                Game_Action.prototype.apply = function (t) { touched.push('apply' + (t && t.actorId && t.actorId())); return _apply.apply(this, arguments); };
+                try { aw.processOk(); } finally {
+                    Game_Actor.prototype.changeExp = _exp;
+                    Game_Action.prototype.apply = _apply;
+                }
+                return {
+                    idx, targets, touched,
+                    eggs: $gameParty.numItems($dataItems[15]),
+                    exp3: $gameActors.actor(3).currentExp(), hp3: $gameActors.actor(3).hp,
+                    exp1: $gameActors.actor(1).currentExp(),
+                };
+            } catch (e) { return { error: String(e && e.stack || e).slice(0, 400) }; }
+        });
+        let aAfter = null;
+        for (let i = 0; i < 20; i++) {
+            aAfter = await a.evaluate(() => ({ exp: $gameParty.leader().currentExp(), hp: $gameParty.leader().hp }));
+            if (aAfter.exp > hungry) break;
+            await sleep(400);
+        }
+        await a.evaluate(() => T.settle());
+        await b.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(b, () => T.onMap(), 10000, 'B back on the map after feeding');
+        await b.evaluate(() => SceneManager.push(Scene_Skill));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Skill && SceneManager._scene._actorWindow, 8000, 'the skill menu');
+        const skills = await b.evaluate(() => SceneManager._scene._actorWindow.maxItems());
+        await b.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(b, () => T.onMap(), 10000, 'B back on the map');
+        const spentOne = fed && !fed.error && fed.eggs === snap.eggs - 1;
+        const bUntouched = fed && fed.exp3 === snap.exp3 && fed.hp3 === snap.hp3 && fed.exp1 === snap.exp1 && !(fed.touched && fed.touched.length);
+        check('using food on a party mate from the item menu feeds them and spends one item',
+            !!(spentOne && bUntouched && fed.targets === 2 && aAfter && aAfter.exp > hungry),
+            JSON.stringify({ hungry, snap, fed, aAfter }));
+        check('a skill still cannot be aimed at a party mate', skills === 1, 'targets ' + skills);
 
         // Holding a direction steps out of line, even while the line is walking.
         const walking = a.evaluate(async () => { for (let i = 0; i < 5; i++) { T.step(8); await new Promise((r) => setTimeout(r, 280)); } });

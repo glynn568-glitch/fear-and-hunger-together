@@ -21,6 +21,7 @@ class Room {
         this.freedAt = new Map(); // player id -> when its connection closed
         this.runId = '';
         this.world = { sw: {}, va: {}, ss: {} };
+        this.balance = true; // host's "Balance changes", for the whole run; on unless they turn it off
         this.founded = false; // a run is in progress with at least one player in it
         this.entered = new Set(); // names that have been in the current run since it was founded
         this.baseStamp = 0; // the save the run was carried on from, if it was
@@ -73,7 +74,7 @@ class Room {
         const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host };
         this.peers.set(id, peer);
         console.log('player ' + id + ' connected' + (host ? ' (this PC)' : ''));
-        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly });
+        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, balance: this.balance });
         this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
             if (isBinary) { this.onBinary(peer, raw); return; }
@@ -219,6 +220,13 @@ class Room {
             url: custom ? String(msg.url || '').trim().slice(0, 300) : '', key: String(msg.key || '').trim() };
     }
 
+    // Character switches already published (who plays the knight, and so on).
+    takenInitials() {
+        const s = new Set();
+        for (const p of this.peers.values()) if (Array.isArray(p.ini)) for (const id of p.ini) s.add(id);
+        return s;
+    }
+
     parkFile(name) {
         return path.join(this.saveDir, 'parked', String(name).toLowerCase().replace(/[^a-z0-9 _'-]/g, '') + '.json');
     }
@@ -316,7 +324,7 @@ class Room {
             peer.named = true;
             peer.token = token;
             this.broadcast({ t: 'name', id: peer.id, name: peer.name });
-            this.send(peer, { t: 'nameok', name, run: this.runFor(peer) });
+            this.send(peer, { t: 'nameok', name, run: this.runFor(peer), decides: peer === this.hostPerson() });
             break;
         }
         case 'map': { // { mapId, canOwn }
@@ -412,9 +420,21 @@ class Room {
             peer.deadWait = false;
             peer.hostWaitSince = 0;
             this.entered.add(who);
-            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer });
+            // The host's game says whether the balance changes are in this run.
+            // Told to the one entering here, and to everyone already in if it moved.
+            if (peer === this.hostPerson() && typeof msg.balance === 'boolean' && this.balance !== msg.balance) {
+                this.balance = msg.balance;
+                this.broadcast({ t: 'balance', on: this.balance }, peer.id);
+            }
+            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, balance: this.balance });
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
+            break;
+        }
+        case 'balance': { // the host turns Balance changes on or off; a joiner's word is dropped
+            if (peer !== this.hostPerson() || typeof msg.on !== 'boolean' || this.balance === msg.on) break;
+            this.balance = msg.on;
+            this.broadcast({ t: 'balance', on: this.balance });
             break;
         }
         case 'p': // where a player is; kept so that someone joining later
@@ -439,7 +459,7 @@ class Room {
             for (const p of this.peers.values()) if (p.named) { taken.add(p.name.toLowerCase()); if (!partners.has(p.name.toLowerCase())) people++; }
             if (people + this.partners.names().length >= 4) { say('There is no room for another partner: four characters at most.'); break; }
             const callIn = () => {
-                const why = this.partners.start(taken);
+                const why = this.partners.start(taken, this.takenInitials());
                 say(why || 'An AI partner is on the way. It joins once you are in the dungeon. Press Y to talk to it, F8 to send it home.');
             };
             // Nothing to think with: the host is asked first, unless they chose none themselves.
@@ -481,7 +501,7 @@ class Room {
                 this.send(peer, { t: 'partnermindok' });
                 const running = this.partners.names().length;
                 const taken = new Set([...this.peers.values()].filter((p) => p.named).map((p) => p.name.toLowerCase()));
-                this.send(peer, { t: 'partnernote', text: 'Saved. ' + (running ? 'Partners called in from now on think that way.' : (this.partners.start(taken) || 'An AI partner is on the way.')) });
+                this.send(peer, { t: 'partnernote', text: 'Saved. ' + (running ? 'Partners called in from now on think that way.' : (this.partners.start(taken, this.takenInitials()) || 'An AI partner is on the way.')) });
             }, (e) => { this.partners.checking = false; bad(String(e && e.message || e).slice(0, 160)); });
             break;
         }
@@ -492,8 +512,12 @@ class Room {
             break;
         case 'park': // a player's own state, parked against a dropped connection
             if (!peer.live || !peer.named || typeof msg.blob !== 'string' || msg.blob.length > 24 * 1024 * 1024) break;
-            fs.mkdirSync(path.join(this.saveDir, 'parked'), { recursive: true });
-            fs.writeFile(this.parkFile(peer.name), JSON.stringify({ at: Date.now(), runId: String(msg.runId || ''), blob: msg.blob }), () => {});
+            try {
+                fs.mkdirSync(path.join(this.saveDir, 'parked'), { recursive: true });
+                // Sync: a send-home closes the page as soon as this is answered, and an async write can lose the race.
+                fs.writeFileSync(this.parkFile(peer.name), JSON.stringify({ at: Date.now(), runId: String(msg.runId || ''), blob: msg.blob }));
+            } catch (e) { console.log('park failed for ' + peer.name + ': ' + (e && e.message)); break; }
+            this.send(peer, { t: 'parkok', n: msg.n | 0 });
             break;
         case 'park?': {
             // Before the name is in, "nothing" would be a wrong answer; it asks again on nameok.

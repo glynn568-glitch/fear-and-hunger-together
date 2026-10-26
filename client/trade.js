@@ -142,10 +142,20 @@
     }
 
     // The caster as they are right now, for the partner's machine to work the effect out with.
-    function sendCast(peer, kind, obj, caster) {
-        Coop.sendTo(peer.id, 'cast', { kind, id: obj.id, caster: caster.actorId(), json: JsonEx.stringify(caster) });
+    function sendCast(peer, kind, obj, caster, on) {
+        Coop.sendTo(peer.id, 'cast', { kind, id: obj.id, caster: caster.actorId(), json: JsonEx.stringify(caster), on: on || 0 });
         if (Coop.parkSoon) Coop.parkSoon();
     }
+
+    // The item is already out of the bag. The mate's machine applies it; this one does not.
+    // on: which of their characters (a party mate's companion, from the menu); their leader if 0.
+    Coop.castItem = function (peerId, item, caster, on) {
+        const peer = typeof peerId === 'object' ? peerId : Coop.peers.get(peerId);
+        if (!peer || !item || !caster) return false;
+        sendCast(peer, 'item', item, caster, on);
+        Coop.toast('You use ' + item.name + ' on ' + peer.name + '.');
+        return true;
+    };
 
     Coop.useChosen = function () {
         const p = pending;
@@ -158,8 +168,7 @@
         if (!inReach(peer)) { Coop.toast((peer ? peer.name : 'They') + ' is out of reach.'); return; }
         const user = $gameParty.leader();
         $gameParty.consumeItem(item);
-        sendCast(peer, 'item', item, user);
-        Coop.toast('You use ' + item.name + ' on ' + peer.name + '.');
+        Coop.castItem(peer, item, user);
     };
 
     Coop.castChosen = function (n) {
@@ -177,9 +186,14 @@
     // The receiving end: the effect lands on this player's own character.
     Coop.on('to:cast', function (msg) {
         const from = Coop.peers.get(msg.from);
-        const target = window.$gameParty && $gameParty.leader();
+        const target = window.$gameParty && (($gameParty.members().find((a) => a.actorId() === msg.on)) || $gameParty.leader());
         const obj = msg.kind === 'skill' ? $dataSkills[msg.id] : $dataItems[msg.id];
-        if (!from || !target || !obj || !Coop.world.live || Coop.dead || Coop.battle || !target.isAlive()) return;
+        if (!from || !obj) return;
+        if (!target || !Coop.world.live || Coop.dead || Coop.battle || !target.isAlive()) {
+            // Their fight or death beat the item here: it goes back to the one who used it.
+            if (msg.kind === 'item') Coop.sendTo(msg.from, 'give', { kind: kindOf(obj), id: obj.id, returned: true });
+            return;
+        }
         // The caster stands in for a moment under their own id, as they are on their own machine.
         const id = Number(msg.caster);
         const mine = $gameParty._actors.indexOf(id) >= 0;

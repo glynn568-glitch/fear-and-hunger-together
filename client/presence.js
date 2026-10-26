@@ -78,6 +78,7 @@
             ini: STARTED_AS.filter((id) => $gameSwitches.value(id)),
             ps: $gameParty.size(),
             br: Coop.battle ? (Coop.battle.role === 'guest' ? 'g' : 'o') : '',
+            oe: Coop.battle && Coop.battle.scenery ? 1 : 0, // object troop (iron bars, a door): nothing to fight
             bot: Coop.isBot ? 1 : 0,
             act: Coop.isBot && Coop.botActivity ? String(Coop.botActivity()).slice(0, 40) : undefined,
             fl: followersNow() || 0, // 0, not left out: a field left out keeps its old value on the other side

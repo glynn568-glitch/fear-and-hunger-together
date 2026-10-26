@@ -87,6 +87,34 @@ async function press(page, code) {
         await b.evaluate(() => SceneManager.goto(Scene_Gameover));
         await waitFor(b, () => SceneManager._scene instanceof Scene_CoopDead, 8000, 'B dead again');
         await sleep(500);
+        // Two soul stones call them back in the circle's place, even at a spent circle; one is not
+        // enough, and on Hard there is no such undo.
+        await waitFor(a, (id) => Coop.peers.get(id).st === 'dead', 5000, 'A knows B is dead again', idB);
+        await a.evaluate((c) => { $gameMap._interpreter.clear(); $gameMessage.clear(); $gameParty.gainItem($dataItems[115], 2); $gameMap.event(c.id).start(); }, circle);
+        await waitFor(a, () => SceneManager._scene._messageWindow._choiceWindow.active, 8000, 'the spent circle offers a call with the soul stone');
+        const stoneOffer = await a.evaluate(() => $gameMessage.allText());
+        await sleep(1500);
+        await press(a, 'ArrowUp');
+        await press(a, 'ArrowUp');
+        await press(a, 'KeyZ');
+        await waitFor(b, () => !Coop.dead && SceneManager._scene instanceof Scene_Map, 15000, 'B back by the soul stone');
+        await sleep(600);
+        const stone = await a.evaluate(() => ({ stones: $gameParty.numItems($dataItems[115]), spent: $gameSwitches.value(409) }));
+        check('two soul stones call B back at a spent circle and are used up in its place', /soul stones/.test(stoneOffer) && stone.stones === 0 && stone.spent, stoneOffer + ' ' + JSON.stringify(stone));
+        await b.evaluate(() => SceneManager.goto(Scene_Gameover));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_CoopDead, 8000, 'B dead a third time');
+        await sleep(500);
+        await waitFor(a, (id) => Coop.peers.get(id).st === 'dead', 5000, 'A knows B is dead a third time', idB);
+        const noOffer = await a.evaluate(async (c) => {
+            const tryIt = async () => { $gameMap._interpreter.clear(); $gameMessage.clear(); $gameMap.event(c.id).start(); await new Promise((r) => setTimeout(r, 800)); const t = $gameMessage.allText(); const ev = $gameMap.event(c.id); $gameMap._interpreter.clear(); $gameMessage.clear(); ev._starting = false; ev.unlock(); $gameTemp.clearCommonEvent(); return /call .* back/.test(t); };
+            $gameParty.gainItem($dataItems[115], 1);
+            const one = await tryIt();
+            $gameParty.gainItem($dataItems[115], 1); $gameSwitches.setValue(2190, true);
+            const hard = await tryIt();
+            $gameSwitches.setValue(2190, false);
+            return { one, hard };
+        }, circle);
+        check('one soul stone is not enough, and on Hard stones call nobody back', !noOffer.one && !noOffer.hard, JSON.stringify(noOffer));
 
         // Now A dies too: nobody is left, so the run ends for both.
         await a.evaluate(() => { $gameMap._interpreter.clear(); $gameMessage.clear(); SceneManager.goto(Scene_Gameover); });

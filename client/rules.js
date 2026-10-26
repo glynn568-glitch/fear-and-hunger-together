@@ -68,4 +68,61 @@
         }
         return _updateWaitCount.call(this);
     };
+
+    // Tiles that hurt whoever stands on them, read from the events themselves, so a walk the
+    // game does for someone (a party line, the AI partner) steps around them:
+    //   - stepped on: an event that starts on touch and itself wounds or takes real health
+    //     (the nail boards);
+    //   - watched: a parallel event that compares the player's tile with a character's and hurts
+    //     on a match (the arrow traps watch a plate event; bear and spike traps watch their own).
+    // Enemies walk and are fought; only standing things count.
+    // A nibble (a few health a step, as the swarming floor on level 7) is crossed when the way
+    // leads over it; a wound (a state: bleeding, infection) or a real blow never is.
+    function hurts(list) {
+        return list.some((c) => (c.code === 313 && c.parameters[2] === 0)
+            || (c.code === 311 && c.parameters[2] === 1 && !(c.parameters[3] === 0 && c.parameters[4] <= 5)));
+    }
+    function standing(ev, page) {
+        const name = page.image.characterName || '';
+        return page.moveType === 0 && (!name || /^[!$]/.test(name) || page.image.tileId > 0);
+    }
+    // Floor traps (laid bear traps, spike traps) are parallel events drawn underfoot that hurt
+    // through switches, so they are known by their look. A sprung one has self switch A, or a
+    // page with nothing on it.
+    function armedTrap(ev, page) {
+        const graphic = (page.image && page.image.characterName) || ev.characterName() || '';
+        if (!/beartrap|spike_trap/i.test(graphic)) return false;
+        const cond = page.conditions || {};
+        if (cond.selfSwitchValid && cond.selfSwitchCh === 'A') return false;
+        return (page.list || []).some((c) => c && c.code);
+    }
+    let hazards = null, hazardsAt = 0, hazardsMap = 0;
+    function hazardTiles() {
+        if (hazards && hazardsMap === $gameMap.mapId() && performance.now() - hazardsAt < 300) return hazards;
+        hazards = new Set(); hazardsAt = performance.now(); hazardsMap = $gameMap.mapId();
+        for (const ev of $gameMap.events()) {
+            const page = !ev._erased && ev.page();
+            if (page && armedTrap(ev, page)) { hazards.add(ev.x + ',' + ev.y); continue; }
+            if (!page || !page.list || !hurts(page.list)) continue;
+            if ((page.trigger === 1 || page.trigger === 2) && standing(ev, page)) { hazards.add(ev.x + ',' + ev.y); continue; }
+            if (page.trigger !== 4) continue;
+            for (const c of page.list) {
+                const p = c.parameters;
+                // Control variables <- a character's map X/Y (game data, type 5); -1 is the player.
+                if (c.code !== 122 || p[3] !== 3 || p[4] !== 5 || p[5] < 0) continue;
+                const who = p[5] === 0 ? ev : $gameMap.event(p[5]);
+                if (who) hazards.add(who.x + ',' + who.y);
+            }
+        }
+        return hazards;
+    }
+    // Laying a bear trap moves its event; a page turning changes what an event does.
+    const _locate = Game_Event.prototype.locate;
+    Game_Event.prototype.locate = function () { hazards = null; return _locate.apply(this, arguments); };
+    const _refresh = Game_Event.prototype.refresh;
+    Game_Event.prototype.refresh = function () { hazards = null; return _refresh.apply(this, arguments); };
+    Coop.hazardAt = function (x, y) {
+        return !!(window.$gameMap && $dataMap && hazardTiles().has(x + ',' + y));
+    };
+    if (!Coop.trapAt) Coop.trapAt = Coop.hazardAt;
 })();

@@ -32,6 +32,11 @@
         return Coop.partyMates().some((p) => p.id === peerId);
     };
 
+    // True on the leader when that party member's fight should wait for them.
+    Coop.holdsPartyFight = function (peerId) {
+        return !Coop.partyLeader && Coop.inMyParty(peerId);
+    };
+
     function members(leadId) {
         return Coop.others().filter((p) => p.pl === leadId && inWorld(p)).map((p) => p.id).concat(Coop.partyLeader === leadId ? [Coop.id] : []).sort((a, b) => a - b);
     }
@@ -159,6 +164,22 @@
         return i < 0 ? 1 : i + 1;
     }
 
+    // client/rules.js Coop.hazardAt. A person's own walking is unchanged.
+    function trapTile(x, y) {
+        return typeof Coop.trapAt === 'function' && !!Coop.trapAt(x, y);
+    }
+    function aroundTrap(player, spot) {
+        let best = null, bestD = 99;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const x = spot[0] + dx, y = spot[1] + dy;
+            if (!window.$gameMap || !$gameMap.isValid(x, y) || trapTile(x, y)) continue;
+            if (![2, 4, 6, 8].some((d) => $gameMap.isPassable(x, y, d))) continue;
+            const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+            if (dist < bestD) { bestD = dist; best = [x, y]; }
+        }
+        return best;
+    }
+
     function freeToHop() {
         const scene = SceneManager._scene;
         return scene instanceof Scene_Map && scene.isActive() && !SceneManager.isSceneChanging() && !Coop.battle && !Coop.dead
@@ -190,13 +211,30 @@
         const slot = slotOf();
         const gap = Math.abs(peer.x - player.x) + Math.abs(peer.y - player.y);
         if (gap <= slot) { blocked = 0; return true; }
-        const spot = trail.length > slot ? trail[trail.length - 1 - slot] : [peer.x, peer.y];
+        let spot = trail.length > slot ? trail[trail.length - 1 - slot] : [peer.x, peer.y];
+        // The leader's trail runs through a trap. Step onto a tile beside it.
+        // If the only way is the trap itself, wait (the partner says so, once).
+        if (trapTile(spot[0], spot[1])) {
+            const alt = aroundTrap(player, spot);
+            if (!alt) { if (Coop.onTrap) Coop.onTrap(); return true; }
+            spot = alt;
+        }
         if (gap > FAR_SNAP || blocked > STUCK_SNAP) {
+            if (trapTile(spot[0], spot[1])) { if (Coop.onTrap) Coop.onTrap(); return true; }
             player.locate(spot[0], spot[1]);
             blocked = 0;
             return true;
         }
-        const d = player.findDirectionTo(spot[0], spot[1]);
+        let d = player.findDirectionTo(spot[0], spot[1]);
+        if (d > 0 && trapTile($gameMap.roundXWithDirection(player.x, d), $gameMap.roundYWithDirection(player.y, d))) {
+            const cur = Math.abs(spot[0] - player.x) + Math.abs(spot[1] - player.y);
+            d = [2, 4, 6, 8].find((dir) => {
+                if (!player.canPass(player.x, player.y, dir)) return false;
+                const nx = $gameMap.roundXWithDirection(player.x, dir), ny = $gameMap.roundYWithDirection(player.y, dir);
+                return !trapTile(nx, ny) && Math.abs(spot[0] - nx) + Math.abs(spot[1] - ny) < cur;
+            }) || 0;
+            if (!d && Coop.onTrap) Coop.onTrap();
+        }
         if (d > 0) player.executeMove(d);
         if (d <= 0 || !player.isMovementSucceeded()) blocked++; else blocked = 0;
         return true;
@@ -260,9 +298,11 @@
         for (const p of Coop.partyMates()) Coop.sendTo(p.id, 'pactors?', {});
     };
 
-    // Window_MenuActor (picking who an item or skill lands on) is a kind of
-    // Window_MenuStatus; it never lists party mates.
-    function lineup(win) { return win.constructor === Window_MenuStatus; }
+    // The menu lineup lists party mates. The item menu's "who?" list does too,
+    // so food, herbs, cloth and vials can be used on them. Skills, and a window
+    // built on its own, stay this player's own party.
+    function itemAim(win) { return win.constructor === Window_MenuActor && SceneManager._scene instanceof Scene_Item; }
+    function lineup(win) { return win.constructor === Window_MenuStatus || itemAim(win); }
     function ghostAt(win, index) {
         if (!lineup(win) || index < $gameParty.size()) return null;
         return ghosts()[index - $gameParty.size()] || null;
@@ -310,8 +350,52 @@
 
     const _isCurrentItemEnabled = Window_MenuStatus.prototype.isCurrentItemEnabled;
     Window_MenuStatus.prototype.isCurrentItemEnabled = function () {
-        if (ghostAt(this, this.index())) return !this._formationMode && personalSymbol() === 'equip';
+        const ghost = ghostAt(this, this.index());
+        if (ghost) {
+            if (itemAim(this)) {
+                const scene = SceneManager._scene;
+                const item = scene.item && scene.item();
+                const user = scene.user && scene.user();
+                return !!(item && user && user.canUse(item));
+            }
+            return !this._formationMode && personalSymbol() === 'equip';
+        }
         return _isCurrentItemEnabled.call(this);
+    };
+
+    function peerOf(actor) {
+        for (const [id, list] of mates) if (list.indexOf(actor) >= 0) return id;
+        return 0;
+    }
+    // Item -> a party mate. One use leaves this bag; the effect is worked out on their machine.
+    function feedMate(scene, ghost) {
+        const item = scene.item();
+        const user = scene.user();
+        const peerId = peerOf(ghost), peer = Coop.peers.get(peerId);
+        // Only where their machine takes it (not in a fight, not dead), and on someone it can help.
+        const action = user && item ? new Game_Action(user) : null;
+        if (action) action.setItemObject(item);
+        const takes = peer && ['map', 'event', 'menu'].includes(peer.st) && ghost.isAlive() && action && action.testApply(ghost);
+        if (!takes || !user.canUse(item) || !Coop.castItem) { SoundManager.playBuzzer(); return; }
+        user.useItem(item);
+        Coop.castItem(peerId, item, user, ghost.actorId());
+        scene.hideSubWindow(scene._actorWindow);
+        if (scene._itemWindow) scene._itemWindow.redrawCurrentItem();
+        scene.activateItemWindow();
+    }
+    const _onActorOk = Scene_ItemBase.prototype.onActorOk;
+    Scene_ItemBase.prototype.onActorOk = function () {
+        if (this instanceof Scene_Item && this._actorWindow) {
+            const ghost = ghostAt(this._actorWindow, this._actorWindow.index());
+            if (ghost) return feedMate(this, ghost);
+        }
+        _onActorOk.call(this);
+    };
+    // The engine's OK would aim the item at members()[index], which is nobody.
+    const _actorProcessOk = Window_MenuActor.prototype.processOk;
+    Window_MenuActor.prototype.processOk = function () {
+        if (itemAim(this) && ghostAt(this, this.index())) return Window_Selectable.prototype.processOk.call(this);
+        _actorProcessOk.call(this);
     };
 
     let viewing = null; // the party mate whose gear is being looked at
@@ -339,9 +423,34 @@
         viewing = null;
     };
     // Looking only: Equip, Optimize and Clear are all shut. Esc goes back.
+    // Grey is isCommandEnabled. OK reads isCurrentItemEnabled, which still
+    // says yes, and changeEquip then trades the viewer's bag onto a copy.
+    function looking() { return !!(viewing && SceneManager._scene instanceof Scene_Equip); }
     const _isCommandEnabled = Window_EquipCommand.prototype.isCommandEnabled;
     Window_EquipCommand.prototype.isCommandEnabled = function (index) {
-        if (viewing && SceneManager._scene instanceof Scene_Equip) return false;
+        if (looking()) return false;
         return _isCommandEnabled.call(this, index);
+    };
+    const _cmdOk = Window_EquipCommand.prototype.isCurrentItemEnabled;
+    Window_EquipCommand.prototype.isCurrentItemEnabled = function () {
+        if (looking()) return false;
+        return _cmdOk.call(this);
+    };
+    const _slotOk = Window_EquipSlot.prototype.isCurrentItemEnabled;
+    Window_EquipSlot.prototype.isCurrentItemEnabled = function () {
+        if (looking()) return false;
+        return _slotOk.call(this);
+    };
+    const _itemOk = Window_EquipItem.prototype.isCurrentItemEnabled;
+    Window_EquipItem.prototype.isCurrentItemEnabled = function () {
+        if (looking()) return false;
+        return _itemOk.call(this);
+    };
+    // Optimize, Clear and a chosen item all go through changeEquip. The copy
+    // is not this player's actor; trading would spend their bag on nobody.
+    const _changeEquip = Game_Actor.prototype.changeEquip;
+    Game_Actor.prototype.changeEquip = function (slotId, item) {
+        if (this === viewing) return;
+        _changeEquip.call(this, slotId, item);
     };
 })();

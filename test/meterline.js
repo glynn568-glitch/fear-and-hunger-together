@@ -30,6 +30,11 @@ const { startServer, OUT } = require('./lib');
         const logged = (out.match(/meter Bo: .*/) || [''])[0];
         check('the host\'s log has the player\'s numbers', /steps\/s/.test(logged) && /line \d+ ms/.test(logged), logged);
         check('...with what each step and drawing cost, the map and the memory in use', /step [\d.]+ ms \(worst \d+\)/.test(logged) && /draw worst \d+ ms/.test(logged) && /heap \d+ MB/.test(logged), logged);
+        // Watching a second picture restarts the viewer's frame count (10/24: "at -639 fps").
+        await b.evaluate(() => { Coop.meter._frames = 5000; Coop.viewer.active = true; Coop.viewer.frames = 10; Coop.meter.last = null; });
+        await waitFor(b, () => Coop.meter.last, 8000, 'next meter window');
+        const fps = await b.evaluate(() => { Coop.viewer.active = false; return Coop.meter.last.watchFps; });
+        check('a picture watched after another is counted from its start, never below 0 fps', fps >= 0, fps + ' fps');
         // tools/stats.js still hears every player's meter through the room.
         const url = 'ws://localhost:8734/coop/ws' + require('../tools/version').socketQuery();
         const heard = await new Promise((done) => execFile(process.execPath, [path.join(__dirname, '..', 'tools', 'stats.js'), '7', url], (e, stdout) => done(String(stdout || ''))));

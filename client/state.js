@@ -283,7 +283,17 @@
     // The run someone else is playing right now, while this player is still at the title.
     World.on = null;
     Coop.on('online', function () { World.on = null; });
-    Coop.on('nameok', function (msg) { World.on = msg.run || null; });
+    if (typeof Coop.decides !== 'boolean') Coop.decides = false; // set from nameok, which can beat this file
+    Coop.on('nameok', function (msg) {
+        World.on = msg.run || null;
+        Coop.decides = !!msg.decides;
+        // Their saved Balance changes is the run's, from here on. A joiner's tick is not.
+        if (Coop.decides && window.ConfigManager && Coop.setBalance) {
+            const on = ConfigManager.coopBalance !== false;
+            Coop.setBalance(on);
+            Coop.send({ t: 'balance', on: on });
+        }
+    });
     Coop.on('run', function (msg) { World.on = msg.run || null; });
 
     World.enter = function () {
@@ -301,6 +311,7 @@
             ini: STARTED_AS.filter((id) => $gameSwitches.value(id)),
             have: World._how === 'load' ? Object.keys(World.slotsOf(World.runId)).map(Number) : [],
             dead: !!Coop.deadFromSave,
+            balance: window.ConfigManager ? ConfigManager.coopBalance !== false : true,
         });
         if (!Coop.connected) World._entering = false; // offline: play alone, sync on reconnect
     };
@@ -388,7 +399,20 @@
         }
     });
 
+    // The room's word on Balance changes, except on the host's own machine: a restarted server
+    // forgets, and says "on" until told again. The host's saved choice stands and is sent back.
+    function roomBalance(on) {
+        if (typeof on !== 'boolean' || !Coop.setBalance) return;
+        if (Coop.decides && window.ConfigManager) {
+            const mine = ConfigManager.coopBalance !== false;
+            Coop.setBalance(mine);
+            if (mine !== on) Coop.send({ t: 'balance', on: mine });
+        } else Coop.setBalance(on);
+    }
+    Coop.on('balance', function (msg) { roomBalance(msg.on); });
+
     Coop.on('world', function (msg) {
+        roomBalance(msg.balance);
         World._entering = false;
         World.otherRun = false;
         if (!window.$gameSwitches) return;
@@ -429,7 +453,8 @@
         Coop.emit('entered', msg);
     });
 
-    Coop.on('online', function () {
+    Coop.on('online', function (msg) {
+        if (msg) roomBalance(msg.balance);
         // Reconnected mid-game: resync from the server's copy.
         if (window.$gameSwitches && $gameSwitches.value(START) && !World.otherRun) {
             World.live = false;

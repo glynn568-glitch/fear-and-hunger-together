@@ -12,13 +12,20 @@ module.exports = function installBot(options) {
         priest: { actor: 4, select: 243, initial: 663, soul: 1184 },
         mercenary: { actor: 1, select: 246, initial: 661, soul: 1182 },
     };
+    // The names the intro writes onto the actors (the database still says Knight, Mercenary...);
+    // a partner skips that event, and this is what players call them.
+    const STORY = { knight: "D'arce", outlander: 'Ragnvaldr', priest: 'Enki', mercenary: 'Cahara' };
+    const CALLED = STORY;
     const THINK_LIMIT = 20000; // ms a fight turn waits for the model before falling back
     const QUIET = 45000; // ms between unprompted remarks
     const NOTE_GAP = 9000; // ms between batches of things that happened
+    const SIGHT = 8; // tiles: what counts as around it, and how far a goal may pull it from the leader
+    const GOAL_LEASH = 8;
 
     const BOT = window.BOT = {
         said: '', wanted: options.character || '', joinedAt: 0, lastHop: 0, stuck: 0, lastPress: 0, character: '',
-        mode: 'follow', errand: null, notes: [], lastNoteAt: 0, lastSpokeAt: 0, thinking: 0, picks: [], lines: [],
+        mode: 'follow', errand: null, goal: null, journal: [], beenMaps: new Set(), notes: [], aside: [], lastNoteAt: 0, lastSpokeAt: 0, thinking: 0, picks: [], lines: [],
+        with: 0, waitFor: null, fightOrder: null, orders: {}, orderFrom: 0, addressed: null, spokeTo: 0, wasDead: false, deadSilent: false, lastBrief: null,
     };
     Coop.isBot = true;
     // Shown beside its name in everyone's corner list.
@@ -41,7 +48,10 @@ module.exports = function installBot(options) {
     //--- talking to the model ---------------------------------------------------
 
     function think(kind, text, limit) {
+        if (BOT.deadSilent || Coop.dead) return Promise.resolve(null);
         if (typeof window.fhBrain !== 'function') return Promise.resolve(null);
+        // Overheard lines never start a call. They ride on the next real one.
+        if (BOT.aside.length) text = 'Overheard:\n' + BOT.aside.splice(0).join('\n') + '\n' + text;
         BOT.thinking++;
         const t0 = Date.now();
         const ask = window.fhBrain(kind, text).then((r) => { if (r && kind !== 'battle' && BOT.talked) BOT.talked(Date.now() - t0); return r || null; }, () => null);
@@ -51,7 +61,7 @@ module.exports = function installBot(options) {
 
     function speak(text, prompted) {
         text = String(text || '').trim();
-        if (!text) return;
+        if (!text || BOT.deadSilent) return;
         // Off on its own, what it finds is worth hearing sooner.
         const gap = BOT.mode === 'explore' ? 15000 : QUIET;
         if (!prompted && (BOT.quiet || Date.now() - BOT.lastSpokeAt < gap)) return;
@@ -126,18 +136,26 @@ module.exports = function installBot(options) {
     }
 
     // Eats when hungry: the smallest thing that does the job.
+    // Food in the bag, or a crate a few tiles off, is handled without a word.
+    // Ask only once there is none and nothing nearby.
     let lastHunger = '';
+    let toldHunger = false;
     function keepFed() {
         const me = $gameParty.leader();
         if (!me || me.isDead()) return;
         const h = hunger(me);
         if (h !== lastHunger) {
-            if (lastHunger && HUNGER.indexOf(h) > HUNGER.indexOf(lastHunger) && HUNGER.indexOf(h) >= 2) {
-                const food = $gameParty.items().some(isFood);
-                note('You are ' + h + '.' + (food ? '' : ' You have no food. Ask your partner for some, plainly.'));
+            if (lastHunger && HUNGER.indexOf(h) > HUNGER.indexOf(lastHunger)) toldHunger = false;
+            lastHunger = h;
+        }
+        if (lastHunger && HUNGER.indexOf(h) >= 2) {
+            const food = $gameParty.items().some(isFood);
+            const near = !food && foodNearby();
+            if (!food && !near && !toldHunger) {
+                toldHunger = true;
+                note('You are ' + h + '. You have no food. Ask your partner for some, plainly.');
                 BOT.lastNoteAt = 0;
             }
-            lastHunger = h;
         }
         if (me.currentExp() >= 100 || $gameMap.isEventRunning() || $gameMessage.isBusy()) return;
         const room = 157 - me.currentExp();
@@ -148,7 +166,7 @@ module.exports = function installBot(options) {
         const clean = edible.filter((f) => !spoils(f));
         const foods = (clean.length || !desperate ? clean : edible).sort((a, b) => filling(a) - filling(b));
         const pick = foods.find((f) => filling(f) >= Math.min(room, 30)) || foods[foods.length - 1];
-        if (pick && useOnSelf(pick)) note('You ate ' + pick.name + '.');
+        if (pick && useOnSelf(pick)) journal('ate ' + pick.name);
     }
 
     // Tends its own wounds the way a careful player would: binds bleeding,
@@ -172,12 +190,12 @@ module.exports = function installBot(options) {
         for (const c of CURES) {
             if (!c.states.some((s) => me.isStateAffected(s))) { toldNeed.delete(c.what); continue; }
             const id = c.items.find(has);
-            if (id) { if (used($dataItems[id])) note('You were ' + c.what + ' and used ' + $dataItems[id].name + '.'); return; }
+            if (id) { if (used($dataItems[id])) { journal('used ' + $dataItems[id].name + ' on ' + c.what); return; } }
             if (!toldNeed.has(c.what)) { toldNeed.add(c.what); note('You are ' + c.what + ' and have nothing for it. Ask your partner for ' + c.ask + ', plainly.'); BOT.lastNoteAt = 0; }
         }
         if (me.hp > me.mhp * 0.25) { toldNeed.delete('hurt'); return; }
         const heals = HEALS.filter(has);
-        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) note('Near death, you used ' + it.name + '.'); return; }
+        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) { journal('used ' + it.name); return; } }
         if (!toldNeed.has('hurt')) { toldNeed.add('hurt'); note('You are close to death (' + me.hp + '/' + me.mhp + ') and have nothing to heal with. Tell your partner.'); BOT.lastNoteAt = 0; }
     }
 
@@ -250,18 +268,278 @@ module.exports = function installBot(options) {
         return out.sort((a, b) => a.d - b.d).slice(0, 4).map((o) => o.text);
     }
 
+    // What this body can actually do. Said so it stops agreeing to the rest.
+    function limitsText() {
+        return 'You can follow, wait, join a party, explore, give, and use an item on yourself. In a fight you can guard, attack a part, use a skill, or use an item. You cannot climb, jump, open a menu, equip, or stay still in a fight.';
+    }
+
+    function inFight() {
+        const scene = SceneManager._scene;
+        if (scene && (scene instanceof Scene_Battle || scene instanceof Scene_CoopSpectate)) return true;
+        if (Coop.battle && Coop.battle.role) return true;
+        const who = leader();
+        return !!(who && who.st === 'battle');
+    }
+
+    // A fight order is only one this body is in. The leader fighting nearby is not that.
+    function ordersInFight() {
+        const scene = SceneManager._scene;
+        if (scene instanceof Scene_Battle || scene instanceof Scene_CoopSpectate) return true;
+        return !!(Coop.battle && Coop.battle.role);
+    }
+
+    // A rolling memory of what this run already did, so the next reply does not do it again.
+    function journal(line) {
+        const text = String(line || '').replace(/\s+/g, ' ').trim();
+        if (!text) return;
+        BOT.journal.push(text.slice(0, 140));
+        if (BOT.journal.length > 10) BOT.journal.splice(0, BOT.journal.length - 10);
+    }
+
+    function thingName(ev, fallback) {
+        const raw = String(ev && ev.event ? ev.event().name : '');
+        const name = /^ev\d*$/i.test(raw) ? '' : raw.replace(/[_\d]+$/g, '').replace(/_/g, ' ').trim().toLowerCase();
+        return name || fallback;
+    }
+
+    function isTrapGraphic(ev) {
+        if (!ev || ev._erased) return false;
+        const page = ev.page && ev.page();
+        const graphic = (page && page.image && page.image.characterName) || (ev.characterName && ev.characterName()) || '';
+        return /beartrap|spike_trap/i.test(graphic);
+    }
+
+    // A bed offers rest. The blanket on some of them is loot; the bed itself is not searched on a whim.
+    function isBed(ev) {
+        const page = ev && ev.page && ev.page();
+        if (!page || ev._erased || !ev.isTriggerIn([0])) return false;
+        return page.list.some((c) => (c.code === 102 && (c.parameters[0] || []).some((s) => /rest/i.test(String(s)))) || (c.code === 401 && /\bbed\b/i.test(String(c.parameters[0] || ''))));
+    }
+
+    // A command that adds to the bag. Gold takes its operation first, items and gear second; a
+    // spent item (the Tinderbox, the Explosive Vial: a Yes/No that defaults to Yes) is not loot.
+    function gives(c) {
+        return (c.code === 125 && c.parameters[0] === 0) || ((c.code === 126 || c.code === 127 || c.code === 128) && c.parameters[1] === 0);
+    }
+    function pageGives(page) {
+        return !!page && page.list.some(gives);
+    }
+
+    // The leader is in a bed's menu or its event, standing on that bed.
+    function leaderResting() {
+        const who = leader();
+        if (!who || !window.$gameMap || who.m !== $gameMap.mapId()) return false;
+        if (who.st !== 'event' && who.st !== 'menu') return false;
+        return $gameMap.events().some((ev) => isBed(ev) && Math.abs(ev.x - who.x) + Math.abs(ev.y - who.y) <= 1);
+    }
+
+    function canReach(x, y, eventId, adjacent) {
+        if (!window.$gamePlayer) return false;
+        const d = Math.abs(x - $gamePlayer.x) + Math.abs(y - $gamePlayer.y);
+        if (d > SIGHT) return false;
+        if (d === 0) return true;
+        if (!window.$dataMap || !Nav.path) return false;
+        const steps = Nav.path(x, y, eventId || 0, !!adjacent);
+        return !!steps && steps.length <= SIGHT;
+    }
+
+    // What is in sight on this map: nearest first, a handful. The nearest unsearched
+    // container and the nearest circle stay on the list, so a row of doors cannot hide them.
+    function sightList() {
+        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];
+        if ($gameMap.mapId()) BOT.beenMaps.add($gameMap.mapId());
+        const pool = [];
+        const seen = new Set();
+        const add = (row) => { if (!seen.has(row.id)) { seen.add(row.id); pool.push(row); } };
+        for (const ev of lootHere()) {
+            if (isTrapGraphic(ev) || isBed(ev)) continue;
+            const d = Math.abs(ev.x - $gamePlayer.x) + Math.abs(ev.y - $gamePlayer.y);
+            if (d > SIGHT || !canReach(ev.x, ev.y, ev.eventId(), ev.isNormalPriority())) continue;
+            const label = thingName(ev, 'body');
+            add({ id: 'b' + ev.eventId(), kind: 'loot', ev: ev.eventId(), x: ev.x, y: ev.y, d, label, text: 'b' + ev.eventId() + ' ' + label });
+        }
+        for (const ev of $gameMap.events()) {
+            if (!ev || ev._erased || isTrapGraphic(ev)) continue;
+            if (Coop.world && Coop.world.othersScene(ev)) continue;
+            const sw = Coop.circleSwitchOf && Coop.circleSwitchOf(ev.event());
+            if (!sw) continue;
+            const d = Math.abs(ev.x - $gamePlayer.x) + Math.abs(ev.y - $gamePlayer.y);
+            if (d > SIGHT || !canReach(ev.x, ev.y, ev.eventId(), ev.isNormalPriority())) continue;
+            const spent = !!$gameSwitches.value(sw);
+            add({ id: 'c' + ev.eventId(), kind: 'circle', ev: ev.eventId(), x: ev.x, y: ev.y, d, label: 'ritual circle', text: 'c' + ev.eventId() + ' ritual circle ' + (spent ? 'spent' : 'unspent') });
+        }
+        for (const ev of $gameMap.events()) {
+            if (!ev || ev._erased || isTrapGraphic(ev) || !isBed(ev)) continue;
+            if (Coop.world && Coop.world.othersScene(ev)) continue;
+            const d = Math.abs(ev.x - $gamePlayer.x) + Math.abs(ev.y - $gamePlayer.y);
+            if (d > SIGHT || !canReach(ev.x, ev.y, ev.eventId(), ev.isNormalPriority())) continue;
+            add({ id: 'r' + ev.eventId(), kind: 'bed', ev: ev.eventId(), x: ev.x, y: ev.y, d, label: 'bed', text: 'r' + ev.eventId() + ' bed' });
+        }
+        for (const ex of Nav.exits($dataMap, $gameMap.mapId())) {
+            if (BOT.beenMaps.has(ex.to) || trapAt(ex.x, ex.y)) continue;
+            const ev = $gameMap.event(ex.ev);
+            if (!ev || ev._erased || isTrapGraphic(ev)) continue;
+            if (Coop.world && Coop.world.othersScene(ev)) continue;
+            const d = Math.abs(ex.x - $gamePlayer.x) + Math.abs(ex.y - $gamePlayer.y);
+            if (d > SIGHT || !canReach(ex.x, ex.y, ex.ev, ev.isNormalPriority())) continue;
+            add({ id: 'd' + ex.ev, kind: 'door', ev: ex.ev, x: ex.x, y: ex.y, d, to: ex.to, label: 'door', text: 'd' + ex.ev + ' door' });
+        }
+        for (const ev of $gameMap.events()) {
+            if (!ev || ev._erased || isTrapGraphic(ev) || !ev.characterName() || ev.isTransparent() || !ev.isTriggerIn([0])) continue;
+            const page = ev.page();
+            if (!page || page.list.some((c) => c.code === 301)) continue;
+            if (!page.list.some((c) => c.code && c.code !== 108 && c.code !== 408)) continue;
+            if (isBed(ev) || pageGives(page)) continue;
+            if (Coop.circleSwitchOf && Coop.circleSwitchOf(ev.event())) continue;
+            if (Coop.world && Coop.world.othersScene(ev)) continue;
+            const d = Math.abs(ev.x - $gamePlayer.x) + Math.abs(ev.y - $gamePlayer.y);
+            if (d > SIGHT || !canReach(ev.x, ev.y, ev.eventId(), ev.isNormalPriority())) continue;
+            const label = thingName(ev, 'someone');
+            add({ id: 'n' + ev.eventId(), kind: 'npc', ev: ev.eventId(), x: ev.x, y: ev.y, d, label, text: 'n' + ev.eventId() + ' ' + label });
+        }
+        pool.sort((a, b) => a.d - b.d || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        const loot = pool.find((s) => s.kind === 'loot');
+        const circle = pool.find((s) => s.kind === 'circle');
+        const rest = pool.filter((s) => s !== loot && s !== circle);
+        return [loot, circle].filter(Boolean).concat(rest).slice(0, 8).sort((a, b) => a.d - b.d || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+
+    // While following, a goal may not drag it off. Exploring has no leash.
+    function tooFarFromLeader(x, y) {
+        if (BOT.mode === 'explore' || BOT.mode === 'wait') return false;
+        if (BOT.mode !== 'follow' && !Coop.partyLeader) return false;
+        const who = leader();
+        if (!who || !who.m || !window.$gameMap || who.m !== $gameMap.mapId()) return true;
+        return Math.abs(x - who.x) + Math.abs(y - who.y) > GOAL_LEASH;
+    }
+
+    // A goal id from the latest brief. A circle is never taken up: it is only named.
+    function acceptGoal(id) {
+        if (!id || inFight() || BOT.deadSilent || Coop.dead || BOT.mode === 'wait' || BOT.errand) return;
+        const hit = sightList().find((s) => s.id === String(id));
+        if (!hit || hit.kind === 'circle') return;
+        if (hit.kind === 'door' && BOT.mode !== 'explore') {
+            const who = leader();
+            if (!who || hit.to !== who.m) return;
+        }
+        if (hit.kind === 'bed' && !leaderResting()) return;
+        if (tooFarFromLeader(hit.x, hit.y)) return;
+        BOT.forage = null;
+        BOT.goal = { id: hit.id, kind: hit.kind, ev: hit.ev, map: $gameMap.mapId(), x: hit.x, y: hit.y, to: hit.to || 0, label: hit.label, tries: 0, steps: null };
+    }
+
+    function peerById(id) {
+        if (id == null || id === '' || !Coop.peers) return null;
+        return Coop.peers.get(id) || Coop.peers.get(Number(id)) || Coop.peers.get(String(id)) || null;
+    }
+    // A player who has left is not still giving orders.
+    function pruneOrders() {
+        if (!BOT.orders) BOT.orders = {};
+        for (const id of Object.keys(BOT.orders)) {
+            const p = peerById(id);
+            if (!p || p.bot || !p.st || p.st === 'title') delete BOT.orders[id];
+        }
+    }
+    Coop.on('leave', function (peer) {
+        if (!peer || peer.id == null || !BOT.orders) return;
+        delete BOT.orders[String(peer.id)];
+        if (String(BOT.orderFrom) === String(peer.id)) BOT.orderFrom = 0;
+    });
+    function ago(at) {
+        const s = Math.max(0, Math.round((Date.now() - (at || Date.now())) / 1000));
+        if (s < 60) return s + ' s ago';
+        const m = Math.round(s / 60);
+        if (m < 60) return m + ' min ago';
+        return Math.round(m / 60) + ' h ago';
+    }
+    // Who this body is actually with, said so a second order can be weighed against it.
+    function commitment() {
+        if (BOT.mode === 'wait') {
+            const n = BOT.waitFor && peerById(BOT.waitFor.id);
+            return n ? 'You wait where ' + n.name + ' told you.' : 'You are waiting.';
+        }
+        if (Coop.partyLeader) {
+            const p = peerById(Coop.partyLeader);
+            if (p) return 'You are walking in ' + p.name + "'s party.";
+        }
+        if (BOT.mode === 'explore') return 'You are exploring on your own.';
+        if (BOT.mode === 'follow') {
+            const who = leader();
+            return who ? 'You are following ' + who.name + '.' : '';
+        }
+        return '';
+    }
+    function ordersLine() {
+        pruneOrders();
+        const list = [];
+        for (const id of Object.keys(BOT.orders)) {
+            const o = BOT.orders[id];
+            if (!o) continue;
+            const p = peerById(id);
+            list.push({ at: o.at || 0, name: (p && p.name) || o.name || 'Someone', text: o.text || o.kind || 'something' });
+        }
+        if (!list.length) return '';
+        list.sort((a, b) => a.at - b.at);
+        const now = commitment();
+        return 'Orders: ' + list.map((o) => o.name + ' (' + ago(o.at) + '): ' + o.text).join('. ') + '.' + (now ? ' ' + now : '');
+    }
+    const STANCE = { wait: 1, follow: 1, party: 1, explore: 1 };
+    function orderWords(raw, kind) {
+        const t = String(raw || '').replace(/\s+/g, ' ').trim().replace(/^(?:hey |ok |yo |oi )?(?:[A-Za-z][\w']{0,16},\s*)+/i, '').trim();
+        return (t || kind || '').slice(0, 80);
+    }
+    // Newest stance wins. Overriding someone else's standing order is said once, naming both.
+    function noteOrder(peer, kind, raw) {
+        if (!peer || peer.bot || !kind) return '';
+        if (!BOT.orders) BOT.orders = {};
+        const prev = BOT.orderFrom;
+        const old = prev && String(prev) !== String(peer.id) ? BOT.orders[String(prev)] : null;
+        // A fight, quiet or use order does not replace the stance this player left on record.
+        const mine = BOT.orders[String(peer.id)];
+        if (STANCE[kind] || !mine || !STANCE[mine.kind]) BOT.orders[String(peer.id)] = { name: peer.name, kind: kind, text: orderWords(raw, kind), at: Date.now() };
+        let line = '';
+        if (STANCE[kind] && old && old.name && old.name !== peer.name && STANCE[old.kind]) {
+            const go = kind === 'wait' ? 'Waiting here. ' : kind === 'explore' ? 'Looking around. ' : 'Following ' + peer.name + '. ';
+            line = go + old.name + ", I'm off.";
+        }
+        if (STANCE[kind]) BOT.orderFrom = peer.id;
+        return line;
+    }
+    function addressSay(peer, say) {
+        const text = String(say || '').trim();
+        if (!text || !peer || !peer.name) return text;
+        const people = humans().filter((p) => p.st && p.st !== 'title');
+        if (people.length < 2) return text;
+        if (new RegExp('^' + String(peer.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(text)) return text;
+        const rest = /^[A-Z]/.test(text) && !/^I\b/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+        return peer.name + ', ' + rest;
+    }
     function situation() {
         const me = window.$gameParty && $gameParty.leader();
         const rows = [];
-        if (me && window.$gameMap) rows.push('You: ' + me.name() + ', ' + me.hp + '/' + me.mhp + ' HP, Mind ' + me.mp + '/' + me.mmp + (me.mp < me.mmp * 0.35 ? ' (your mind is going)' : '') + ', ' + hunger(me) + ', in ' + placeName($gameMap.mapId()) + (BOT.mode === 'wait' ? ', waiting where told' : '') + (BOT.errand && BOT.errand.kind === 'circle' ? ', on your way to a ritual circle' : '') + (BOT.mode === 'explore' ? ', exploring on your own' : '') + (Coop.partyLeader && Coop.peers.has(Coop.partyLeader) ? ', walking in ' + Coop.peers.get(Coop.partyLeader).name + "'s party" : '') + (BOT.quiet ? ', keeping quiet' : '') + '.');
-        if (me && window.$gameMap) rows.push('Your condition: ' + (conditionsOf(me).join(', ') || 'nothing wrong') + '. Your bag: ' + bagText() + '.');
+        const dead = Coop.dead || (me && me.isDead());
+        if (dead) rows.push('DEAD. You are dead.');
+        else if (me && window.$gameMap) {
+            const waitName = BOT.mode === 'wait' && BOT.waitFor && peerById(BOT.waitFor.id);
+            const followWho = BOT.mode === 'follow' && !Coop.partyLeader && leader();
+            rows.push('You: ' + me.name() + ', ' + me.hp + '/' + me.mhp + ' HP, Mind ' + me.mp + '/' + me.mmp + (me.mp < me.mmp * 0.35 ? ' (your mind is going)' : '') + ', ' + hunger(me) + ', in ' + placeName($gameMap.mapId()) + (BOT.mode === 'wait' ? (waitName ? ', you wait where ' + waitName.name + ' told you' : ', waiting where told') : '') + (followWho ? ', you follow ' + followWho.name : '') + (BOT.errand && BOT.errand.kind === 'circle' ? ', on your way to a ritual circle' : '') + (BOT.mode === 'explore' ? ', exploring on your own' : '') + (Coop.partyLeader && Coop.peers.has(Coop.partyLeader) ? ', walking in ' + Coop.peers.get(Coop.partyLeader).name + "'s party" : '') + (BOT.quiet ? ', keeping quiet' : '') + '.');
+            rows.push('Your condition: ' + (conditionsOf(me).join(', ') || 'nothing wrong') + '. Your bag: ' + bagText() + '.');
+        }
+        rows.push(limitsText());
         for (const p of humans()) {
             if (!p.st || p.st === 'title') { rows.push(p.name + ' is not in the dungeon.'); continue; }
             const where = window.$gameMap && p.m === $gameMap.mapId() ? (Coop.distanceTo(p) <= 6 ? 'beside you' : 'nearby') : 'in ' + placeName(p.m);
             rows.push(p.name + (p.an ? ' (' + p.an + ')' : '') + ': ' + (p.st === 'dead' ? 'DEAD' : p.hp + '/' + p.mhp + ' HP') + (p.st === 'battle' ? ', IN A FIGHT' : '') + ', ' + where + '.');
         }
+        const told = ordersLine();
+        if (told) rows.push(told);
         const seen = enemiesInSight();
         rows.push(seen.length ? 'Enemies in sight: ' + seen.join(', ') + '.' : 'No enemy in sight.');
+        if (!dead && window.$gameMap && SceneManager._scene instanceof Scene_Map) {
+            const around = sightList();
+            rows.push(around.length ? 'Around you: ' + around.map((s) => s.text).join(', ') + '.' : 'Around you: nothing.');
+            if (BOT.journal.length) rows.push('So far: ' + BOT.journal.join(' | ') + '.');
+        }
         return rows.join(' ');
     }
 
@@ -269,14 +547,23 @@ module.exports = function installBot(options) {
 
     // Every so often, what happened goes to the model, which may remark on it.
     setInterval(function () {
-        if (!BOT.notes.length || Date.now() - BOT.lastNoteAt < NOTE_GAP || !Coop.world.live) return;
+        if (!BOT.notes.length || Date.now() - BOT.lastNoteAt < NOTE_GAP || !Coop.world.live || Coop.dead || BOT.deadSilent || inFight()) return;
         BOT.lastNoteAt = Date.now();
         const text = BOT.notes.splice(0).join('\n') + '\n' + situation() + '\nRemark only if it is worth it.';
         think('note', text).then((r) => {
             // A need is said even soon after another line; only "quiet" holds it.
-            if (!r) { const need = plainNote(text); if (need && !BOT.quiet) speak(need, true); return; }
+            if (!r) {
+                const need = plainNote(text);
+                const meNow = window.$gameParty && $gameParty.leader();
+                const askFood = /out of food/.test(need || '');
+                // Said only once hunger is still bad and nothing edible is in the bag or within reach.
+                const eased = !meNow || HUNGER.indexOf(hunger(meNow)) < 2 || $gameParty.items().some(isFood) || foodNearby();
+                if (need && !BOT.quiet && !(askFood && eased)) speak(need, true);
+                return;
+            }
             if (r.say) speak(r.say, false);
             if (r.use) obey({ use: r.use }, null);
+            else if (r.goal) acceptGoal(r.goal);
         });
     }, 1000);
 
@@ -287,6 +574,11 @@ module.exports = function installBot(options) {
         if (options.lead) return null; // the host follows nobody
         const inWorld = Coop.others().filter((p) => p.st && p.st !== 'title');
         if (options.follow) return inWorld.find((p) => p.name.toLowerCase() === options.follow.toLowerCase()) || null;
+        // follow / party stick to the one who said it, not whoever joined first.
+        if (BOT.with) {
+            const named = inWorld.find((p) => p.id === BOT.with);
+            if (named) return named;
+        }
         const people = inWorld.filter((p) => !p.bot);
         return people.find((p) => p.st !== 'dead') || people[0] || inWorld.find((p) => p.st !== 'dead') || null;
     }
@@ -316,6 +608,8 @@ module.exports = function installBot(options) {
     // Skips the intro: becomes the character, fed as the intro would have
     // left them, and appears beside the leader.
     BOT.join = function () {
+        // Sent home, or already dead: never a fresh character over that body.
+        if (BOT.leaving || Coop.dead) return false;
         const who = leader();
         const name = freeCharacter();
         if (!who || !who.m || !name) return false;
@@ -326,6 +620,7 @@ module.exports = function installBot(options) {
         $gameParty._actors = [c.actor];
         const actor = $gameActors.actor(c.actor);
         actor.changeExp(actor.currentExp() + 99, false);
+        if (options.story && STORY[name]) actor.setName(STORY[name]);
         // What the intro would have handed over.
         $gameParty.gainItem($dataItems[5], 1); // Torch
         $gamePlayer.refresh();
@@ -400,6 +695,7 @@ module.exports = function installBot(options) {
         const name = characterOf($gameParty._actors[0]);
         if (!name) return;
         BOT.character = name;
+        if (options.story && STORY[name]) { const me = $gameParty.leader(); if (me) me.setName(STORY[name]); }
         if (window.fhBrainCharacter) window.fhBrainCharacter(name);
     }
 
@@ -408,6 +704,8 @@ module.exports = function installBot(options) {
     //   the run goes on another day   Continue, on its own save from that run
     // Only with neither does it turn up as somebody new.
     Coop.on('parked', function (msg) { BOT.parked = !!msg.has; BOT.parkKnown = true; });
+    // The host hands its park over once, so a slow line (a big save at 4 Mbit takes seconds) is waited for.
+    Coop.on('parkdata', function () { BOT.awaitPark = 0; });
     // This is put in once the title is up, so the title's own question may already have been answered.
     if (Coop.connected && Coop.name) Coop.send({ t: 'park?' });
     BOT.comeBack = function () {
@@ -415,6 +713,7 @@ module.exports = function installBot(options) {
             BOT.parked = false;
             BOT.joinedAt = Date.now();
             BOT.cameBack = 'park';
+            BOT.awaitPark = Date.now();
             Coop.send({ t: 'park!' });
             log('carrying on from where I dropped out');
             return true;
@@ -455,6 +754,13 @@ module.exports = function installBot(options) {
         for (const k of brief.skills) if (k.usable) opts.push('skill ' + k.id + ' ' + k.name + (k.about ? ': ' + k.about : ''));
         for (const it of brief.items) opts.push('item ' + it.id + ' ' + it.name + ' x' + it.count + (it.about ? ': ' + it.about : ''));
         rows.push('Options: ' + opts.join(' | '));
+        if (chantDue(brief)) rows.push('Everyone must guard this turn or the chant can kill the whole party.');
+        if (BOT.fightOrder) {
+            const o = BOT.fightOrder;
+            const what = o.kind === 'guard' ? 'guard' : o.kind === 'item' ? 'use ' + (o.what || 'that') : 'the ' + (o.what || 'part');
+            rows.push((o.by || 'Your partner') + ' told you: ' + what + '. Do that unless it would get you killed.');
+        }
+        rows.push(limitsText());
         rows.push('Target numbers: enemy number for attacks, your-side number for help. Reply {"do","id","target","say"}.');
         return rows.join('\n');
     }
@@ -464,13 +770,57 @@ module.exports = function installBot(options) {
     // take the head only when it is easy to hit (a guard's is, once both legs
     // are off), else the parts that strike, then the body. On a guard that is
     // the cleaver arm, the stinger, then the torso, as players fight it.
+    // "Priest chants something..." once this fight: the next chant is the one that kills
+    // unless everyone is guarding. Twice means that one already happened.
+    function chantDue(brief) {
+        const lines = (brief.log && brief.log.length ? brief.log : brief.round) || [];
+        return lines.filter((l) => /Priest chants something\.\.\./.test(String(l))).length === 1;
+    }
+    function sayChant() {
+        if (BOT.chantSaid) return;
+        BOT.chantSaid = true;
+        speak('Guard now, the chant!', true);
+    }
+    // A trailing-off line is a wind-up when guard stops what follows. The lantern wave
+    // does not: Lantern burns, and guard leaves that on.
+    const WIND_RE = /takes a step closer|prepares for|readies|raises (his|her|its) arms/i;
+    function windUp(brief) {
+        const round = brief.round || [];
+        if (round.some((l) => WIND_RE.test(l))) return true;
+        if (!brief.tell) return false;
+        if (round.some((l) => /waves his lantern/i.test(l))) return false;
+        return true;
+    }
     function fallbackPick(brief) {
-        // A wind-up (the guard's step closer before its charge): guard this turn.
-        if (brief.tell || brief.round.some((l) => /takes a step closer|prepares for|readies|raises (his|her|its) arms/i.test(l))) return { do: 'guard' };
+        // The chant, then a real wind-up: both override an attack order. A guard order is below.
+        if (chantDue(brief)) { sayChant(); return { do: 'guard' }; }
+        if (windUp(brief)) return { do: 'guard' };
+        const order = BOT.fightOrder;
+        if (order && order.kind === 'guard') return { do: 'guard' };
+        if (order && order.kind === 'attack' && order.what) {
+            const want = String(order.what).toLowerCase();
+            const hit = brief.enemies.filter((e) => e.how !== 'gone').find((e) => e.name.toLowerCase().indexOf(want) >= 0);
+            if (hit) return { do: 'attack', target: hit.i };
+        }
+        // An item or a skill was asked for once. A part or a guard stands until the fight ends.
+        if (order && (order.kind === 'item' || order.kind === 'skill') && order.what) {
+            const want = String(order.what).toLowerCase();
+            const it = order.kind === 'item' && brief.items.find((item) => item.name.toLowerCase().indexOf(want) >= 0);
+            const sk = order.kind === 'skill' && (brief.skills || []).find((k) => k.usable && k.name.toLowerCase().indexOf(want) >= 0);
+            if (it || sk) {
+                BOT.fightOrder = null;
+                return it ? { do: 'item', id: it.id, target: 0 } : { do: 'skill', id: sk.id, target: 0 };
+            }
+        }
         const heal = HEALS.map((id) => brief.items.find((it) => it.id === id)).find(Boolean);
         const dying = brief.allies.filter((a) => a.how !== 'down' && a.hp < a.mhp * 0.25).sort((a, b) => a.hp / a.mhp - b.hp / b.mhp)[0];
         if (heal && dying) return { do: 'item', id: heal.id, target: dying.i };
         const alive = brief.enemies.filter((e) => e.how !== 'gone');
+        // Priests: the torso is the kill. The lantern arm is not worth a swing.
+        if (alive.some((e) => /priest/i.test(e.name))) {
+            const torso = alive.find((e) => /priest/i.test(e.name) && /\[torso\]/i.test(e.name));
+            if (torso) return { do: 'attack', target: torso.i };
+        }
         // Worth a blow: a part that strikes, or one whose loss ends the enemy (head, torso, a
         // body with no parts). Of those, the one that takes fewest blows, a striker on a tie.
         const kills = (e) => e.ends || /head|torso/i.test(e.name) || !/\[/.test(e.name);
@@ -504,7 +854,20 @@ module.exports = function installBot(options) {
         BOT.talkMs = BOT.talkMs.concat([ms]).slice(-2);
         if (BOT.talkMs.length === 2 && BOT.talkMs.every((t) => t < 3000)) BOT.fightMs = [];
     };
+    // One use of an item or a skill, including when the model is the one that picked it.
+    // A part or a guard is left for the rest of the fight.
+    function spendFightOrder(brief, pick) {
+        const order = BOT.fightOrder;
+        if (!order || !pick || order.kind !== pick.do) return;
+        if (order.kind !== 'item' && order.kind !== 'skill') return;
+        const want = String(order.what || '').toLowerCase();
+        const list = pick.do === 'item' ? brief.items || [] : brief.skills || [];
+        const hit = list.find((x) => x.id === pick.id);
+        if (hit && (!want || String(hit.name).toLowerCase().indexOf(want) >= 0)) BOT.fightOrder = null;
+    }
     function decide(brief, err) {
+        BOT.lastBrief = brief;
+        if (chantDue(brief)) sayChant();
         const t0 = Date.now();
         const timed = (p) => p.then((r) => { BOT.fightMs.push(r ? Date.now() - t0 : THINK_LIMIT); if (BOT.fightMs.length > 6) BOT.fightMs.shift(); return r; });
         if (!err && BOT.slowFights()) {
@@ -515,8 +878,10 @@ module.exports = function installBot(options) {
         // A second refusal goes straight to the rules of thumb.
         const asked = err ? Promise.resolve(null) : timed(think('battle', briefText(brief, err), THINK_LIMIT));
         return asked.then(function (r) {
-            const pick = validPick(brief, r) || fallbackPick(brief);
-            BOT.picks.push({ ms: Date.now() - t0, pick, model: !!validPick(brief, r) });
+            const fromModel = validPick(brief, r);
+            const pick = fromModel || fallbackPick(brief);
+            if (fromModel) spendFightOrder(brief, fromModel);
+            BOT.picks.push({ ms: Date.now() - t0, pick, model: !!fromModel });
             // A word in a fight now and then, not every turn.
             if (r && r.say && Date.now() - BOT.lastSpokeAt > 25000) speak(r.say, true);
             return pick;
@@ -588,6 +953,9 @@ module.exports = function installBot(options) {
         return 'nobody won: it broke off, and ' + them + ' is still alive.';
     }
     Coop.on('to:bend', function (msg) {
+        BOT.fightOrder = null;
+        BOT.chantSaid = false;
+        BOT.lastBrief = null;
         if (msg.aborted) return;
         note('The fight is over, ' + outcome(msg.end, msg.won, msg.foes));
     });
@@ -596,6 +964,9 @@ module.exports = function installBot(options) {
         const b = Coop.battle;
         const won = !!(b && b.won), end = (b && b.end) || '';
         _terminate.call(this);
+        BOT.fightOrder = null;
+        BOT.chantSaid = false;
+        BOT.lastBrief = null;
         if (fightNoted) { fightNoted = false; note('Your own fight is over, ' + outcome(end, won)); }
     };
 
@@ -608,7 +979,7 @@ module.exports = function installBot(options) {
         const me = $gameParty.leader();
         if (!me || me.hp <= 0) return;
         // The same reach as the game's own pull into a fight that starts.
-        const peer = Coop.peersHere().find((p) => p.st === 'battle' && p.br === 'o' && Coop.distanceTo(p) <= 6);
+        const peer = Coop.peersHere().find((p) => p.st === 'battle' && p.br === 'o' && !p.oe && Coop.distanceTo(p) <= 6);
         if (!peer) { toldFighting = ''; return; }
         if (toldFighting !== peer.id) { toldFighting = peer.id; note(peer.name + ' is in a fight right beside you. You are joining it.'); }
         Coop.askToJoinBattle(peer.id);
@@ -623,21 +994,129 @@ module.exports = function installBot(options) {
         else note('You overhear, near ' + peer.name + ': ' + (msg.speaker ? msg.speaker + ': ' : '') + String(msg.text).slice(0, 400));
     });
 
+    function normName(s) {
+        return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+    function namesOfMine() {
+        const me = window.$gameParty && $gameParty.leader();
+        // "Claude" is the old default name; it still answers to it.
+        const raw = [Coop.name, BOT.character, CALLED[BOT.character], me && me.name(), 'Claude'].filter(Boolean);
+        const out = [];
+        for (const n of raw) {
+            const b = normName(n);
+            if (b.length < 3) continue;
+            out.push(b);
+            if (b.length > 4) out.push(b.slice(0, 4), b.slice(0, 5));
+        }
+        return out.filter((n, i, a) => a.indexOf(n) === i);
+    }
+    function lineWords(text) {
+        // Same letters the names are reduced to, so "D'arce" and "darce" are one word.
+        return String(text || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    function nameAlt() {
+        return namesOfMine().map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    }
+    // "Claude is slow" talks about this partner. "Claude, ..." does not.
+    function aboutMe(text) {
+        const alt = nameAlt();
+        if (!alt) return false;
+        const raw = String(text || '').trim();
+        if (new RegExp('^(?:hey |ok |yo |oi )?(' + alt + ')\\s*,', 'i').test(raw)) return false;
+        const t = lineWords(raw);
+        return new RegExp('(?:^|\\b)(' + alt + ')(?:\\s+|\'s\\s*)(is|was|seems|seemed|looks|looked|has|had|cannot)\\b', 'i').test(t);
+    }
+    function callsMe(text) {
+        const t = lineWords(text);
+        if (/^you\b/.test(t) && !/^your\b/.test(t) && !/^you're\b/.test(t) && !/^you re\b/.test(t)) return true;
+        const alt = nameAlt();
+        return !!alt && new RegExp('^(?:hey |ok |yo |oi )?(' + alt + ')\\b', 'i').test(t);
+    }
+    function callsOther(text) {
+        const raw = String(text || '').trim();
+        const m = raw.match(/^(?:hey |ok |yo |oi )?([A-Za-z][\w']{1,16})\b/);
+        if (!m) return false;
+        const word = normName(m[1]);
+        if (!word || word === 'you' || word === 'your') return false;
+        if (namesOfMine().some((n) => word === n || word.indexOf(n) === 0 || n.indexOf(word) === 0)) return false;
+        // A comma is not enough: "Okay, wait" and "Hey, come" name nobody. "Enki, look" does.
+        return Coop.others().some((p) => normName(p.name) === word || (p.an && normName(p.an) === word));
+    }
+    // Meant for this partner: "you", its name or a short form of it, or the person it just spoke to.
+    function forMe(text, peer) {
+        if (aboutMe(text)) return false;
+        if (callsMe(text)) return true;
+        if (callsOther(text)) return false;
+        if (BOT.addressed && peer && BOT.addressed.id === peer.id && Date.now() < BOT.addressed.until) return true;
+        const people = humans().filter((p) => p.st && p.st !== 'title');
+        return people.length <= 1;
+    }
+    function orderTaken(r) {
+        if (!r) return 'no order';
+        const order = String(r.order || '');
+        if (order === 'attack') return 'attack ' + (r.what || '');
+        if (order === 'item') return 'use ' + (r.what || r.use || '');
+        if (order) return order;
+        if (r.give) return 'give';
+        if (r.use) return 'use';
+        return 'no order';
+    }
+    function heardNote(msg, r) {
+        Coop.note('heard ' + msg.name + ': "' + String(msg.text).slice(0, 160) + '" -> ' + orderTaken(r));
+    }
+    function fightContext() {
+        let brief = BOT.lastBrief;
+        if (window.BattleManager && BattleManager.actor && BattleManager.actor() && Coop.battleBrief) {
+            try {
+                const live = Coop.battleBrief(BattleManager.actor());
+                if (live && live.enemies && live.enemies.length) brief = live;
+            } catch (e) { /* a guest keeps the brief it was sent */ }
+        }
+        return brief && brief.enemies ? briefText(brief) : '';
+    }
+
     Coop.on('heard', function (msg) {
         const peer = Coop.peers.get(msg.from);
         if (!peer || peer.bot) return;
-        // With several people here, only lines meant for this partner get an answer.
-        const people = humans().filter((p) => p.st && p.st !== 'title');
-        const me = window.$gameParty && $gameParty.leader();
-        const names = [Coop.name, BOT.character, me ? me.name() : ''].filter(Boolean).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        const named = new RegExp('\\b(' + names.join('|') + ')\\b', 'i');
-        if (people.length > 1 && !named.test(msg.text)) { note(msg.name + ' says to the others: "' + msg.text + '"'); return; }
+        if (Coop.dead || BOT.deadSilent) {
+            const r = plainReply(msg.text);
+            const letting = r && r.order === 'let go';
+            heardNote(msg, letting ? r : null);
+            if (letting) { r.say = ''; obey(r, peer); }
+            return;
+        }
+        // Not addressed: remembered for the next real call, and that is all.
+        if (!forMe(msg.text, peer)) {
+            heardNote(msg, null);
+            BOT.aside.push(msg.name + ': "' + String(msg.text).slice(0, 200) + '"');
+            return;
+        }
+        BOT.spokeTo = peer.id;
+        BOT.addressed = { id: peer.id, until: Date.now() + 5000 };
+        const fromWords = plainReply(msg.text);
         const pending = BOT.notes.splice(0);
-        const text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + ' says to you: "' + msg.text + '"';
+        let text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + ' says to you: "' + msg.text + '"';
+        const fight = fightContext();
+        if (fight) text += '\nThe fight right now:\n' + fight;
         think('chat', text).then(function (r) {
-            r = r || plainReply(msg.text);
+            r = r || fromWords;
+            if (r && fromWords && (fromWords.order === 'guard' || fromWords.order === 'attack' || fromWords.order === 'item')) {
+                r.order = fromWords.order;
+                if (fromWords.what) r.what = fromWords.what;
+            }
+            heardNote(msg, r);
             if (!r) return;
+            // Both players' last orders stay on the record. The newest stance is the one taken.
+            let named = false;
+            if (r.order) {
+                const over = noteOrder(peer, String(r.order).toLowerCase(), msg.text);
+                if (over) { r.say = over; named = true; }
+            }
+            if (!named && r.say) r.say = addressSay(peer, r.say);
             obey(r, peer);
+            if (r.goal && !r.order && !r.give && !inFight()) acceptGoal(r.goal);
+            // A reply keeps their next line, for a few seconds. Anything else said does not.
+            if (r.say) BOT.addressed = { id: peer.id, until: Date.now() + 5000 };
             speak(r.say, true);
         });
     });
@@ -665,9 +1144,18 @@ module.exports = function installBot(options) {
         const t = ' ' + String(text || '').toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
         const has = (re) => re.test(t);
         if (!window.$gameParty) return null;
-        // "Don't wait", "never mind": better no answer than the opposite order. "I'll use a herb
-        // on you" is the speaker's own plan, not an order.
-        if (has(/\b(don't|dont|do not|never|no need|can't|cant|cannot)\b|^ i\b|\b(i'll|i will|i'm going to|let me)\b/)) return null;
+        // "Don't wait", "never mind": better no answer than the opposite order.
+        if (has(/\b(don't|dont|do not|never|no need|can't|cant|cannot)\b/)) return null;
+        // A fight order is kept even from "I'll take the left arm." "On you" / "on me" is their plan, not one.
+        if (!/\b(on you|on me)\b/.test(t)) {
+            if (has(/\bguard\b/) && !has(/\b(a|the|that|this) guard\b/)) return { order: 'guard', say: 'Guarding.' };
+            const part = /\b(?:take|hit|attack|cut|aim for|focus on) (?:the |its |his |her )?((?:left |right )?(?:arm|leg|head|torso|stinger|paw|tail|wing|hand|eye|claw|body)s?)\b/.exec(t);
+            if (part) return { order: 'attack', what: part[1], say: 'The ' + part[1] + '.' };
+            const used = /\buse (?!your |the |a |an |some |that )((?:red |blue |white |green |mixed )?[a-z]+(?: [a-z]+)?)\b/.exec(t);
+            if (used) return { order: 'item', what: used[1], say: '' };
+        }
+        // "I'll use a herb on you" is the speaker's own plan, not an order.
+        if (has(/\b(i'll|i will|i'm going to|let me)\b/)) return null;
         // Leaving cannot be undone: only the plain order, the whole line.
         if (/^ (go home|you can go home|you're dismissed|dismissed) $/.test(t)) return { order: 'leave', say: 'Farewell.' };
         if (Coop.dead && has(/\blet (it )?go\b/)) return { order: 'let go', say: 'Take my things.' };
@@ -680,7 +1168,7 @@ module.exports = function installBot(options) {
         }
         if (has(/\b(eat|drink|use (your|the|a|an|some|that)|heal yourself|bandage yourself|patch yourself)\b/)) {
             const it = bagFind(t, ['item']);
-            return it ? { use: it.id, say: '' } : { say: 'I have nothing for that.' };
+            return it ? { use: it.id, order: 'item', what: it.name.toLowerCase(), say: '' } : { say: 'I have nothing for that.' };
         }
         if (has(/\b(shut up|be quiet|quiet down|shush|hush|shh+)\b/)) return { order: 'quiet', say: '' };
         if (has(/\b(you can talk|talk again|you can speak)\b/)) return { order: 'talk', say: 'Fine.' };
@@ -701,6 +1189,7 @@ module.exports = function installBot(options) {
     }
     BOT.plainReply = plainReply;
     BOT.plainPick = fallbackPick;
+    BOT.briefText = briefText;
 
     // What it would have asked a model to put in words: its needs, said plainly.
     function plainNote(text) {
@@ -713,16 +1202,50 @@ module.exports = function installBot(options) {
 
     // What a reply asks this partner to do, beyond talking.
     function obey(r, peer) {
+        // An order, a hand-over, or being told to use something drops whatever it was walking toward.
+        if (r && (r.order || r.give)) BOT.goal = null;
         const order = String(r.order || '').toLowerCase();
+        if (order === 'guard' || order === 'attack' || order === 'item' || order === 'skill') {
+            // On the map, "use a herb" is using it now. In a fight it is one turn, then gone.
+            if (ordersInFight()) BOT.fightOrder = { kind: order, what: r.what || '', by: peer ? peer.name : '' };
+            if (order !== 'item' || ordersInFight()) return;
+        }
         if ((order === 'wait' || order === 'explore') && Coop.partyLeader) Coop.leaveParty();
-        if (order === 'party' && Coop.joinParty && Coop.joinParty(peer.id)) { BOT.mode = 'follow'; BOT.explore = null; BOT.errand = null; log('joined ' + peer.name + "'s party"); }
-        if (order === 'wait' && BOT.mode !== 'wait') { BOT.mode = 'wait'; log('waiting where told'); }
-        if (order === 'follow' && BOT.mode !== 'follow') { BOT.mode = 'follow'; BOT.explore = null; if (BOT.errand && BOT.errand.kind === 'explore') BOT.errand = null; log('following again'); }
-        if (order === 'explore' && BOT.mode !== 'explore') { BOT.mode = 'explore'; BOT.explore = null; log('exploring alone'); }
+        if (order === 'party' && peer && Coop.joinParty && Coop.joinParty(peer.id)) {
+            BOT.mode = 'follow';
+            BOT.with = peer.id;
+            BOT.waitFor = null;
+            BOT.explore = null;
+            BOT.errand = null;
+            log('joined ' + peer.name + "'s party");
+        }
+        if (order === 'wait') {
+            BOT.mode = 'wait';
+            BOT.with = 0;
+            BOT.errand = null;
+            const me = window.$gameParty && $gameParty.leader();
+            BOT.waitFor = { id: peer ? peer.id : 0, map: peer ? peer.m : 0, hp: me ? me.hp : 0 };
+            log('waiting where told');
+        }
+        if (order === 'follow') {
+            BOT.mode = 'follow';
+            BOT.waitFor = null;
+            BOT.explore = null;
+            if (BOT.errand && BOT.errand.kind === 'explore') BOT.errand = null;
+            if (peer) BOT.with = peer.id;
+            log('following ' + (peer ? peer.name : 'again'));
+        }
+        if (order === 'explore') {
+            BOT.mode = 'explore';
+            BOT.with = 0;
+            BOT.waitFor = null;
+            BOT.explore = null;
+            log('exploring alone');
+        }
         if (order === 'quiet') { BOT.quiet = true; log('keeping quiet'); }
         if (order === 'talk') { BOT.quiet = false; log('talking again'); }
         if (order === 'let go' && Coop.dead && Coop.letGo) { log('letting this character go'); Coop.letGo(); return; }
-        if (order === 'leave' && window.fhLeave) { log('going home'); BOT.leaving = true; window.fhLeave(); return; }
+        if (order === 'leave' && window.fhLeave) { log('going home'); BOT.leaving = true; BOT.with = 0; window.fhLeave(); return; }
         if (!window.$gameParty || Coop.dead) return;
         const find = (kind, id) => {
             const table = kind === 'weapon' ? $dataWeapons : kind === 'armor' ? $dataArmors : $dataItems;
@@ -768,6 +1291,14 @@ module.exports = function installBot(options) {
         if (!win || !win.active || BOT.choosing) return;
         const choices = $gameMessage.choices().map((c) => Coop.plainText(c).text);
         const said = Coop.plainText($gameMessage.allText()).text;
+        // A bed, and only while the leader is already resting: take the rest, no question to the model.
+        if (BOT.goal && BOT.goal.kind === 'bed') {
+            const rest = choices.findIndex((c) => /rest/i.test(c));
+            if (rest >= 0) {
+                win.select(rest);
+                if (win.isCurrentItemEnabled()) { win.processOk(); journal('rested'); BOT.goal = null; return; }
+            }
+        }
         // The circle's own offer: call the partner back, which is why we came.
         const call = choices.findIndex((c) => /^Call .* back$/.test(c));
         if (call >= 0) {
@@ -908,11 +1439,25 @@ module.exports = function installBot(options) {
             && !((Nav.banned.get('door' + $gameMap.mapId() + ':' + ev.eventId()) || 0) > Date.now());
     }
 
+    // Every tile the game's own events hurt on (Coop.hazardAt: armed traps, nail boards, arrow plates...).
+    function trapAt(x, y) {
+        return !!(window.$gameMap && Coop.hazardAt && Coop.hazardAt(x, y));
+    }
+    function tellTrap() {
+        const key = (window.$gameMap ? $gameMap.mapId() : 0) + ':' + $gamePlayer.x + ',' + $gamePlayer.y;
+        if (BOT.trapTold === key) return;
+        BOT.trapTold = key;
+        log('a trap is in the way');
+        Coop.say('A trap is in the way. I am waiting.');
+    }
+    Coop.onTrap = tellTrap;
+
     // Anything standing there; when careful, also floor tiles that do something
-    // when stepped on (traps, doors, scenes). A shut door is not in the way:
-    // it gets opened on the way through.
+    // when stepped on (doors, scenes). An armed trap is never a step, careful or not.
+    // A shut door is not in the way: it gets opened on the way through.
     function blockedByEvent(x, y, except, careful) {
         if (!window.$dataMap) return true; // between maps: stand still
+        if (!Nav.throughTraps && trapAt(x, y)) return true;
         return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev)) || (ev.page() && ev.isTriggerIn([1, 2]) && (careful || takesAway(ev)))));
     }
     // A tile that sends whoever steps on it to another map is never on the way.
@@ -969,6 +1514,8 @@ module.exports = function installBot(options) {
                 const nx = $gameMap.roundXWithDirection(x, d), ny = $gameMap.roundYWithDirection(y, d);
                 if (!$gameMap.isValid(nx, ny) || prev[ny * w + nx] >= 0) continue;
                 if (!$gameMap.isPassable(x, y, d) || !$gameMap.isPassable(nx, ny, 10 - d)) continue;
+                // The goal tile is allowed through blockedByEvent; a trap is not a place to stand, even as the goal.
+                if (!Nav.throughTraps && trapAt(nx, ny)) continue;
                 const isGoal = nx === goalX && ny === goalY;
                 if (!isGoal && blockedByEvent(nx, ny, eventId, careful)) continue;
                 if ((Nav.banned.get(nx + ',' + ny) || 0) > now) continue;
@@ -981,7 +1528,7 @@ module.exports = function installBot(options) {
 
     // Off this tile, any way that is open.
     function stepAside(player) {
-        const free = [2, 4, 6, 8].filter((d) => player.canPass(player.x, player.y, d));
+        const free = [2, 4, 6, 8].filter((d) => player.canPass(player.x, player.y, d) && !trapAt($gameMap.roundXWithDirection(player.x, d), $gameMap.roundYWithDirection(player.y, d)));
         if (free.length) player.executeMove(free[Math.randomInt(free.length)]);
     }
 
@@ -996,6 +1543,7 @@ module.exports = function installBot(options) {
     //   follow  a partner went through a door; go after them
     async function startErrand(dead) {
         // A circle errand goes its own way: out of anyone's line first (party.js would pull it back).
+        BOT.goal = null;
         if (Coop.partyLeader) Coop.leaveParty();
         BOT.errand = { kind: 'circle', for: dead.id, name: dead.name, since: Date.now(), plan: null, planning: true, map: 0, steps: null, tries: 0, replans: 0 };
         log('walking to a ritual circle for ' + dead.name);
@@ -1003,6 +1551,7 @@ module.exports = function installBot(options) {
     }
 
     async function startChase(who) {
+        BOT.goal = null;
         BOT.errand = { kind: 'follow', for: who.id, name: who.name, goalMap: who.m, since: Date.now(), plan: null, planning: true, map: 0, steps: null, tries: 0, replans: 0 };
         log('going after ' + who.name + ' to ' + placeName(who.m));
         await replan();
@@ -1146,16 +1695,87 @@ module.exports = function installBot(options) {
         }
     }
 
+    // A step onto an armed trap never lands, whichever plan asked for it.
+    const _moveStraight = Game_Player.prototype.moveStraight;
+    Game_Player.prototype.moveStraight = function (d) {
+        if (trapAt($gameMap.roundXWithDirection(this.x, d), $gameMap.roundYWithDirection(this.y, d))) { this.setMovementSuccess(false); return; }
+        _moveStraight.call(this, d);
+    };
+    const _locate = Game_Player.prototype.locate;
+    Game_Player.prototype.locate = function (x, y) {
+        // A door follow transfers onto the leader. A step onto a trap still does not.
+        if (!this.isTransferring() && trapAt(x, y)) return;
+        _locate.call(this, x, y);
+    };
+
+    // What a search just now is about to pick up, so the journal can name it a moment later.
+    function rememberLoot(label) {
+        BOT.looting = { label: label || 'body', until: Date.now() + 4000 };
+    }
+
+    // Walk to a goal from the latest reply and do the obvious thing there.
+    // A circle is never used. A bed is used only while the leader is already resting.
+    // A door is opened only when it stays on the leader's map, unless this body is exploring.
+    function goalStep(player) {
+        const g = BOT.goal;
+        if (!g) return false;
+        if (inFight() || BOT.mode === 'wait' || Coop.dead || BOT.deadSilent) { BOT.goal = null; return false; }
+        if (!window.$gameMap || $gameMap.mapId() !== g.map) { BOT.goal = null; return false; }
+        const who = leader();
+        if (who && who.m && who.m !== $gameMap.mapId() && BOT.mode !== 'explore') { BOT.goal = null; return false; }
+        if (g.kind === 'circle') { BOT.goal = null; return false; }
+        if (g.kind === 'door' && BOT.mode !== 'explore' && (!who || g.to !== who.m)) { BOT.goal = null; return false; }
+        if (g.kind === 'bed' && !leaderResting()) { BOT.goal = null; return false; }
+        if (tooFarFromLeader(g.x, g.y)) { BOT.goal = null; return false; }
+        const ev = g.ev && $gameMap.event(g.ev);
+        if (!ev || ev._erased) { BOT.goal = null; return false; }
+        if (g.kind === 'loot') {
+            const gives = ev.page() && pageGives(ev.page());
+            if (!gives || BOT.visited.has(g.map + ':' + g.ev)) { BOT.goal = null; return false; }
+        }
+        const solid = ev.isNormalPriority();
+        const at = solid ? Math.abs(ev.x - player.x) + Math.abs(ev.y - player.y) === 1 : ev.x === player.x && ev.y === player.y;
+        if (at) {
+            if (solid) player.setDirection(dirTo(ev.x, ev.y));
+            if (g.kind === 'loot') rememberLoot(g.label);
+            if (g.kind === 'door' && !ev.isTriggerIn([0])) player.executeMove(dirTo(ev.x, ev.y));
+            else press('ok');
+            g.tries = (g.tries || 0) + 1;
+            // One press for a person. A search that does not resolve is left after a few tries.
+            if (g.kind === 'npc') { journal('spoke to ' + g.label); BOT.goal = null; }
+            else if (g.tries > 6) {
+                if (g.kind === 'loot') BOT.visited.add(g.map + ':' + g.ev);
+                if (g.kind === 'door' && g.to) BOT.beenMaps.add(g.to);
+                BOT.goal = null;
+            }
+            return true;
+        }
+        if (!g.steps || !g.steps.length) {
+            g.steps = Nav.path(ev.x, ev.y, ev.eventId(), solid);
+            if (!g.steps) { BOT.goal = null; return false; }
+        }
+        const next = g.steps[0];
+        if (!next || trapAt(next.x, next.y) || tooFarFromLeader(next.x, next.y)) { BOT.goal = null; return false; }
+        const bx = player.x, by = player.y;
+        player.executeMove(dirTo(next.x, next.y));
+        if (player.x === next.x && player.y === next.y) g.steps.shift();
+        else if (player.x === bx && player.y === by && openDoorAhead(player, dirTo(next.x, next.y))) return true;
+        else if (player.x === bx && player.y === by) { BOT.goal = null; return false; }
+        return true;
+    }
+
     // Every time the engine asks the player for input, this decides the step.
     Game_Player.prototype.moveByInput = function () {
         if (!Coop.world.live || this.isMoving() || !this.canMove()) return;
         if (BOT.errand) return errandStep(this);
+        if (BOT.goal && goalStep(this)) return;
         if (BOT.giving && handOver()) {
             const peer = Coop.peers.get(BOT.giving.peer);
             const dir = peer ? this.findDirectionTo(peer.x, peer.y) : 0;
-            if (dir > 0) this.executeMove(dir);
+            if (dir > 0 && !trapAt($gameMap.roundXWithDirection(this.x, dir), $gameMap.roundYWithDirection(this.y, dir))) this.executeMove(dir);
             return;
         }
+        if ((BOT.mode === 'follow' || Coop.partyLeader) && BOT.mode !== 'wait' && forageStep(this)) return;
         if (Coop.partyLeader && Coop.partyStep(this)) return;
         if (BOT.mode === 'wait') return;
         if (BOT.mode === 'explore') return exploreStep(this);
@@ -1179,7 +1799,16 @@ module.exports = function installBot(options) {
                 BOT.trail = steps ? { x: who.x, y: who.y, steps } : null;
             }
             const next = BOT.trail && BOT.trail.steps[0];
-            dir = next ? dirTo(next.x, next.y) : this.findDirectionTo(who.x, who.y);
+            if (next) { dir = dirTo(next.x, next.y); BOT.trapTold = ''; }
+            else if (BOT.trail) dir = 0;
+            else {
+                // No way that stays off the traps. The engine's own step would walk onto one.
+                Nav.throughTraps = true;
+                const risky = Nav.search(who.x, who.y, 0, true, false);
+                Nav.throughTraps = false;
+                if (risky && risky.some((s) => trapAt(s.x, s.y))) { tellTrap(); dir = 0; }
+                else dir = this.findDirectionTo(who.x, who.y);
+            }
         }
         const x = this.x, y = this.y;
         if (dir > 0) this.executeMove(dir);
@@ -1204,10 +1833,71 @@ module.exports = function installBot(options) {
         return $gameMap.events().filter((ev) => {
             const key = $gameMap.mapId() + ':' + ev.eventId();
             if (ev._erased || CHEATS.has(key) || BOT.visited.has(key) || (Nav.banned.get('x' + key) || 0) > now) return false;
+            if (isTrapGraphic(ev) || isBed(ev)) return false;
             const page = ev.page();
             if (!page || !ev.isTriggerIn([0])) return false;
-            return page.list.some((c) => c.code === 125 || c.code === 126 || c.code === 127 || c.code === 128);
+            if (Coop.world && Coop.world.othersScene(ev)) return false;
+            return pageGives(page);
         });
+    }
+    // Clean food sitting in a container close enough to step over to.
+    function foodNearby() {
+        if (!window.$gamePlayer) return false;
+        return lootHere().some((ev) => {
+            if (Math.abs(ev.x - $gamePlayer.x) + Math.abs(ev.y - $gamePlayer.y) > 4) return false;
+            return ev.page().list.some((c) => c.code === 126 && isFood($dataItems[c.parameters[0]]));
+        });
+    }
+    // While following or in a line: a body, barrel, chest or crate a few tiles off the walk.
+    // Not a trip of its own, and never something that would start on somebody else.
+    function forageStep(player) {
+        if (BOT.mode === 'wait' || BOT.mode === 'explore' || BOT.errand) { BOT.forage = null; return false; }
+        if (!(BOT.mode === 'follow' || Coop.partyLeader)) { BOT.forage = null; return false; }
+        const who = leader();
+        if (!who || who.m !== $gameMap.mapId() || who.st === 'dead') { BOT.forage = null; return false; }
+        if (Math.abs(who.x - player.x) + Math.abs(who.y - player.y) > 6) { BOT.forage = null; return false; }
+        let f = BOT.forage;
+        if (!f || f.map !== $gameMap.mapId()) {
+            if (Math.abs(who.x - player.x) + Math.abs(who.y - player.y) > 3) return false;
+            const near = lootHere().filter((ev) => {
+                const d = Math.abs(ev.x - player.x) + Math.abs(ev.y - player.y);
+                return d > 0 && d <= 4;
+            });
+            if (!near.length) return false;
+            const me = $gameParty.leader();
+            const hungry = me && me.currentExp() < 100;
+            const givesFood = (ev) => ev.page().list.some((c) => c.code === 126 && isFood($dataItems[c.parameters[0]]));
+            near.sort((a, b) => (hungry && givesFood(a) !== givesFood(b) ? (givesFood(a) ? -1 : 1) : 0) || Math.abs(a.x - player.x) + Math.abs(a.y - player.y) - (Math.abs(b.x - player.x) + Math.abs(b.y - player.y)));
+            const ev = near[0];
+            const solid = ev.isNormalPriority();
+            const steps = Nav.path(ev.x, ev.y, ev.eventId(), solid);
+            if (!steps || steps.length > 6) return false;
+            f = BOT.forage = { id: ev.eventId(), map: $gameMap.mapId(), steps, tries: 0 };
+        }
+        const ev = $gameMap.event(f.id);
+        const page = ev && ev.page();
+        const gives = page && page.list.some((c) => c.code === 125 || c.code === 126 || c.code === 127 || c.code === 128);
+        if (!ev || ev._erased || !gives || BOT.visited.has(f.map + ':' + f.id)) { BOT.forage = null; return false; }
+        const solid = ev.isNormalPriority();
+        const at = solid ? Math.abs(ev.x - player.x) + Math.abs(ev.y - player.y) === 1 : ev.x === player.x && ev.y === player.y;
+        if (at) {
+            if (solid) player.setDirection(dirTo(ev.x, ev.y));
+            rememberLoot(thingName(ev, 'body'));
+            press('ok');
+            if (++f.tries > 4) { BOT.visited.add(f.map + ':' + f.id); BOT.forage = null; }
+            return true;
+        }
+        if (!f.steps || !f.steps.length) {
+            f.steps = Nav.path(ev.x, ev.y, ev.eventId(), solid);
+            if (!f.steps || f.steps.length > 6) { BOT.forage = null; return false; }
+        }
+        const next = f.steps[0];
+        if (!next || trapAt(next.x, next.y)) { BOT.forage = null; return false; }
+        const bx = player.x, by = player.y;
+        player.executeMove(dirTo(next.x, next.y));
+        if (player.x === next.x && player.y === next.y) f.steps.shift();
+        else if (player.x === bx && player.y === by) { BOT.forage = null; return false; }
+        return true;
     }
 
     // Everything else here that does something when used, not tried yet.
@@ -1265,6 +1955,7 @@ module.exports = function installBot(options) {
         const at = solid ? Math.abs(ev.x - player.x) + Math.abs(ev.y - player.y) === 1 : ev.x === player.x && ev.y === player.y;
         if (at) {
             if (solid) player.setDirection(dirTo(ev.x, ev.y));
+            rememberLoot(thingName(ev, 'body'));
             press('ok');
             // Searched once it has been tried; the event itself says what was there.
             if (++x.tries > 3) BOT.visited.add(x.map + ':' + x.target);
@@ -1292,6 +1983,10 @@ module.exports = function installBot(options) {
     Game_Party.prototype.gainItem = function (item, amount, includeEquip) {
         _gainItem.call(this, item, amount, includeEquip);
         if (item && amount > 0 && BOT.mode === 'explore' && this === window.$gameParty && !this.inBattle() && Coop.world.live) note('You found ' + item.name + (amount > 1 ? ' x' + amount : '') + '.');
+        if (item && amount > 0 && this === window.$gameParty && !this.inBattle() && Coop.world.live && BOT.looting && Date.now() < BOT.looting.until) {
+            journal('searched the ' + BOT.looting.label + ': ' + item.name);
+            BOT.looting = null;
+        }
         // A weapon or armour better than what it wears goes on, as a player would.
         // Not for what its own change of clothes hands back (each piece taken off is a
         // gain: 10/21 that scheduled another change per piece, until the page froze).
@@ -1314,13 +2009,36 @@ module.exports = function installBot(options) {
 
     //--- the loop ---------------------------------------------------------------
 
+    // A wait ends when this body is attacked, or the one who said it leaves the map.
+    function breakWait() {
+        if (BOT.mode !== 'wait' || !BOT.waitFor) return '';
+        const w = BOT.waitFor;
+        const me = window.$gameParty && $gameParty.leader();
+        if (SceneManager._scene instanceof Scene_Battle || (Coop.battle && Coop.battle.role === 'owner')) return 'a fight started';
+        if (me && me.hp < w.hp) return 'hurt';
+        const peer = w.id && Coop.peers.get(w.id);
+        if (w.id && (!peer || !peer.st || peer.st === 'title' || peer.st === 'dead')) return 'they left';
+        if (peer && w.map && peer.m && peer.m !== w.map) return 'they left the map';
+        return '';
+    }
+    function dropWait(why) {
+        BOT.mode = 'follow';
+        BOT.waitFor = null;
+        log('the wait is over');
+        Coop.note('the wait is over (' + why + ')');
+    }
+
     BOT.tick = function () {
         const scene = SceneManager._scene;
         if (!scene || !Coop.connected || BOT.leaving) return;
         if (scene instanceof Scene_Title || scene instanceof Scene_Gameover) {
             BOT.errand = null;
+            if (scene instanceof Scene_Title && scene.isReady && !scene.isReady()) return;
             if (scene instanceof Scene_Gameover) { press('ok'); return; }
             if (Date.now() - BOT.joinedAt < 5000) return; // on its way in
+            // A park that just landed leaves the title on the next frame: a new game now would overwrite it.
+            if (SceneManager.isSceneChanging()) return;
+            if (BOT.awaitPark && Date.now() - BOT.awaitPark < 60000) return;
             BOT.cameBack = ''; // whatever it was, it did not get it onto the map
             // The host says whether it kept a dropped session; wait a moment for that.
             BOT.titleAt = BOT.titleAt || Date.now();
@@ -1329,7 +2047,7 @@ module.exports = function installBot(options) {
             if (options.lead && options.once && BOT.played) { log('the run is over'); return; }
             if (options.lead) { if (!BOT.comeBack()) BOT.start(); return; }
             // By the opening, only once the leader's character is known, so as not to take the same one.
-            if (leader() && leader().st !== 'dead' && (!options.intro || (leader().ini || []).length)) { if (!BOT.comeBack()) (options.intro ? BOT.start() : BOT.join()); }
+            if (!BOT.leaving && !Coop.dead && leader() && leader().st !== 'dead' && (!options.intro || (leader().ini || []).length)) { if (!BOT.comeBack()) (options.intro ? BOT.start() : BOT.join()); }
             else log('waiting at the title for a player to be in the dungeon');
             return;
         }
@@ -1350,10 +2068,32 @@ module.exports = function installBot(options) {
             BOT.needStart = false;
             $gameSwitches.setValue(79, true); // the game's own "the run has begun"
         }
-        if (Coop.dead) { BOT.errand = null; log('dead; a ritual circle can bring me back'); return; }
+        if (!Coop.dead && BOT.wasDead && scene instanceof Scene_Map) {
+            BOT.wasDead = false;
+            BOT.deadSilent = false;
+            note('You are alive again.');
+        }
+        if (Coop.dead) {
+            if (!BOT.wasDead) {
+                BOT.wasDead = true;
+                speak('Dead.', true);
+                BOT.deadSilent = true;
+            }
+            BOT.goal = null;
+            BOT.errand = null;
+            log('dead; a ritual circle can bring me back');
+            return;
+        }
         const who = leader();
-        if (scene instanceof Scene_CoopSpectate) { log('fighting beside ' + (who ? who.name : 'someone')); return; }
-        if (scene instanceof Scene_Battle) { log('in a fight of my own'); ownFight(scene); return; }
+        if (scene instanceof Scene_CoopSpectate) { BOT.goal = null; log('fighting beside ' + (who ? who.name : 'someone')); return; }
+        if (scene instanceof Scene_Battle) {
+            BOT.goal = null;
+            const fought = breakWait();
+            if (fought) dropWait(fought);
+            log('in a fight of my own');
+            ownFight(scene);
+            return;
+        }
         if (!(scene instanceof Scene_Map)) { press('cancel'); return; }
         if (!Coop.world.live) {
             const shut = Coop.world.otherRun || Coop.world.sameAs;
@@ -1367,6 +2107,8 @@ module.exports = function installBot(options) {
             return;
         }
         BOT.outSince = 0;
+        const whyWait = breakWait();
+        if (whyWait) dropWait(whyWait);
         keepFed();
         keepWell();
         watchConditions();
@@ -1408,6 +2150,7 @@ module.exports = function installBot(options) {
         if (BOT.lost && (who.m === $gameMap.mapId() || Date.now() - BOT.lost > 45000)) { BOT.lost = 0; BOT.mode = 'follow'; BOT.explore = null; BOT.errand = null; }
         if (BOT.mode === 'explore') { log('exploring alone'); return; }
         const sameMap = who.m === $gameMap.mapId();
+        if (!sameMap && BOT.goal) BOT.goal = null;
         if (sameMap) BOT.lastSeen = { id: who.id, m: who.m, x: who.x, y: who.y };
         const chase = BOT.errand && BOT.errand.kind === 'follow' ? BOT.errand : null;
         // Close by when they went through: after them at once, the way a
@@ -1449,6 +2192,7 @@ module.exports = function installBot(options) {
             if (window.$gameMap && Coop.world.live && SceneManager._scene instanceof Scene_Map && $gameMap.mapId() !== lastMap) {
                 if (lastMap) note('You are now in ' + placeName($gameMap.mapId()) + '.');
                 lastMap = $gameMap.mapId();
+                BOT.beenMaps.add(lastMap);
             }
         } catch (e) { console.error('[bot] ' + (e && e.stack || e)); }
     }, 150);

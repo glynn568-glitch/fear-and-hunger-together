@@ -15,6 +15,7 @@
 // sends it home.
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const installBot = require('./bot-page');
 const { createBrain, detect } = require('./brain');
@@ -50,11 +51,59 @@ function linuxBrowsers() {
 // A Flatpak browser may only write in its own folder: the partner's profile goes there.
 const FLATPAK = CHROME && /\/flatpak\/exports\/bin\//.test(CHROME) ? path.basename(CHROME) : '';
 
+let browser = null;
+let page = null;
+let stopping = false;
+
+// Sent home, including while the title is still loading: leave quietly, then kill Chrome
+// without puppeteer's taskkill (that one prints SUCCESS/ERROR into this process).
+async function stop() {
+    if (stopping) return;
+    stopping = true;
+    const leave = (async () => {
+        if (!page) return;
+        // Alive: the title first, so a drop is not kept. Dead: park this body and stay out of the
+        // title, which would throw it away; the next call would be someone new.
+        const left = await page.evaluate(() => {
+            if (window.BOT) BOT.leaving = true;
+            if (!(window.Coop && Coop.world && Coop.world.live && window.SceneManager)) return '';
+            // Dead and cannot park now (line down): the title would throw the body away.
+            if (Coop.dead) return Coop.parkNow && Coop.parkNow(true) ? Coop._parkWait : '';
+            SceneManager.goto(Scene_Title);
+            return 'alive';
+        });
+        // Dead: do not close until the host has this body.
+        if (typeof left === 'number') { try { await page.waitForFunction((n) => Coop._parkAck === n, { timeout: 5000 }, left); } catch (e) { /* no answer */ } }
+        else if (left) await new Promise((r) => setTimeout(r, 1500));
+    })();
+    try { await Promise.race([leave, new Promise((r) => setTimeout(r, 6500))]); } catch (e) { /* the page is already gone */ }
+    try {
+        const proc = browser && browser.process && browser.process();
+        const pid = proc && proc.pid;
+        if (pid && process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        else if (proc) { try { proc.kill('SIGKILL'); } catch (e2) { /* gone */ } }
+        // close() now finds the process already gone, so its own taskkill stays quiet, and it drops the exit hook.
+        if (browser) await Promise.race([browser.close(), new Promise((r) => setTimeout(r, 1000))]);
+    } catch (e) { /* already gone */ }
+    process.exit(0);
+}
+
+process.on('unhandledRejection', (e) => {
+    if (stopping) process.exit(0);
+    console.error('[bot] ' + (e && e.stack || e));
+    process.exit(1);
+});
+process.on('uncaughtException', (e) => {
+    if (stopping) process.exit(0);
+    console.error('[bot] ' + (e && e.stack || e));
+    process.exit(1);
+});
+
 (async () => {
     if (!CHROME) { console.error('Chrome or Edge was not found. Set CHROME to its path.'); process.exit(1); }
     const url = new URL(urlArg);
     url.searchParams.set('name', botName);
-    const browser = await puppeteer.launch({
+    browser = await puppeteer.launch({
         executablePath: CHROME,
         headless: show ? false : 'new',
         defaultViewport: show ? null : { width: 816, height: 624 },
@@ -66,25 +115,15 @@ const FLATPAK = CHROME && /\/flatpak\/exports\/bin\//.test(CHROME) ? path.basena
         // Shutting down is ours to do (it leaves the world first), not puppeteer's.
         handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
     });
-    const page = (await browser.pages())[0] || await browser.newPage();
+    page = (await browser.pages())[0] || await browser.newPage();
     page.on('console', (m) => { const t = m.text(); if (t.startsWith('[bot]') || (process.env.BOT_VERBOSE && t.startsWith('[coop]'))) console.log(t); });
     page.on('pageerror', (e) => {
+        if (stopping) return;
         // One plugin the game ships fails to parse on every machine; not news.
         if (/physical_attack_animation/.test(String(e && e.stack))) return;
         console.log('[bot] script error: ' + String(e && e.message || e).slice(0, 300));
     });
     // Leaving on purpose: out of the world first, so it is not kept as a dropped player.
-    let stopping = false;
-    const stop = async () => {
-        if (stopping) return;
-        stopping = true;
-        try {
-            const left = await page.evaluate(() => { if (window.Coop && Coop.world && Coop.world.live) { SceneManager.goto(Scene_Title); return true; } return false; });
-            if (left) await new Promise((r) => setTimeout(r, 1500));
-        } catch (e) { /* the page is already gone */ }
-        try { await browser.close(); } catch (e) { /* already gone */ }
-        process.exit(0);
-    };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
     // Started by another program (the tests): closing its input is the polite stop.
@@ -113,16 +152,20 @@ const FLATPAK = CHROME && /\/flatpak\/exports\/bin\//.test(CHROME) ? path.basena
     console.log(`[bot] ${botName} is opening ${url.origin}`);
     await page.goto(url.href, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, { timeout: 180000, polling: 250 });
-    await page.evaluate(installBot, { character: option('char', ''), follow: option('follow', ''), brainless: brainOptions.brain === 'none' });
+    await page.evaluate(installBot, { character: option('char', ''), follow: option('follow', ''), brainless: brainOptions.brain === 'none', story: true });
     console.log('[bot] at the title screen, waiting for a player to be in the dungeon');
 
     let last = '';
     for (;;) {
         await new Promise((r) => setTimeout(r, 3000));
         let st;
-        try { st = await page.evaluate(() => BOT.status()); } catch (e) { console.log('[bot] the page went away'); break; }
+        try { st = await page.evaluate(() => BOT.status()); } catch (e) { if (!stopping) console.log('[bot] the page went away'); break; }
         const line = `${st.character || '-'} | ${st.scene} | map ${st.map} at ${st.x},${st.y} | hp ${st.hp} | ${st.mode}${st.errand ? ' | errand' : ''}${st.connected ? '' : ' | reconnecting'}`;
         if (process.env.BOT_VERBOSE && line !== last) { last = line; console.log('[bot] ' + line); }
     }
     await stop();
-})().catch((e) => { console.error('[bot] ' + (e && e.stack || e)); process.exit(1); });
+})().catch((e) => {
+    if (stopping) process.exit(0);
+    console.error('[bot] ' + (e && e.stack || e));
+    process.exit(1);
+});

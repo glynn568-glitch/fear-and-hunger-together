@@ -538,9 +538,32 @@
     const PASSING = ['map still fading in', 'changing maps', 'not on the map'];
 
     function answerInvite(msg, triesLeft) {
+        if (msg.scenery && Coop.isBot) {
+            Coop.note('stayed out of ' + peerName(msg.from) + "'s fight: nothing to fight");
+            Coop.sendTo(msg.from, 'bdecline', {});
+            return;
+        }
         const why = whyNotJoin();
         if (why && PASSING.indexOf(why) >= 0 && triesLeft > 0 && Coop.peers.has(msg.from)) {
             setTimeout(function () { answerInvite(msg, triesLeft - 1); }, 150);
+            return;
+        }
+        // A party member's fight waits out the leader's event. Declining here
+        // would drop it, and the member would fight alone.
+        if (why === 'busy with an event' && Coop.holdsPartyFight && Coop.holdsPartyFight(msg.from)) {
+            if (!msg._held) {
+                msg._held = true;
+                Coop.note('holding off: ' + peerName(msg.from) + ' is in the party and you are busy');
+                Coop.sendTo(msg.from, 'bhold', {});
+            }
+            const peer = Coop.peers.get(msg.from);
+            // "In a fight" can arrive after the invite. Keep the seat until it does, and while it lasts.
+            if (peer && peer.st === 'battle') msg._sawFight = true;
+            const tries = msg._holdTries || 0;
+            if (peer && peer.st !== 'dead' && peer.st !== 'title' && (peer.st === 'battle' || (!msg._sawFight && tries < 40))) {
+                msg._holdTries = tries + 1;
+                setTimeout(function () { answerInvite(msg, triesLeft); }, 200);
+            }
             return;
         }
         if (why) {
@@ -735,9 +758,14 @@
     Coop.on('to:bask', function (msg) {
         const b = Coop.battle;
         if (b && b.role === 'owner') {
+            const asker = Coop.peers.get(msg.from);
+            if (b.scenery && asker && asker.bot) {
+                Coop.sendTo(msg.from, 'bdecline', {});
+                return;
+            }
             if (!b.guests.has(msg.from) && !b.invited.has(msg.from)) {
                 b.invited.set(msg.from, Date.now() + JOIN_WAIT);
-                Coop.sendTo(msg.from, 'binvite', { auto: false, fight: b.fight });
+                Coop.sendTo(msg.from, 'binvite', { auto: false, fight: b.fight, scenery: b.scenery ? 1 : 0 });
             }
         } else if (b && b.role === 'guest') {
             Coop.sendTo(msg.from, 'bredirect', { to: b.owner });
@@ -784,16 +812,32 @@
             mapId: $gameMap.mapId(),
         };
         b.offline = !Coop.world.live;
+        b.scenery = !troopHasFoe(troopId);
         if (b.eventId) Coop.events.sendHold(b.eventId, 'battle');
         Coop.note('fight: troop ' + troopId + (b.eventId ? ' from event ' + b.eventId : '') + ' on map ' + b.mapId);
         for (const peer of Coop.peersHere()) {
+            if (b.scenery && peer.bot) continue;
             // A party mate is pulled in from anywhere on the map.
             if ((peer.st === 'map' || peer.st === 'event') && (Coop.distanceTo(peer) <= JOIN_RANGE || (Coop.inMyParty && Coop.inMyParty(peer.id)))) {
                 b.invited.set(peer.id, Date.now() + JOIN_WAIT);
-                Coop.sendTo(peer.id, 'binvite', { auto: true, fight: b.fight });
+                Coop.sendTo(peer.id, 'binvite', { auto: true, fight: b.fight, scenery: b.scenery ? 1 : 0 });
             }
         }
     };
+
+    // A troop is a real fight when some member can fight. Iron bars, doors and
+    // other scenery have no actions and the "object" element; an empty troop neither.
+    function enemyFights(e) {
+        if (!e) return false;
+        if (e.actions && e.actions.length) return true;
+        const object = (e.traits || []).some((t) => t.code === 11 && t.dataId === 5 && t.value === 0);
+        return !object;
+    }
+    function troopHasFoe(id) {
+        const troop = window.$dataTroops && $dataTroops[id];
+        if (!troop || !troop.members || !troop.members.length) return false;
+        return troop.members.some((m) => m && enemyFights($dataEnemies[m.enemyId]));
+    }
 
     // Two players in the same enemy's scene at once (both talking to the
     // priests): the one whose scene reaches the fight second goes into the
@@ -938,6 +982,13 @@
         if (b && b.role === 'owner') b.invited.delete(msg.from);
     });
 
+    // The leader is busy in an event: keep their seat until they can step in.
+    Coop.on('to:bhold', function (msg) {
+        const b = Coop.battle;
+        if (!b || b.role !== 'owner' || msg.from !== Coop.partyLeader || !b.invited.has(msg.from)) return;
+        b.invited.set(msg.from, Date.now() + 60000);
+    });
+
     function ownerOf(actorId) {
         const b = Coop.battle;
         if (!b || b.role !== 'owner') return 0;
@@ -1041,7 +1092,20 @@
         const b = Coop.battle;
         if (b && b.role === 'owner') {
             const now = Date.now();
-            for (const [id, deadline] of b.invited) if (now > deadline || !Coop.peers.has(id)) b.invited.delete(id);
+            for (const [id, deadline] of b.invited) {
+                const peer = Coop.peers.get(id);
+                if (!peer || peer.st === 'dead' || peer.st === 'title' || (b.mapId && peer.m && peer.m !== b.mapId)) {
+                    b.invited.delete(id);
+                    continue;
+                }
+                // Still in the event that kept them out: the fight does not start without them,
+                // for a minute and a half at most (a long scene, or someone gone from the keys).
+                if (id === Coop.partyLeader && peer.st === 'event' && now - (b.heldSince || (b.heldSince = now)) < 90000) {
+                    b.invited.set(id, now + JOIN_WAIT);
+                    continue;
+                }
+                if (now > deadline) b.invited.delete(id);
+            }
             if (b.invited.size) return; // phase is unchanged, so this is asked again next frame
             integrate(b);
             b.started = true;
@@ -1093,8 +1157,11 @@
             // as released.
             state = {};
             for (const k in this._previousState) state[k] = false;
-            // A guest whose machine has gone silent does not get to stall the fight.
-            if (chooser && Date.now() - chooser.inputAt < 5000) {
+            // A guest whose machine has gone silent does not get to stall the fight. A partner who
+            // chooses by message never sends keys, so the host's keys do not stand in for its turn
+            // (a back pressed there rewinds the turn and the pick arrives for one that is gone).
+            const bot = chooser && Coop.peers.get(who) && Coop.peers.get(who).bot;
+            if (chooser && (bot || Date.now() - chooser.inputAt < 5000)) {
                 for (const k in chooser.input) state[k] = !!chooser.input[k];
             } else {
                 for (const k in local) state[k] = !!local[k];
@@ -1141,12 +1208,33 @@
     // A tell: the enemy shows what comes next round. In this game that is a move that does no
     // harm and trails off ("Salmonsnake is tensing up...", "The stinger is pulsating..."), or
     // anything that sets up the grab and its coin flip (common event 4).
+    // Guard halves formula damage and stops an arm or leg cut. It does not stop burning.
+    // A trailing-off line is a wind-up only when what shares that enemy's actions is a blow
+    // guard actually stops. "Priest waves his lantern..." shares its list with Lantern
+    // (fire, Burning): the burn lands either way, so the wave is not a reason to guard.
+    const BURN = { 88: 1, 75: 1 };
+    function waveGuardWontStop(item, subject) {
+        if (!subject || !subject.isEnemy() || item.damage.type !== 0 || (item.effects || []).length) return false;
+        const enemy = subject.enemy();
+        const seen = {};
+        const others = [];
+        for (const a of (enemy && enemy.actions) || []) {
+            if (!a || a.skillId === item.id || seen[a.skillId]) continue;
+            seen[a.skillId] = 1;
+            const s = $dataSkills[a.skillId];
+            if (s) others.push(s);
+        }
+        const burnsFire = (s) => (s.effects || []).some((f) => f.code === 21 && BURN[f.dataId]) && (s.damage || {}).elementId === 4;
+        const empty = (s) => !((s.damage || {}).type > 0) && !(s.effects || []).length;
+        // Fillers and a burning fire attack only (the priest's lantern arm): at least one burn.
+        return others.some(burnsFire) && others.every((s) => empty(s) || burnsFire(s));
+    }
     let tellTurn = -1;
     const _startAction = BattleManager.startAction;
     BattleManager.startAction = function () {
         const subject = this._subject, action = subject && subject.currentAction();
         const item = action && action.item();
-        if (subject && subject.isEnemy() && item && DataManager.isSkill(item)
+        if (subject && subject.isEnemy() && item && DataManager.isSkill(item) && !waveGuardWontStop(item, subject)
             && ((item.damage.type === 0 && /\.\.\.\s*$/.test(item.name)) || item.effects.some((f) => f.code === 44 && f.dataId === 4))) tellTurn = $gameTroop.turnCount();
         _startAction.call(this);
     };

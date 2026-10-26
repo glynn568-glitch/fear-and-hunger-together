@@ -48,6 +48,50 @@ const { checker } = require('./common');
         const behind = await a.evaluate(() => Array.prototype.filter.call(document.querySelectorAll('[id^="coop-"]'), (el) => !(Number(getComputedStyle(el).zIndex) >= 50)).map((el) => el.id + '=' + getComputedStyle(el).zIndex));
         const panels = await a.evaluate(() => document.querySelectorAll('[id^="coop-"]').length);
         check('every co-op panel is drawn in front of the game picture', panels >= 10 && behind.length === 0, panels + ' panels; behind: ' + behind.join(', '));
+        // Weapons do what their text says, to what they hit: a morning star bleeds and stuns
+        // now and then, a long sword does neither. The enemy bleed wears off.
+        const hits = await a.evaluate(() => {
+            const actor = $gameActors.actor(1), keep = actor._equips[0].object();
+            $gameTroop.setup(1);
+            const swing = (wid) => {
+                actor._equips[0].setObject($dataWeapons[wid]); actor.refresh();
+                const n = {}; let landed = 0;
+                for (let i = 0; landed < 400 && i < 4000; i++) { // 400 landed: a rate read off ~90 drifts past the bounds now and then
+                    const t = $gameTroop.members()[i % 4]; t.recoverAll(); t.clearStates();
+                    const act = new Game_Action(actor); act.setAttack(); act.apply(t);
+                    if (t.result().isHit() && t.isAlive()) landed++; else continue;
+                    for (const sid of t.result().addedStates) n[sid] = (n[sid] || 0) + 1;
+                }
+                return { bleed: (n[29] || 0) / landed, stun: (n[28] || 0) / landed };
+            };
+            const r = { star: swing(38), sword: swing(7), bleedTurns: $dataStates[29].maxTurns, bleedHrg: $dataStates[29].traits.find((x) => x.code === 22).value };
+            actor._equips[0].setObject(keep); actor.refresh(); $gameTroop.clear();
+            return r;
+        });
+        check('a morning star bleeds and stuns what it hits at modest rates, a long sword does not', hits.star.bleed > 0.25 && hits.star.bleed < 0.45 && hits.star.stun > 0.05 && hits.star.stun < 0.2 && !hits.sword.bleed && !hits.sword.stun && hits.bleedTurns === 4 && hits.bleedHrg === -0.05, JSON.stringify(hits));
+        // Silver coins go past 99 (to 999); every other item still stops at 99.
+        const coins = await a.evaluate(() => {
+            $gameParty.gainItem($dataItems[59], 150); $gameParty.gainItem($dataItems[1], 150); $gameParty.gainItem($dataItems[59], 2000);
+            const r = { coins: $gameParty.numItems($dataItems[59]), other: $gameParty.numItems($dataItems[1]) };
+            $gameParty.loseItem($dataItems[59], 999); $gameParty.loseItem($dataItems[1], 99);
+            return r;
+        });
+        check('silver coins count up to 999, other items still stop at 99', coins.coins === 999 && coins.other === 99, JSON.stringify(coins));
+        // A window back copied from an earlier one is the same picture as one painted afresh.
+        const same = await a.evaluate(() => {
+            const px = (w) => Array.from(w._windowBackSprite.bitmap.context.getImageData(0, 0, 200, 100).data).join();
+            const w1 = new Window_Base(0, 0, 237, 131); w1.setTone(40, -30, 10);
+            const w2 = new Window_Base(0, 0, 237, 131); w2.setTone(40, -30, 10);
+            const w3 = new Window_Base(0, 0, 237, 131); w3.setTone(0, 0, 0);
+            return { same: px(w1) === px(w2), toned: px(w1) !== px(w3), shared: w1._windowBackSprite.bitmap !== w2._windowBackSprite.bitmap };
+        });
+        check('a window back copied from an earlier one matches it, its own bitmap, by tone', same.same && same.toned && same.shared, JSON.stringify(same));
+        // The mace's punch1 is mastered ~14 dB hotter than the rest; it plays turned down.
+        const vols = await a.evaluate(() => {
+            const at = (name) => { AudioManager.playSe({ name, volume: 90, pitch: 130, pan: 0 }); const b = AudioManager._seBuffers[AudioManager._seBuffers.length - 1]; return b ? b.volume : null; };
+            return { punch: at('punch1'), other: at('hit_single') };
+        });
+        check('the hottest sound files play turned down, others as the game set them', vols.punch > 0 && vols.other > 0 && Math.abs(vols.punch / vols.other - 0.09) < 0.005, JSON.stringify(vols));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(a ? [a] : []);
     await browser.close();

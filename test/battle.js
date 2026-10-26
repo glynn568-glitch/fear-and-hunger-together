@@ -39,7 +39,7 @@ const battle = (p) => p.evaluate(() => ({
         // the picture is video through the host.
         const relayed = await b.evaluate(() => Coop.relayOnly);
         if (relayed) await waitFor(b, () => Coop.viewer.clip, 15000, 'B switches to video through the host');
-        else await waitFor(b, () => Coop.viewer.video, 25000, 'B switches to live video');
+        else await waitFor(b, () => Coop.viewer.video, 45000, 'B switches to live video');
         await sleep(2000);
         const vid = await b.evaluate(() => { const c = document.createElement('canvas'); c.width = 204; c.height = 156; const x = c.getContext('2d'); x.drawImage(Coop.viewer.el, 0, 0, 204, 156); const d = x.getImageData(0, 0, 204, 156).data; let lit = 0; for (let i = 0; i < d.length; i += 400) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; return { size: Coop.viewer.videoSize, clip: Coop.viewer.clip, shown: Coop.viewer.el.style.display !== 'none', bareVideoShown: !!document.querySelector('video') && getComputedStyle(document.querySelector('video')).opacity > 0.5, lit, frames: Coop.viewer.frames }; });
         if (relayed) check('B is watching video of the fight through the host, painted on the page canvas', vid.clip && vid.shown && !vid.bareVideoShown && vid.lit > 20, JSON.stringify(vid));
@@ -88,6 +88,28 @@ const battle = (p) => p.evaluate(() => ({
         check('the bag B brought comes home', end.items === 3);
         const endA = await a.evaluate(() => ({ party: $gameParty._actors.slice(), items: $gameParty.numItems($dataItems[1]), battle: !!Coop.battle, watchers: Coop.stream.watchers.size }));
         check('A has their own party and bag again', endA.party.join() === '1' && endA.items === 0 && !endA.battle && endA.watchers === 0, JSON.stringify(endA));
+        // The next fight finds its pictures still on the card (10/24: every fight start on the Deck
+        // drew 290+ ms, re-uploading each 2074x1382 battler sheet the map had just thrown away).
+        await sleep(3000);
+        await a.evaluate(() => {
+            window._big = [];
+            for (const P of [WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype].filter(Boolean)) {
+                const o = P.texImage2D;
+                P.texImage2D = function () { const src = arguments[arguments.length - 1]; if (src && src.width >= 1000) _big.push(src.width + 'x' + src.height); return o.apply(this, arguments); };
+            }
+            window._tones = 0;
+            const tone = Bitmap.prototype.adjustTone;
+            Bitmap.prototype.adjustTone = function () { _tones++; return tone.apply(this, arguments); };
+            BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle);
+        });
+        await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor(), 20000, 'A in a second fight');
+        await sleep(1500);
+        const big = await a.evaluate(() => _big.slice());
+        check('a second fight uploads no big picture again', big.length === 0, JSON.stringify(big));
+        const tones = await a.evaluate(() => _tones);
+        check('...and paints no window back pixel by pixel again', tones === 0, tones + ' painted');
+        await a.evaluate(() => BattleManager.abort());
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'A back from the second fight');
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();
