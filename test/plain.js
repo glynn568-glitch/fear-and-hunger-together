@@ -153,15 +153,28 @@ function holdTraps(ids) {
         });
         check('follow and party orders stick to the one who said them', followed.withId === 4242 && /Enki/.test(followed.afterFollow) && followed.leader === 4242, JSON.stringify(followed));
 
-        // A wind-up anywhere in the round just played means guard, even with a partner's own guard shown after it;
-        // one from an earlier round does not.
+        // A grab the troop forces at the end of this turn (brief.grab) means guard now. Its line in the log
+        // ("The monster takes a step closer...") shows only as it lands: guarding after it wastes the turn.
         const guardPicks = await bot.evaluate(() => {
-            const base = { allies: [{ i: 0, hp: 100, mhp: 100, how: 'unhurt' }], items: [], tell: false, enemies: [{ i: 0, name: 'Guard [torso]', how: 'unhurt', hit: 95, strikes: true, blows: 2 }] };
+            const base = { allies: [{ i: 0, hp: 100, mhp: 100, how: 'unhurt' }], items: [], enemies: [{ i: 0, name: 'Guard [torso]', how: 'unhurt', hit: 95, strikes: true, blows: 2 }] };
             const windup = 'The monster takes a step closer...';
-            return [BOT.plainPick(Object.assign({}, base, { log: [windup, 'Guard'], round: [windup, 'Guard'] })).do,
-                BOT.plainPick(Object.assign({}, base, { log: [windup, 'Guard'], round: [] })).do];
+            return [BOT.plainPick(Object.assign({}, base, { log: [], grab: windup })).do,
+                BOT.plainPick(Object.assign({}, base, { log: [windup, 'Guard'], grab: '' })).do];
         });
-        check('it guards on a wind-up in the round just played, and only then', guardPicks.join() === 'guard,attack', guardPicks.join());
+        check('it guards in the turn a grab comes, not after its line shows', guardPicks.join() === 'guard,attack', guardPicks.join());
+        // One player's guard makes a grab miss for everyone: with Ann already guarding this turn, it attacks.
+        const covered = await bot.evaluate(() => {
+            const base = { turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [], items: [], log: [], allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }], enemies: [{ i: 0, name: 'Priest [torso]', how: 'unhurt', states: [], hit: 95, strikes: false, ends: true, blows: 8 }] };
+            BOT.chantSaid = false;
+            const before = BOT.lines.length;
+            const grab = Object.assign({}, base, { grab: 'The monster takes a step closer...', guarded: 'Ann' });
+            const chant = Object.assign({}, base, { grab: 'Priest chants something...', guarded: 'Ann' });
+            const out = { grab: BOT.plainPick(grab).do, chant: BOT.plainPick(chant).do, text: BOT.briefText(grab), said: BOT.lines.slice(before).length };
+            BOT.chantSaid = false;
+            return out;
+        });
+        check('with Ann already guarding in that turn, it attacks instead, and the brief says why',
+            covered.grab === 'attack' && covered.chant === 'attack' && covered.said === 0 && /Ann is guarding, which makes it miss for everyone/.test(covered.text) && !/Wind-up/.test(covered.text), JSON.stringify(covered));
         // Priests, from the data: torso is the kill; the lantern wave does nothing guard
         // must answer; one "Priest chants something..." means the next turn is the lethal chant.
         const priests = await bot.evaluate(() => {
@@ -173,26 +186,32 @@ function holdTraps(ids) {
             const base = { turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [], items: [], allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }], enemies };
             BOT.fightOrder = null;
             BOT.chantSaid = false;
-            const torso = BOT.plainPick(Object.assign({ tell: false, round: [], log: [] }, base));
-            const wave = BOT.plainPick(Object.assign({ tell: true, round: ['Priest waves his lantern...'], log: ['Priest waves his lantern...'] }, base));
-            const chantBrief = Object.assign({ tell: false, round: [], log: ['Priest chants something...'] }, base);
+            const torso = BOT.plainPick(Object.assign({ grab: '', log: [] }, base));
+            const wave = BOT.plainPick(Object.assign({ grab: '', log: ['Priest waves his lantern...'] }, base));
+            const forced = Object.assign({ grab: 'The monster takes a step closer...', log: [] }, base);
+            const windup = { pick: BOT.plainPick(forced).do, text: /Wind-up: "The monster takes a step closer\.\.\." comes this turn/.test(BOT.briefText(forced)), idle: /Wind-up/.test(BOT.briefText(Object.assign({}, base, { grab: '', log: ['The yellow mage forms magical hand signs...'] }))) };
+            // A chant already in the log is not the one coming (Priest3's chant asks nothing of a guard).
+            const pastChant = BOT.plainPick(Object.assign({ grab: '', log: ['Priest chants something...'] }, base));
+            const chantBrief = Object.assign({ grab: 'Priest chants something...', log: [] }, base);
             const before = BOT.lines.length;
             const text = BOT.briefText(chantBrief);
             const chant = BOT.plainPick(chantBrief);
             BOT.plainPick(chantBrief);
             const said = BOT.lines.slice(before);
             const chat = [...document.querySelectorAll('#coop-chat .line')].filter((l) => /Guard now, the chant!/.test(l.textContent)).length;
-            return { torso, wave, chant, said, chat, line: (text.match(/Everyone must guard this turn or the chant can kill the whole party\./) || [''])[0] };
+            return { torso, wave, windup, pastChant, chant, said, chat, line: (text.match(/The chant comes this turn: guard now or it can kill the whole party\./) || [''])[0] };
         });
         check('vs a priest, with no order, it goes for the torso', priests.torso.do === 'attack' && priests.torso.target === 0, JSON.stringify(priests.torso));
         check('a lantern wave is not a wind-up', priests.wave.do !== 'guard', JSON.stringify(priests.wave));
-        check('after one chant it guards, the brief says everyone must, and it says so in chat once',
-            priests.chant.do === 'guard' && priests.line.length > 0 && priests.said.length === 1 && /Guard now, the chant!/.test(priests.said[0]) && priests.chat === 1,
-            JSON.stringify({ chant: priests.chant, said: priests.said, chat: priests.chat, line: priests.line }));
+        check('a grab coming is a wind-up: it guards and the brief names it; filler gets no such line',
+            priests.windup.pick === 'guard' && priests.windup.text && !priests.windup.idle, JSON.stringify(priests.windup));
+        check('in the turn the chant comes it guards, the brief says so, and it says so in chat once; a chant already shown is not that turn',
+            priests.chant.do === 'guard' && priests.pastChant.do === 'attack' && priests.line.length > 0 && priests.said.length === 1 && /Guard now, the chant!/.test(priests.said[0]) && priests.chat === 1,
+            JSON.stringify({ chant: priests.chant, pastChant: priests.pastChant, said: priests.said, chat: priests.chat, line: priests.line }));
         // Enemies Grok named from the data: the part to cut is the one that takes fewest blows among
         // those that strike or kill (blows = hits needed / chance to hit).
         const bosses = await bot.evaluate(() => {
-            const pick = (enemies) => { const b = { allies: [], items: [], tell: false, round: [], log: [], enemies: enemies.map((e, i) => Object.assign({ i, how: 'unhurt' }, e)) }; return b.enemies[BOT.plainPick(b).target].name; };
+            const pick = (enemies) => { const b = { allies: [], items: [], grab: '', log: [], enemies: enemies.map((e, i) => Object.assign({ i, how: 'unhurt' }, e)) }; return b.enemies[BOT.plainPick(b).target].name; };
             return {
                 // Moonless: only the head howls (44% to hit); the torso is 1400 HP.
                 moonless: pick([{ name: 'Moonless [torso]', strikes: false, blows: 3 / 0.95 }, { name: 'Moonless [head]', strikes: true, blows: 1 / 0.44 }, { name: 'Moonless [paw]', strikes: false, blows: 1 }]),
@@ -205,7 +224,7 @@ function holdTraps(ids) {
         check('Moonless: the head that howls; Old guardian: the arms that throw; a rat: the rat', bosses.moonless === 'Moonless [head]' && bosses.guardian === 'Old guardian [left arm]' && bosses.rat === 'Rat', JSON.stringify(bosses));
         // Grok Build took 9-25 s a fight turn (10/23): a model that slow plays its fights by the same rules, at once.
         const slow = await bot.evaluate(async () => {
-            const brief = { turn: 1, you: 'D\'arce', attack: { weapon: 'Sword' }, skills: [], items: [], tell: false, round: [], log: [],
+            const brief = { turn: 1, you: 'D\'arce', attack: { weapon: 'Sword' }, skills: [], items: [], grab: '', log: [],
                 allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }],
                 enemies: [{ i: 0, name: 'Guard [left arm]', how: 'unhurt', states: [], hit: 90, strikes: true, blows: 1 }, { i: 1, name: 'Guard [torso]', how: 'unhurt', states: [], hit: 95, ends: true, blows: 2 }] };
             BOT.fightMs = [3000, 2500];
@@ -234,12 +253,12 @@ function holdTraps(ids) {
             try {
                 Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'take the head' });
                 for (let i = 0; i < 20 && !(BOT.fightOrder && BOT.fightOrder.kind === 'attack'); i++) await new Promise((r) => setTimeout(r, 100));
-                const brief = { turn: 1, you: 'D\'arce', attack: { weapon: 'Sword' }, skills: [], tell: false, round: [], log: [], allies: [{ i: 0, name: 'Ann', how: 'hurt', hp: 80, mhp: 100, states: [] }], items: [],
+                const brief = { turn: 1, you: 'D\'arce', attack: { weapon: 'Sword' }, skills: [], grab: '', log: [], allies: [{ i: 0, name: 'Ann', how: 'hurt', hp: 80, mhp: 100, states: [] }], items: [],
                     enemies: [{ i: 0, name: 'Guard [left arm]', how: 'unhurt', states: [], hit: 90, strikes: true, blows: 1 }, { i: 1, name: 'Guard [head]', how: 'unhurt', states: [], hit: 40, strikes: false, blows: 4 }] };
                 const head = { pick: BOT.plainPick(brief), text: BOT.briefText ? BOT.briefText(brief) : '' };
                 Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'guard' });
                 for (let i = 0; i < 20 && !(BOT.fightOrder && BOT.fightOrder.kind === 'guard'); i++) await new Promise((r) => setTimeout(r, 100));
-                const guard = BOT.plainPick({ tell: false, round: [], log: [], allies: [{ i: 0, hp: 100, mhp: 100, how: 'unhurt' }], items: [], enemies: [{ i: 0, name: 'Rat', how: 'unhurt', strikes: true, blows: 1 }] });
+                const guard = BOT.plainPick({ grab: '', log: [], allies: [{ i: 0, hp: 100, mhp: 100, how: 'unhurt' }], items: [], enemies: [{ i: 0, name: 'Rat', how: 'unhurt', strikes: true, blows: 1 }] });
                 return { head, guard };
             } finally {
                 Coop.battle = was;
@@ -260,13 +279,13 @@ function holdTraps(ids) {
             const rat = {
                 turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [],
                 items: [{ id: 132, name: 'Red herb', count: 1 }],
-                tell: false, round: [], log: [],
+                grab: '', log: [],
                 allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }],
                 enemies: [{ i: 0, name: 'Rat', how: 'unhurt', states: [], hit: 95, strikes: true, ends: false, blows: 1 }],
             };
             const headBrief = {
                 turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [], items: [],
-                tell: false, round: [], log: [],
+                grab: '', log: [],
                 allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }],
                 enemies: [
                     { i: 0, name: 'Guard [left arm]', how: 'unhurt', states: [], hit: 90, strikes: true, blows: 1 },
@@ -314,7 +333,15 @@ function holdTraps(ids) {
                 const modelLeft = BOT.fightOrder && BOT.fightOrder.kind;
                 window.fhBrain = async () => null;
                 const model2 = await BOT.decide(rat);
-                return { mapHerb, mapGuard, mapPick, head1, head2, headKept, guard1, guard2, guardKept, herb1, herbLeft, herbTold: /told you:/.test(herbText), herb2, skill1, skillLeft, skill2, model1, model1FromModel, modelLeft, model2 };
+                // Gnomes: a guard the model picks on its own is overruled; called for by a grab coming, it stands.
+                BOT.fightOrder = null;
+                const gnomes = Object.assign({}, rat, { grab: '', log: [], enemies: [0, 1, 2].map((i) => ({ i, name: 'Cavegnome', how: i ? 'unhurt' : 'hurt', states: [], hit: 95, strikes: true, inflicts: ['Bleeding', 'Infection arm', 'Infection leg'], blows: i ? 3 : 1 })) });
+                window.fhBrain = async () => ({ do: 'guard' });
+                const gnome1 = await BOT.decide(gnomes);
+                const gnome1Overruled = !!BOT.picks[BOT.picks.length - 1].overruled;
+                const gnomeTold = /Cavegnome .*even through a guard/.test(BOT.briefText(gnomes));
+                const gnome2 = await BOT.decide(Object.assign({}, gnomes, { grab: 'The monster takes a step closer...' }));
+                return { mapHerb, mapGuard, mapPick, head1, head2, headKept, guard1, guard2, guardKept, herb1, herbLeft, herbTold: /told you:/.test(herbText), herb2, skill1, skillLeft, skill2, model1, model1FromModel, modelLeft, model2, gnome1, gnome1Overruled, gnomeTold, gnome2 };
             } finally {
                 window.fhBrain = brain;
                 Coop.battle = was;
@@ -330,6 +357,9 @@ function holdTraps(ids) {
             && spent.skill1.do === 'skill' && spent.skill1.id === 66 && spent.skill1.target === 0 && !spent.skillLeft && spent.skill2.do === 'attack'
             && spent.model1FromModel && spent.model1.do === 'item' && spent.model1.id === 132 && !spent.modelLeft && spent.model2.do === 'attack',
             JSON.stringify(spent));
+        check('vs cavegnomes it is told their bites go through a guard; a guard it picks unasked becomes a blow on the weakest, a wind-up still gets one',
+            spent.gnomeTold && spent.gnome1.do === 'attack' && spent.gnome1.target === 0 && spent.gnome1Overruled && spent.gnome2.do === 'guard',
+            JSON.stringify({ gnome1: spent.gnome1, overruled: spent.gnome1Overruled, told: spent.gnomeTold, gnome2: spent.gnome2 }));
 
         const named = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
@@ -389,7 +419,7 @@ function holdTraps(ids) {
                 turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [], items: [],
                 allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }],
                 enemies: [{ i: 0, name: 'Priest [torso]', how: 'unhurt', states: [], hit: 95, strikes: false, ends: true, blows: 8 }],
-                log: ['Priest chants something...'], round: [], tell: false,
+                log: [], grab: 'Priest chants something...',
             };
             const before = BOT.lines.length;
             const text = BOT.briefText(chantBrief);
@@ -399,7 +429,7 @@ function holdTraps(ids) {
             BOT.chantSaid = prev.chantSaid;
             BOT.addressed = prev.addressed;
             BOT.spokeTo = prev.spokeTo;
-            return { said, addressed: addressed && addressed.id, line: /Everyone must guard this turn or the chant can kill the whole party\./.test(text) };
+            return { said, addressed: addressed && addressed.id, line: /The chant comes this turn/.test(text) };
         });
         check('building a fight brief does not speak and does not mark the partner as just addressed',
             quietBrief.said.length === 0 && !quietBrief.addressed && quietBrief.line,
@@ -461,6 +491,39 @@ function holdTraps(ids) {
         check('a player leaving clears their order',
             weighed.had && !weighed.still && /Enki \([^)]+\): follow me/.test(weighed.after) && !/Pho \([^)]+\):/.test(weighed.after),
             JSON.stringify({ had: weighed.had, still: weighed.still, after: String(weighed.after || '').slice(0, 400) }));
+
+        // Told to wait by the second player, it goes back to that player when the wait ends.
+        const backTo = await bot.evaluate(async () => {
+            const ann = Coop.others().find((p) => !p.bot);
+            const settle = async (pred) => { for (let i = 0; i < 30 && !pred(); i++) await new Promise((r) => setTimeout(r, 100)); };
+            Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 });
+            try {
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'Claude, wait here' });
+                await settle(() => BOT.mode === 'wait' && BOT.waitFor);
+                const waited = BOT.mode === 'wait';
+                if (BOT.waitFor) BOT.waitFor.hp = 1e9; // as if hurt: the wait ends
+                await settle(() => BOT.mode !== 'wait');
+                // Enki dies: it goes with Ann meanwhile, and back to Enki once they are up.
+                Coop.peers.get(4242).st = 'dead';
+                const whileDead = (BOT.leader() || {}).id;
+                Coop.peers.get(4242).st = 'map';
+                const revived = (BOT.leader() || {}).id;
+                return { waited, mode: BOT.mode, with: BOT.with, whileDead, revived, ann: ann && ann.id };
+            } finally {
+                Coop.peers.delete(4242);
+                BOT.orders = {};
+                BOT.orderFrom = 0;
+                BOT.mode = 'follow';
+                BOT.with = ann ? ann.id : 0;
+                BOT.waitFor = null;
+                BOT.addressed = null;
+                BOT.spokeTo = 0;
+            }
+        });
+        check('told to wait by the second player, it follows that player when the wait ends',
+            backTo.waited && backTo.mode === 'follow' && backTo.with === 4242, JSON.stringify(backTo));
+        check('the one it follows dead, it goes with the living player until they are up',
+            backTo.whileDead === backTo.ann && backTo.revived === 4242, JSON.stringify(backTo));
 
         //--- needs, said out loud -------------------------------------------------
         // Anything already on the map counts as searched, or a crate in reach would be eaten instead of asked for.
@@ -571,6 +634,36 @@ function holdTraps(ids) {
         });
         await sleep(7000);
         const walked = await bot.evaluate(() => { clearInterval(window.__xyTimer); return { trail: window.__xy, at: [$gamePlayer.x, $gamePlayer.y], trap: Coop.trapAt(27, 66) }; });
+        // The same trap, a scripted route onto it: the wrap must not refuse, or Wait for Completion hangs.
+        const routeAt = await bot.evaluate((ids) => {
+            $gameMap.event(ids[0]).locate(27, 66);
+            BOT.mode = 'wait'; BOT.forage = null; BOT.trail = null; BOT.errand = null; BOT.goal = null;
+            $gameMap._interpreter.clear(); $gameMessage.clear(); $gameTemp.clearCommonEvent();
+            $gamePlayer.locate(27, 67);
+            // The game's own speed check (common event 40, parallel) forces a one-step route on the player every few
+            // frames; under load one can replace this route before its step. Paused here, on this page only.
+            for (const ce of $gameMap._commonEvents) if (ce._commonEventId === 40) { ce.__update = ce.update; ce.update = function () {}; }
+            const pass = $gamePlayer.canPass(27, 67, 8);
+            const trap = Coop.trapAt(27, 66);
+            $gamePlayer.forceMoveRoute({ list: [{ code: 4 }, { code: 0 }], repeat: false, skippable: false, wait: true });
+            return { pass, trap, from: [$gamePlayer.x, $gamePlayer.y], forcing: $gamePlayer.isMoveRouteForcing() };
+        }, trapIds);
+        let forced = null;
+        for (let i = 0; i < 15; i++) {
+            await sleep(200);
+            forced = await bot.evaluate(() => ({ forcing: $gamePlayer.isMoveRouteForcing(), at: [$gamePlayer.x, $gamePlayer.y], trap: Coop.trapAt(27, 66) }));
+            if (forced && !forced.forcing) break;
+        }
+        check('a forced move route onto an armed trap finishes and the body moves',
+            !!(routeAt && routeAt.pass && routeAt.trap && routeAt.forcing && forced && !forced.forcing && forced.at[0] === 27 && forced.at[1] === 66 && forced.trap),
+            JSON.stringify({ routeAt, forced }));
+        await bot.evaluate(() => {
+            for (const ce of $gameMap._commonEvents) if (ce.__update) { ce.update = ce.__update; delete ce.__update; }
+            if ($gamePlayer.isMoveRouteForcing()) $gamePlayer.processRouteEnd();
+            BOT.mode = 'follow';
+            $gamePlayer.locate(27, 67);
+            $gameMap._interpreter.clear(); $gameMessage.clear();
+        });
         await bot.evaluate((id) => { $gameSelfSwitches.setValue([$gameMap.mapId(), id, 'A'], true); $gameMap.event(id).refresh(); }, trapIds[0]);
         const sprung = await bot.evaluate(() => Coop.trapAt(27, 66));
         const moved = walked.trail.some((s) => s !== '27,67');

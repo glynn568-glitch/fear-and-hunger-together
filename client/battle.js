@@ -1196,58 +1196,104 @@
     function stateNames(b) {
         return b.states().map((s) => s.name).filter((n) => n && n !== n.toUpperCase());
     }
+    // What an enemy's blows leave on you that a guard does not keep off. Guard (state 2) resists only
+    // arm and leg cuts; a cavegnome's Gnaw gives Bleeding and arm/leg Infection (the limb rots) through it.
+    function inflicts(e) {
+        const kept = ($dataStates[2].traits || []).filter((t) => t.code === 14).map((t) => t.dataId);
+        const out = [];
+        for (const a of e.enemy().actions) {
+            for (const f of ($dataSkills[a.skillId] || {}).effects || []) {
+                const n = f.code === 21 && f.dataId > 0 && kept.indexOf(f.dataId) < 0 && $dataStates[f.dataId].name;
+                if (n && n !== n.toUpperCase() && out.indexOf(n) < 0) out.push(n);
+            }
+        }
+        return out;
+    }
     const battleLog = [];
-    const battleLogTurn = []; // the round each line was shown in
     const _addText = Window_BattleLog.prototype.addText;
     Window_BattleLog.prototype.addText = function (text) {
         _addText.call(this, text);
         const line = Coop.plainText ? Coop.plainText(text).text : String(text);
-        if (line && battleLog[battleLog.length - 1] !== line) { battleLog.push(line); battleLogTurn.push($gameTroop.turnCount()); }
-        if (battleLog.length > 40) { battleLog.shift(); battleLogTurn.shift(); }
+        if (line && battleLog[battleLog.length - 1] !== line) battleLog.push(line);
+        if (battleLog.length > 40) battleLog.shift();
     };
-    // A tell: the enemy shows what comes next round. In this game that is a move that does no
-    // harm and trails off ("Salmonsnake is tensing up...", "The stinger is pulsating..."), or
-    // anything that sets up the grab and its coin flip (common event 4).
-    // Guard halves formula damage and stops an arm or leg cut. It does not stop burning.
-    // A trailing-off line is a wind-up only when what shares that enemy's actions is a blow
-    // guard actually stops. "Priest waves his lantern..." shares its list with Lantern
-    // (fire, Burning): the burn lands either way, so the wave is not a reason to guard.
-    const BURN = { 88: 1, 75: 1 };
-    function waveGuardWontStop(item, subject) {
-        if (!subject || !subject.isEnemy() || item.damage.type !== 0 || (item.effects || []).length) return false;
-        const enemy = subject.enemy();
-        const seen = {};
-        const others = [];
-        for (const a of (enemy && enemy.actions) || []) {
-            if (!a || a.skillId === item.id || seen[a.skillId]) continue;
-            seen[a.skillId] = 1;
-            const s = $dataSkills[a.skillId];
-            if (s) others.push(s);
-        }
-        const burnsFire = (s) => (s.effects || []).some((f) => f.code === 21 && BURN[f.dataId]) && (s.damage || {}).elementId === 4;
-        const empty = (s) => !((s.damage || {}).type > 0) && !(s.effects || []).length;
-        // Fillers and a burning fire attack only (the priest's lantern arm): at least one burn.
-        return others.some(burnsFire) && others.every((s) => empty(s) || burnsFire(s));
+    // A grab (the guard's charge, the night lurch's leap, the priest's chant, the harvestman's arms) comes at
+    // the END of a turn: a turn-end page of the troop forces a move ("The monster takes a step closer...")
+    // whose common event turns on a switch, and that switch's page asks at once whether the protagonist
+    // guarded this turn (switch 1281), else the coin decides. The line shows only as the grab comes, so the
+    // guard has to be chosen before it: this runs those pages ahead, on copies of the switches and variables
+    // (their counters, the parts still on), and names the move one of them forces when this turn ends.
+    // Two parts pick a grab as their own move instead, in the turn (the salmonsnake's tongue, once out; a
+    // guard acts first in a turn). Other lines that trail off, forced or picked ("The yellow mage forms
+    // magical hand signs..."), ask nothing of a guard; a blow forced at a turn's end lands after every
+    // guard is down.
+    const grabsOf = {};
+    function grabMoves(troop) {
+        if (grabsOf[troop.id]) return grabsOf[troop.id];
+        const asks = new Set(troop.pages.filter((p) => p.conditions.switchValid && p.list.some((c) => c.code === 111 && c.parameters[0] === 0 && c.parameters[1] === JUST_GUARD)).map((p) => p.conditions.switchId));
+        const turnsOn = (ce) => (($dataCommonEvents[ce] || {}).list || []).some((c) => c.code === 121 && c.parameters[2] === 0 && [...asks].some((id) => id >= c.parameters[0] && id <= c.parameters[1]));
+        const moves = new Set();
+        if (asks.size) for (const k of $dataSkills) if (k && k.effects.some((f) => f.code === 44 && turnsOn(f.dataId))) moves.add(k.id);
+        return (grabsOf[troop.id] = moves);
     }
-    let tellTurn = -1;
-    const _startAction = BattleManager.startAction;
-    BattleManager.startAction = function () {
-        const subject = this._subject, action = subject && subject.currentAction();
-        const item = action && action.item();
-        if (subject && subject.isEnemy() && item && DataManager.isSkill(item) && !waveGuardWontStop(item, subject)
-            && ((item.damage.type === 0 && /\.\.\.\s*$/.test(item.name)) || item.effects.some((f) => f.code === 44 && f.dataId === 4))) tellTurn = $gameTroop.turnCount();
-        _startAction.call(this);
-    };
-    const _command117 = Game_Interpreter.prototype.command117;
-    Game_Interpreter.prototype.command117 = function () {
-        if (this._params[0] === 4 && $gameParty.inBattle()) tellTurn = $gameTroop.turnCount();
-        return _command117.call(this);
+    const DRY_RUN = [0, 111, 411, 412, 121, 122, 339]; // conditions, switches, variables, forced moves
+    function grabComing() {
+        const troop = $gameTroop.troop(), moves = grabMoves(troop);
+        if (!moves.size) return '';
+        for (const e of $gameTroop.aliveMembers()) {
+            const own = e.canMove() && e.enemy().actions.find((a) => moves.has(a.skillId));
+            if (own) return $dataSkills[own.skillId].name;
+        }
+        // Writes to the real ones are sent to every player.
+        const dry = (real) => { const copy = Object.create(Object.getPrototypeOf(real)); copy._data = real._data.slice(); copy.setValue = function (id, v) { this._data[id] = v; }; return copy; };
+        const run = new Game_Interpreter();
+        let name = '';
+        // As the engine forces it: on a part still standing (cut the guard's cleaver arm and its charge never comes).
+        run.command339 = function () {
+            if (this._params[0] === 0 && moves.has(this._params[2])) this.iterateBattler(0, this._params[1], (e) => { if (!name && !e.isDeathStateAffected()) name = $dataSkills[this._params[2]].name; });
+            return true;
+        };
+        const switches = $gameSwitches, variables = $gameVariables;
+        $gameSwitches = dry(switches);
+        $gameVariables = dry(variables);
+        try {
+            for (const page of troop.pages) {
+                if (!page.conditions.turnEnding || !page.list.some((c) => c.code === 339 && moves.has(c.parameters[2]))) continue;
+                run.setup(page.list.filter((c) => DRY_RUN.indexOf(c.code) >= 0));
+                while (run.isRunning() && run.executeCommand()) { /* nothing kept here waits */ }
+            }
+        } finally {
+            $gameSwitches = switches;
+            $gameVariables = variables;
+        }
+        return name;
+    }
+    // Part index -> it has a grab of its own now, and a troop page turns it back into a form without one as
+    // soon as it is hurt at all (the salmonsnake's tongue, hit while out: it snatches every turn until then).
+    function pullsBack(i) {
+        const troop = $gameTroop.troop(), moves = grabMoves(troop), e = $gameTroop.members()[i];
+        if (!e || !e.enemy().actions.some((a) => moves.has(a.skillId))) return false;
+        return troop.pages.some((p) => p.conditions.enemyValid && p.conditions.enemyIndex === i && p.conditions.enemyHp >= 99
+            && p.list.some((c) => c.code === 336 && c.parameters[0] === i && !$dataEnemies[c.parameters[1]].actions.some((a) => moves.has(a.skillId))));
+    }
+    // A forced action with no skill left by its turn (the battler's actions made anew meanwhile; marathon 10/28,
+    // Lord of flies) is dropped, as the engine drops an invalid action on a normal turn: the force is undone,
+    // with what YEP kept from before it. Started, it read the missing skill and stopped the game.
+    const _processForcedAction = BattleManager.processForcedAction;
+    BattleManager.processForcedAction = function () {
+        const battler = this._actionForcedBattler, action = battler && battler.currentAction();
+        if (battler && !(action && action.item())) {
+            this._actionForcedBattler = null;
+            if (action) battler.removeCurrentAction();
+            const kept = this._forceActionQueue && this._forceActionQueue.shift();
+            if (kept) this.resetPreForceActionSettings(kept);
+            return;
+        }
+        _processForcedAction.call(this);
     };
     const _battleStart = BattleManager.startBattle;
     BattleManager.startBattle = function () {
         battleLog.length = 0;
-        battleLogTurn.length = 0;
-        tellTurn = -1;
         _battleStart.call(this);
     };
 
@@ -1282,17 +1328,18 @@
                 const dmg = Math.max(1, swing.evalDamageFormula(e) * swing.calcElementRate(e));
                 const at = endsAt()[i];
                 const left = at == null ? e.hp : e.hp - e.mhp * at / 100;
-                return { i, name: e.name(), how: condition(e), states: stateNames(e), hit: Math.round(hit * 100), strikes: e.enemy().actions.length > 0, ends: at != null, blows: Math.ceil(Math.max(1, left) / dmg) / Math.max(0.05, hit) };
+                return { i, name: e.name(), how: condition(e), states: stateNames(e), hit: Math.round(hit * 100), strikes: e.enemy().actions.length > 0, inflicts: inflicts(e), ends: at != null, pullsBack: pullsBack(i), blows: Math.ceil(Math.max(1, left) / dmg) / Math.max(0.05, hit) };
             }).filter((e) => e.how !== 'gone' || /\[/.test(e.name)),
             allies: $gameParty.battleMembers().map((a, i) => ({ i, name: a.name(), player: whose(a), hp: a.hp, mhp: a.mhp, how: condition(a), states: stateNames(a) })),
             attack: { weapon: (actor.weapons()[0] || { name: 'bare hands' }).name },
             skills: actor.skills().filter((k) => k.name).map((k) => ({ id: k.id, name: k.name, usable: actor.canUse(k), about: String(k.description || '').replace(/\s+/g, ' ').trim().slice(0, 140) })),
             items: [],
             log: battleLog.slice(-12),
-            // What the round just played showed (a wind-up there means guard now).
-            round: battleLog.filter((l, i) => battleLogTurn[i] === $gameTroop.turnCount()),
-            tell: tellTurn === $gameTroop.turnCount(),
+            // A grab that comes this turn unless a player guards in it.
+            grab: grabComing(),
         };
+        // A player who has already chosen to guard this turn: one guard makes the grab miss for everyone.
+        brief.guarded = brief.grab ? playerLeads().filter((a) => a !== actor && a._actions.some((x) => x.isGuard())).map(whose)[0] || '' : '';
         const list = function () {
             return $gameParty.items().filter((it) => it.occasion === 0 || it.occasion === 1).filter((it) => actor.canUse(it))
                 .map((it) => ({ id: it.id, name: it.name, count: $gameParty.numItems(it), about: String(it.description || '').replace(/\s+/g, ' ').trim().slice(0, 120) }));
@@ -1357,25 +1404,38 @@
 
     //--- a well-timed guard ---------------------------------------------------
 
-    // Guarding as an enemy winds up (the guard's charge, and many more) makes
-    // the attack miss. The game decides that with switch 1281, set by its
-    // "Just Guard" event, which only asks whether THE protagonist is guarding:
-    // on the machine running the fight that is the owner's character alone.
-    // In a shared fight every player's own character counts.
+    // Guarding in the turn a grab comes (the guard's charge, the night lurch's
+    // leap, the priest's chant) makes it miss. The grab comes at the turn's end,
+    // when every guard is already down, so the game keeps the guard in switch
+    // 1281: its "Just Guard" event, run by each guard, leaves it on if THE
+    // protagonist is guarding, and the turn's end turns it off. On the machine
+    // running the fight that is the owner's character alone. In a shared fight
+    // every player's own character counts.
     const JUST_GUARD = 1281;
+    const JUST_GUARD_EVENTS = [153, 171];
     const GUARD_STATE = 2;
-    function playersGuarding() {
+    // Each player's own character in a shared fight (none in a fight of one).
+    function playerLeads() {
         const b = Coop.battle;
-        if (!b || b.role !== 'owner' || !b.guests.size) return false;
+        if (!b || b.role !== 'owner' || !b.guests.size) return [];
         const leads = [$gameParty._actors.filter((id) => !guestActorIds(b).has(id))[0]];
         for (const g of b.guests.values()) if (!g.quit) leads.push(g.actors[0]);
-        return leads.some((id) => { const a = id && $gameActors.actor(id); return !!a && a.isAlive() && a.isStateAffected(GUARD_STATE); });
+        return leads.map((id) => id && $gameActors.actor(id)).filter((a) => a && a.isAlive());
+    }
+    function playersGuarding() {
+        return playerLeads().some((a) => a.isStateAffected(GUARD_STATE));
+    }
+    // The event's "is the protagonist guarding" question.
+    function asksProtagonistGuard(interpreter) {
+        const p = interpreter._params;
+        return p[0] === 4 && p[2] === 6 && p[3] === GUARD_STATE && $gameParty.inBattle()
+            && JUST_GUARD_EVENTS.some((id) => $dataCommonEvents[id] && $dataCommonEvents[id].list === interpreter._list);
     }
     const _command111 = Game_Interpreter.prototype.command111;
     Game_Interpreter.prototype.command111 = function () {
-        const p = this._params;
-        if (p[0] === 0 && p[1] === JUST_GUARD && $gameParty.inBattle() && !$gameSwitches.value(JUST_GUARD) && playersGuarding()) {
-            $gameSwitches.setValue(JUST_GUARD, true);
+        if (asksProtagonistGuard(this) && playersGuarding()) {
+            this._branch[this._indent] = true;
+            return true;
         }
         return _command111.call(this);
     };

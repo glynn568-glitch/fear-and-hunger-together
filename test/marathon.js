@@ -204,8 +204,18 @@ async function whereBusy(p) {
                     if (!window.$gameParty || !$gameParty.members || $gameParty.inBattle()) return;
                     for (const m of $gameParty.members()) if (m.isAlive()) { m.setHp(m.mhp); m.setMp(m.mmp); }
                 }, 2000));
+                // Scripted game overs (sanity, lost ghost fights, lose branches) are skipped, not died.
+                await p.evaluate(() => {
+                    window.__skips = [];
+                    Game_Interpreter.prototype.command353 = function () {
+                        const ce = $dataCommonEvents.find((c) => c && c.list === this._list);
+                        const ev = $gameMap.event(this._eventId);
+                        window.__skips.push((ce ? 'ce' + ce.id + ' ' + ce.name + ' from ev' + this._eventId + (ev ? ' ' + ev.event().name : '') : 'ev' + this._eventId + (ev ? ' ' + ev.event().name : '')) + ' on map ' + $gameMap.mapId());
+                        return true;
+                    };
+                });
             }
-            event('start', 'immortal: health kept up; the dead are called back by their partner');
+            event('start', 'immortal: health kept up; scripted game overs skipped; the dead are called back by their partner');
         }
         await host.evaluate(installBot, { lead: true, once: true, character: arg('host', 'knight'), brainless: true, prefer });
         event('start', `speed x${SPEED}, ${MINUTES} min, host starts the run` + (prefer.length ? ', ' + prefer[0] : ''));
@@ -261,6 +271,7 @@ async function whereBusy(p) {
                     event('revive', alive.label + ' calls ' + dead.label + ' back (immortal)');
                 }
             }
+            if (IMMORTAL) for (const p of pages) for (const k of await p.evaluate(() => window.__skips.splice(0))) event('immortal', p.label + ': game over skipped, by ' + k);
             // A line that drops comes back within seconds; one that does not is a fault.
             for (const p of pages) {
                 const c = st[p.label].connected;
@@ -269,11 +280,19 @@ async function whereBusy(p) {
                 else if (!p.offSaid && Date.now() - p.offSince > 30000) { p.offSaid = true; event('ERROR', p.label + ' has not connected again in 30 s'); }
             }
             // Once both are in the run: is the difficulty the same for both (a shared switch)?
-            if (FROM && !pages.moved && h.live && q.live && h.scene === 'Scene_Map' && q.scene === 'Scene_Map') {
-                pages.moved = true;
-                const at = entryOf(FROM);
-                for (const p of pages) await p.evaluate((m, x, y) => { $gamePlayer.reserveTransfer(m, x, y, 2, 0); }, FROM, at.x, at.y);
-                event('start', 'both put on map ' + FROM + ' (' + at.x + ',' + at.y + ') by --from');
+            // Only when neither is in an event or a transfer of its own (the opening's last door replaced it, 10/28),
+            // and again until both are there.
+            if (FROM && (pages.moved || 0) < 5 && h.live && q.live && h.scene === 'Scene_Map' && q.scene === 'Scene_Map') {
+                const idle = () => !$gamePlayer.isTransferring() && !$gameMap.isEventRunning() && !SceneManager.isSceneChanging();
+                const where = await Promise.all(pages.map((p) => p.evaluate((m, free) => ($gameMap.mapId() === m ? 'there' : new Function('return (' + free + ')()')() ? 'idle' : 'busy'), FROM, idle.toString()).catch(() => 'busy')));
+                if (where.every((w) => w === 'there')) pages.moved = 5;
+                else if (pages.moved === 4 && Date.now() - pages.movedAt > 30000) { pages.moved = 5; event('ERROR', '--from never got both onto map ' + FROM); }
+                else if (where.every((w) => w !== 'busy') && (pages.moved || 0) < 4 && Date.now() - (pages.movedAt || 0) > 5000) {
+                    pages.moved = (pages.moved || 0) + 1; pages.movedAt = Date.now();
+                    const at = entryOf(FROM);
+                    for (const [i, p] of pages.entries()) if (where[i] === 'idle') await p.evaluate((m, x, y) => { $gamePlayer.reserveTransfer(m, x, y, 2, 0); }, FROM, at.x, at.y);
+                    event('start', 'both put on map ' + FROM + ' (' + at.x + ',' + at.y + ') by --from' + (pages.moved > 1 ? ', try ' + pages.moved : ''));
+                }
             }
             if (!modeSaid && h.live && q.live) {
                 modeSaid = true;

@@ -193,7 +193,7 @@
         if ((peer.st !== 'map' && peer.st !== 'event') || !freeToHop() || Date.now() - lastHop < 1500) return;
         lastHop = Date.now();
         resetTrail();
-        $gamePlayer.reserveTransfer(peer.m, peer.x, peer.y, peer.d || 2, 0);
+        Coop.transferTo(peer);
     }, 200);
 
     const _moveByInput = Game_Player.prototype.moveByInput;

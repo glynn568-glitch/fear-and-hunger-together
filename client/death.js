@@ -222,23 +222,28 @@
 
     // The circle is spent when the dead player's machine says they are up,
     // not when the call goes out: a call nobody answers costs nothing.
-    let calling = null; // { peerId, switchId, name, at, limb, giver, stone, timer }
+    // Stones leave the bag with the call (else they could be handed over meanwhile) and come back if it fails.
+    let calling = null; // { peerId, switchId, name, at, limb, giver, stone, paid, timer }
     // at: where the circle was used, { m, x, y }; giver: the actor whose limb it is.
+    function refund() {
+        if (calling && calling.paid) $gameParty.gainItem(calling.paid, STONES);
+    }
     function revive(peer, switchId, at, limb, giver, stone) {
-        if (calling) clearTimeout(calling.timer);
-        calling = { peerId: peer.id, switchId, name: peer.name, at, limb, giver, stone, timer: setTimeout(function () {
+        if (calling) { clearTimeout(calling.timer); refund(); }
+        const paid = stone && soulStone();
+        if (paid) $gameParty.loseItem(paid, STONES);
+        calling = { peerId: peer.id, switchId, name: peer.name, at, limb, giver, stone, paid, timer: setTimeout(function () {
             if (calling) Coop.toast(calling.name + ' did not answer. ' + (calling.stone ? 'The soul stones are untouched.' : 'The circle is untouched.'), 5000);
+            refund();
             calling = null;
         }, 6000) };
-        Coop.sendTo(peer.id, 'revive', { m: at.m, x: at.x, y: at.y, by: Coop.name, limb });
+        Coop.sendTo(peer.id, 'revive', { m: at.m, x: at.x, y: at.y, ts: at.m === $gameMap.mapId() ? $gameMap.tilesetId() : 0, by: Coop.name, limb });
     }
     Coop.on('to:revived', function (msg) {
         if (!calling || calling.peerId !== msg.from) return;
         clearTimeout(calling.timer);
-        // Called with stones: two stones, if they are still in the bag now (dropped or handed
-        // over during the call: the circle pays instead).
-        const stone = calling.stone && soulStone();
-        if (stone) $gameParty.loseItem(stone, STONES); else $gameSwitches.setValue(calling.switchId, true);
+        const stone = calling.paid;
+        if (!stone) $gameSwitches.setValue(calling.switchId, true);
         // The limb they came back with was this player's.
         const giver = msg.limb && calling.limb === msg.limb && $gameActors.actor(calling.giver);
         if (giver) {
@@ -259,6 +264,7 @@
         if (!calling || calling.peerId !== msg.from) return;
         clearTimeout(calling.timer);
         gift = { peerId: calling.peerId, switchId: calling.switchId, name: calling.name, at: calling.at, stone: calling.stone };
+        refund(); // paid again if a limb is given
         calling = null;
     });
     // The limbs this actor still has to give.
@@ -409,7 +415,7 @@
         $gameMessage.clear();
         $gameScreen.clear();
         $gameTimer.stop();
-        $gamePlayer.reserveTransfer(msg.m, msg.x, msg.y, 2, 0);
+        Coop.transferTo(msg, 2); // with the caller's tileset there
         $gamePlayer.refresh();
         SceneManager.goto(Scene_Map);
         Coop.sendTo(msg.from, 'revived', { limb: limbless ? msg.limb : null });

@@ -109,7 +109,8 @@ const utf16Bom = (buf) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(
         browser = await launch();
         const page = await openPlayer(browser, 'http://localhost:8436/?name=Ann', 'strange');
         await waitFor(page, titleReady, 90000, 'title + connection');
-        const up = await page.evaluate(() => ({ ok: !SceneManager._stopped && DataManager.isDatabaseLoaded(), stopped: SceneManager._stopped, db: DataManager.isDatabaseLoaded(), error: (document.getElementById('ErrorPrinter') || {}).textContent || '', gl: !!(Graphics._renderer && Graphics._renderer.gl && Graphics._renderer.gl.isContextLost && !Graphics._renderer.gl.isContextLost()) }));
+        // Every data file in, not isDatabaseLoaded(): VictorEngine's also waits for any picture still loading.
+        const up = await page.evaluate(() => ({ ok: !SceneManager._stopped && DataManager._databaseFiles.every((f) => window[f.name]), stopped: SceneManager._stopped, db: DataManager._databaseFiles.filter((f) => !window[f.name]).map((f) => f.name).join(',') || 'all', error: (document.getElementById('ErrorPrinter') || {}).textContent || '', gl: !!(Graphics._renderer && Graphics._renderer.gl && Graphics._renderer.gl.isContextLost && !Graphics._renderer.gl.isContextLost()) }));
         check('the game reaches its title and connects', up.ok, JSON.stringify(up) + (up.ok ? '' : ' ' + page.errors.concat(page.logs.slice(-12)).join(' / ').slice(0, 2500)));
         server.kill(); server = null;
         const voice = run(mod, [path.join(mod, 'tools', 'voices.js'), 'mercenary'], { FH_GAME: marked });

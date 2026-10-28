@@ -31,6 +31,7 @@ async function press(page, code, ms) {
     let a, bot;
     const asked = [];
     let slowBattle = 0; // the next battle answer waits this long; 0 is the usual short pause
+    let slowChat = 0; // the same for the next chat answer
     try {
         a = await openPlayer(browser, `http://localhost:${port}/?name=Ann`, 'Ann');
         bot = await openPlayer(browser, `http://localhost:${port}/?name=Claude`, 'bot');
@@ -41,8 +42,9 @@ async function press(page, code, ms) {
         await bot.exposeFunction('fhBrainCharacter', () => {});
         await bot.exposeFunction('fhBrain', async (kind, text) => {
             asked.push({ kind, text });
-            const stall = kind === 'battle' ? slowBattle : 0;
-            if (stall) slowBattle = 0;
+            const stall = kind === 'battle' ? slowBattle : kind === 'chat' ? slowChat : 0;
+            if (stall && kind === 'battle') slowBattle = 0;
+            if (stall && kind === 'chat') slowChat = 0;
             await sleep(stall || 300);
             if (kind === 'battle') {
                 const m = /(\d+) Guard \[left arm\] (?!gone)/.exec(text);
@@ -107,6 +109,14 @@ async function press(page, code, ms) {
         await waitFor(bot, () => BOT.mode === 'follow', 10000, 'the bot takes the follow order');
         await waitFor(bot, () => Math.abs($gamePlayer.y - 61) <= 3, 15000, 'the bot walks after Ann');
         check('told to follow, it comes', true);
+        // Two quick orders: a slow answer to the older one never undoes the newer.
+        slowChat = 3000;
+        await a.evaluate(() => Coop.say('wait here'));
+        await sleep(500);
+        await a.evaluate(() => Coop.say('follow me'));
+        await sleep(4500);
+        const quick = await bot.evaluate(() => ({ mode: BOT.mode, lines: BOT.lines.slice(-3) }));
+        check('two quick orders: a slow answer to the older one never undoes the newer', quick.mode === 'follow', JSON.stringify(quick));
 
         //--- Ann goes through a door with the bot beside her: it comes at once ---
         const door = await bot.evaluate(() => BOT.nav.exits($dataMap, 1).find((e) => e.to === 4));
@@ -177,6 +187,58 @@ async function press(page, code, ms) {
         await waitFor(bot, () => { const p = Coop.others().find((q) => !q.bot); return p && p.m === $gameMap.mapId() && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 3; }, 120000, 'the bot comes back');
         check('called back, it comes back to her', true);
 
+        //--- exploring, nothing new one door away is not "searched everything" ---
+        // Deep hunt 10/28: in Ancient city 111 every door led to a map it had seen, so it waited there for good.
+        // Here: everything on map 1 searched and every map one door away seen; new maps lie further on.
+        await a.evaluate(() => Coop.say('go explore on your own for a bit'));
+        await waitFor(bot, () => BOT.mode === 'explore', 10000, 'the bot takes the explore order again');
+        const near = await bot.evaluate(() => {
+            window.arrivals = [];
+            const pt = Game_Player.prototype.performTransfer;
+            Game_Player.prototype.performTransfer = function () { const go = this.isTransferring(); pt.apply(this, arguments); if (go) window.arrivals.push($gameMap.mapId()); };
+            const near = [1].concat(BOT.nav.exits($dataMap, 1).map((d) => d.to));
+            for (const id of near) BOT.seenMaps.set(id, Date.now());
+            for (const ev of $gameMap.events()) BOT.visited.add('1:' + ev.eventId());
+            BOT.errand = null;
+            BOT.explore = null;
+            return near;
+        });
+        await waitFor(bot, (near) => BOT.mode === 'wait' || window.arrivals.some((m) => !near.includes(m)), 120000, 'the bot further on, or waiting', near);
+        const further = await bot.evaluate(() => ({ mode: BOT.mode, arrivals: window.arrivals }));
+        check('exploring, nothing new one door away is not "searched everything": it goes on to somewhere new', further.mode === 'explore' && further.arrivals.some((m) => !near.includes(m)), JSON.stringify(further) + ' near ' + near);
+        // Truly nothing new and no door left untried: it waits, and a wait it chose itself does not last for ever.
+        const gaveUp = await bot.evaluate(async () => {
+            for (let id = 1; id < 200; id++) BOT.seenMaps.set(id, Date.now());
+            const used = BOT.usedDoors;
+            BOT.usedDoors = { get: () => Date.now(), set() {} };
+            for (const ev of $gameMap.events()) BOT.visited.add($gameMap.mapId() + ':' + ev.eventId());
+            // An errand cuts in while the far plan loads (a circle trip for a dead partner): once it is over, it plans again.
+            const plan = BOT.nav.plan;
+            let cut = false;
+            BOT.nav.plan = function () {
+                BOT.nav.plan = plan;
+                return new Promise((r) => setTimeout(() => { BOT.errand = { kind: 'hold', planning: true, map: $gameMap.mapId() }; cut = true; r(null); }, 50));
+            };
+            BOT.errand = null;
+            BOT.explore = null;
+            const t0 = Date.now();
+            while (!cut && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 200));
+            await new Promise((r) => setTimeout(r, 300));
+            BOT.errand = null;
+            while (BOT.mode !== 'wait' && Date.now() - t0 < 45000) await new Promise((r) => setTimeout(r, 200));
+            const waited = cut && BOT.mode === 'wait';
+            BOT.usedDoors = used;
+            BOT.selfWait -= 10 * 60000;
+            const t1 = Date.now();
+            while (BOT.mode === 'wait' && Date.now() - t1 < 10000) await new Promise((r) => setTimeout(r, 200));
+            return { cut, waited, after: BOT.mode };
+        });
+        check('with nothing new anywhere it waits (also after an errand cut into its planning), and tries again later on its own', gaveUp.waited && gaveUp.after === 'explore', JSON.stringify(gaveUp));
+        await a.evaluate(() => Coop.say('come back and follow me'));
+        await waitFor(bot, () => BOT.mode === 'follow', 10000, 'the bot takes the follow order');
+        await bot.evaluate(() => { $gamePlayer.reserveTransfer(1, 27, 62, 2, 0); });
+        await waitFor(bot, () => { const p = Coop.others().find((q) => !q.bot); return $gameMap.mapId() === 1 && p && p.m === 1 && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 3; }, 60000, 'the bot beside Ann after the pocket');
+
         //--- told to join her party, it walks in her line through a door ------
         await a.evaluate(() => Coop.say('join my party'));
         await waitFor(bot, () => Coop.partyLeader && !Coop.peers.get(Coop.partyLeader).bot, 10000, 'the bot joins her party');
@@ -231,7 +293,21 @@ async function press(page, code, ms) {
         await waitFor(bot, () => $gameParty.numItems($dataItems[132]) === 0, 8000, 'the bot heals near death');
         const hpNow = await bot.evaluate(() => $gameParty.leader().hp + '/' + $gameParty.leader().mhp);
         check('close to death, it heals with a herb; with nothing for bleeding it is told to ask', toldNothing && Number(hpNow.split('/')[0]) > 15, 'told ' + toldNothing + ', hp ' + hpNow + ' ' + asked.slice(-3).map((q) => q.text.slice(0, 120)).join(' / '));
-        await bot.evaluate(() => { const me = $gameParty.leader(); me.setHp(me.mhp); });
+        // Exploring alone, close to death with nothing to heal: it turns back instead of dying where nobody can call it back.
+        const modeWas = await bot.evaluate(() => { const was = { mode: BOT.mode, with: BOT.with }; BOT.mode = 'explore'; BOT.explore = null; const me = $gameParty.leader(); me.setHp(Math.floor(me.mhp * 0.15)); return was; });
+        await waitFor(bot, () => BOT.mode !== 'explore', 8000, 'the hurt explorer turns back');
+        const turned = await bot.evaluate(() => ({ mode: BOT.mode, journal: (BOT.journal || []).slice(-2), note: BOT.notes.filter((t) => /stopped exploring/.test(t)).length }));
+        check('exploring alone, close to death with nothing to heal, it turns back to its partner and is told to say so',
+            turned.mode === 'follow' && turned.journal.some((l) => /turned back/.test(l)) && (turned.note > 0 || asked.some((q) => /stopped exploring/.test(q.text))), JSON.stringify(turned));
+        // Sent exploring again while still that hurt (a test run's host, a walker with no way on foot), it turns back only once.
+        const again = await bot.evaluate(async () => {
+            const journal = BOT.journal.length, notes = BOT.notes.length;
+            BOT.mode = 'explore';
+            await new Promise((r) => setTimeout(r, 4000));
+            return { mode: BOT.mode, journal: BOT.journal.length - journal, notes: BOT.notes.slice(notes).filter((t) => /stopped exploring/.test(t)).length };
+        });
+        check('...and only once while that hurt', again.mode === 'explore' && again.journal === 0 && again.notes === 0, JSON.stringify(again));
+        await bot.evaluate((was) => { BOT.mode = was.mode; BOT.with = was.with; const me = $gameParty.leader(); me.setHp(me.mhp); }, modeWas);
         const seenRow = await bot.evaluate(() => BOT.situationText ? BOT.situationText() : '');
         check('the model is told which enemies are in sight', /Enemies in sight: |No enemy in sight\./.test(seenRow), seenRow.slice(-160));
 
@@ -464,22 +540,22 @@ async function press(page, code, ms) {
         const ax = await a.evaluate(() => [$gamePlayer.x, $gamePlayer.y]);
         await bot.evaluate((x, y) => { $gamePlayer.locate(x + 1, y); BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); }, ax[0], ax[1]);
         await waitFor(a, () => SceneManager._scene instanceof Scene_CoopSpectate, 10000, 'Ann is pulled into the bot\'s fight');
-        // The game's "did the player guard in time" check, run on the bot's machine with Ann guarding.
+        // The game's Just Guard event, which every guard runs, run on the bot's machine with Ann guarding: it keeps
+        // the switch the charge asks at the turn's end on, as it does for the bot's own protagonist.
         await waitFor(bot, () => Coop.battle && Coop.battle.guests && Coop.battle.guests.size === 1, 10000, 'Ann in the bot\'s party');
         const justGuard = await bot.evaluate(() => {
-            const ask = () => {
+            const guardRuns = () => {
                 $gameSwitches.setValue(1281, false);
-                window.jg = 0;
                 const i = new Game_Interpreter();
-                i.setup([{ code: 111, indent: 0, parameters: [0, 1281, 0] }, { code: 355, indent: 1, parameters: ['window.jg = 1'] }, { code: 0, indent: 1, parameters: [] },
-                    { code: 412, indent: 0, parameters: [] }, { code: 0, indent: 0, parameters: [] }]);
+                i.setup($dataCommonEvents[153].list);
                 while (i.isRunning()) i.update();
-                return window.jg;
+                return $gameSwitches.value(1281) ? 1 : 0;
             };
-            const before = ask();
+            const before = guardRuns();
             $gameActors.actor(1).addState(2); // Ann's character guards
-            const guarding = ask();
+            const guarding = guardRuns();
             $gameActors.actor(1).removeState(2);
+            $gameSwitches.setValue(1281, false);
             return { before, guarding };
         });
         check("in the bot's fight, Ann's own guard counts for dodging a charge", justGuard.before === 0 && justGuard.guarding === 1, JSON.stringify(justGuard));

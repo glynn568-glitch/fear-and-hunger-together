@@ -92,6 +92,21 @@ const onMap = (id) => $gameMap.mapId() === id && SceneManager._scene instanceof 
         await a.keyboard.down('KeyF'); await sleep(120); await a.keyboard.up('KeyF');
         await waitFor(a, onMap, 30000, 'A after B', 4).catch(() => {});
         check('and F takes A to where B ended up', await a.evaluate(() => $gameMap.mapId()) === 4);
+
+        // A door that changes the map's tileset after the move (Ancient city: 114 EV040 -> 111, tileset 30;
+        // the map's own is 28, a different set of walls). Followed with F, A must arrive in the same city as B.
+        for (const [p, x] of [[a, 57], [b, 56]]) await p.evaluate((x) => { $gamePlayer.reserveTransfer(114, x, 42, 4, 0); }, x);
+        await waitFor(a, onMap, 30000, 'A in the ancient city', 114);
+        await waitFor(b, onMap, 30000, 'B in the ancient city', 114);
+        for (const p of [a, b]) await p.evaluate(() => T.settle());
+        await sleep(800);
+        await b.evaluate(() => { $gameMap.event(40).start(); });
+        await waitFor(b, () => $gameMap.mapId() === 111 && !$gamePlayer.isTransferring() && !$gameMap.isEventRunning(), 30000, 'B through the city door');
+        await waitFor(a, () => document.getElementById('coop-follow').style.display !== 'none', 8000, 'A offered the city door');
+        await a.keyboard.down('KeyF'); await sleep(120); await a.keyboard.up('KeyF');
+        await waitFor(a, onMap, 30000, 'A after B into the city', 111);
+        const ts = { a: await a.evaluate(() => $gameMap.tilesetId()), b: await b.evaluate(() => $gameMap.tilesetId()) };
+        check('followed through a door that changes the tileset, A has the same walls as B', ts.b === 30 && ts.a === ts.b, JSON.stringify(ts));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

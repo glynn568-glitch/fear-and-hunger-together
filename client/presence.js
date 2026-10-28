@@ -64,6 +64,7 @@
             lc: light.lc,
             st: state,
             m: $gameMap.mapId(),
+            ts: $gameMap.tilesetId(), // a door can change it after the move (Ancient city): who follows needs it too
             x: $gamePlayer.x,
             y: $gamePlayer.y,
             d: $gamePlayer.direction(),
@@ -301,11 +302,26 @@
         followOffer = { id: peer.id, until: Date.now() + FOLLOW_FOR };
     }
 
+    // To where another player stands, with the tileset they have there: a door can change it after its
+    // transfer (Ancient city 114 -> 111 sets 30, the map's own is 28), and arriving any other way skips that.
+    let arriveTileset = null;
+    Coop.transferTo = function (peer, d) {
+        $gamePlayer.reserveTransfer(peer.m, peer.x, peer.y, d || peer.d || 2, 0);
+        arriveTileset = peer.ts ? { m: peer.m, ts: peer.ts } : null;
+    };
+    const _performTransfer = Game_Player.prototype.performTransfer;
+    Game_Player.prototype.performTransfer = function () {
+        const t = this.isTransferring() ? arriveTileset : null;
+        if (this.isTransferring()) arriveTileset = null;
+        _performTransfer.apply(this, arguments);
+        if (t && $gameMap.mapId() === t.m && $gameMap.tilesetId() !== t.ts) $gameMap.changeTileset(t.ts);
+    };
+
     Coop.follow = function () {
         const peer = followTarget();
         if (!peer || !freeToFollow()) return false;
         followOffer = null;
-        $gamePlayer.reserveTransfer(peer.m, peer.x, peer.y, peer.d || 2, 0);
+        Coop.transferTo(peer);
         if (Coop.toast) Coop.toast('You go after ' + peer.name + '.', 2500);
         return true;
     };

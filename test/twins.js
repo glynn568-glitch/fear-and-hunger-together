@@ -108,7 +108,7 @@ const TWINS = {
     'just-guard': {
         why: 'a guest\'s Just Guard never counted, and the charge killed him',
         suite: 'ai', file: 'client/battle.js',
-        find: '!$gameSwitches.value(JUST_GUARD) && playersGuarding()) {', put: '!$gameSwitches.value(JUST_GUARD) && false) {',
+        find: 'if (asksProtagonistGuard(this) && playersGuarding()) {', put: 'if (asksProtagonistGuard(this) && false) {',
     },
     'hidden-loop': {
         why: 'a minimised or covered window froze fights for everyone',

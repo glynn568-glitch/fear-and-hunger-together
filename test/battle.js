@@ -12,6 +12,86 @@ const battle = (p) => p.evaluate(() => ({
     guests: Coop.battle && Coop.battle.guests ? Coop.battle.guests.size : 0,
 }));
 
+// A fight against a troop with a grab, A owning it and B its guest, both too tough to die or be confused (a
+// confused character takes no orders) and too weak to end it (no damage, and their weapons' bleeding and
+// poison left off: those alone brought a 5000-HP torso down by turn 5). B guards whenever its brief names a
+// grab coming that no player has chosen to guard against yet; A, choosing first, guards the grabs from the
+// `aGuardsFrom`-th on (from 0), else attacks the torso, or, at full strength, part `hit` once `hitAfter` grabs
+// have come, until it stops grabbing (`hitTurn`: the last turn A aimed at it). Each grab is the turn switch `sw` came on, with its
+// outcome line (GabText matching `gab`). Ends once `until` grabs have shown their outcome and `after` turns
+// past the hit have been chosen.
+async function grabFight(a, o) {
+    await a.evaluate((o) => {
+        const gx = window._grabs = { turns: [], grabs: [], coins: 0, coinUp: false };
+        const set = Game_Switches.prototype.setValue;
+        gx.undo = [() => { Game_Switches.prototype.setValue = set; }];
+        Game_Switches.prototype.setValue = function (id, v) {
+            if (id === o.sw && v && !this.value(o.sw)) gx.grabs.push({ turn: $gameTroop.turnCount(), text: '' });
+            return set.apply(this, arguments);
+        };
+        const add = Game_Battler.prototype.addState;
+        gx.undo.push(() => { Game_Battler.prototype.addState = add; });
+        Game_Battler.prototype.addState = function (id) { if (!(this.isActor() && id === 16)) add.apply(this, arguments); };
+        const attackStates = Game_Actor.prototype.attackStates;
+        gx.undo.push(() => { Game_Actor.prototype.attackStates = attackStates; });
+        Game_Actor.prototype.attackStates = function () { return []; };
+        const plugin = Game_Interpreter.prototype.pluginCommand;
+        gx.undo.push(() => { Game_Interpreter.prototype.pluginCommand = plugin; });
+        Game_Interpreter.prototype.pluginCommand = function (c, args) {
+            const text = (args || []).join(' ');
+            if (c === 'GabText' && new RegExp(o.gab).test(text) && gx.grabs.length) gx.grabs[gx.grabs.length - 1].text = text;
+            return plugin.apply(this, arguments);
+        };
+        const timer = setInterval(() => {
+            if (!(SceneManager._scene instanceof Scene_Battle)) return;
+            const coin = $gameMessage.isChoice() && $gameMessage.choices().indexOf('HEADS') >= 0;
+            if (coin && !gx.coinUp) gx.coins++;
+            gx.coinUp = coin;
+            if ($gameMessage.isBusy()) { Input._currentState.ok = !Input._currentState.ok; return; }
+            const actor = BattleManager.actor(), act = BattleManager.inputtingAction();
+            if (!BattleManager.isInputting() || !actor || !act || gx.last === act) return;
+            gx.last = act;
+            $gameParty.members().forEach((m) => m.recoverAll());
+            const brief = Coop.battleBrief(actor);
+            if (actor.actorId() === 3) {
+                const part = brief.enemies.find((e) => e.i === o.hit);
+                const guard = !!brief.grab && !brief.guarded;
+                gx.turns.push({ turn: $gameTroop.turnCount() + 1, grab: brief.grab, guarded: brief.guarded, guard, pull: !!(part && part.pullsBack) });
+                Coop.applyPick(actor, guard ? { do: 'guard' } : { do: 'attack', target: 0 });
+            } else if (brief.grab && gx.grabs.length >= o.aGuardsFrom) {
+                Coop.applyPick(actor, { do: 'guard' });
+            } else {
+                const part = brief.enemies.find((e) => e.i === o.hit);
+                if (gx.hitTurn && !gx.pulled && !(part && part.pullsBack)) { gx.pulled = true; actor.addParam(2, -999); }
+                const aim = gx.grabs.length >= o.hitAfter && !gx.pulled;
+                if (aim && !gx.hitTurn) actor.addParam(2, 999);
+                if (aim) gx.hitTurn = $gameTroop.turnCount() + 1;
+                Coop.applyPick(actor, { do: 'attack', target: aim ? o.hit : 0 });
+            }
+        }, 50);
+        gx.undo.push(() => clearInterval(timer));
+        for (const k of ['processVictory', 'processAbort', 'processEscape', 'processDefeat']) {
+            const f = BattleManager[k];
+            gx.undo.push(() => { BattleManager[k] = f; });
+            BattleManager[k] = function () { gx.end = gx.end || k + ' in turn ' + $gameTroop.turnCount(); return f.apply(this, arguments); };
+        }
+        BattleManager.setup(o.troop, true, true); SceneManager.push(Scene_Battle);
+    }, o);
+    await waitFor(a, (o) => {
+        const gx = window._grabs, shown = gx.grabs.filter((g) => g.text);
+        const past = gx.pulled ? gx.turns.filter((t) => t.turn > gx.hitTurn).length : 0;
+        return shown.length >= o.until && past >= o.after || !(SceneManager._scene instanceof Scene_Battle) && gx.turns.length > 0;
+    }, 150000, 'the grabs of troop ' + o.troop, o);
+    const out = await a.evaluate(() => {
+        const gx = window._grabs;
+        gx.undo.forEach((f) => f());
+        if (SceneManager._scene instanceof Scene_Battle) BattleManager.abort();
+        return { turns: gx.turns, grabs: gx.grabs, hitTurn: gx.hitTurn || 0, coins: gx.coins, end: gx.end || '', sw: { 337: $gameSwitches.value(337) } };
+    });
+    await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'A back from troop ' + o.troop);
+    return out;
+}
+
 (async () => {
     const check = checker();
     let s;
@@ -108,8 +188,90 @@ const battle = (p) => p.evaluate(() => ({
         check('a second fight uploads no big picture again', big.length === 0, JSON.stringify(big));
         const tones = await a.evaluate(() => _tones);
         check('...and paints no window back pixel by pixel again', tones === 0, tones + ' painted');
+        // A forced action whose skill is gone by its turn (marathon 10/28: Lord of flies' forced "Arm of the beast
+        // twitches", the enemy's actions made anew meanwhile) is skipped, as the engine skips one on a normal turn.
+        const forced = await a.evaluate(() => {
+            const e = $gameTroop.aliveMembers()[0];
+            e.forceAction(1, -1);
+            BattleManager.forceAction(e);
+            e._actions = [new Game_Action(e)];
+            try { BattleManager.processForcedAction(); } catch (err) { return { error: String(err) }; }
+            return { error: '', phase: BattleManager._phase, stopped: SceneManager._stopped || false };
+        });
+        check('a forced action with no skill left is skipped, not a crash', !forced.error && forced.phase === 'input', JSON.stringify(forced));
+        // The guard's charge comes at the end of the turn its counter (variable 19) steps from 1 to 2: the brief
+        // names it in that turn, from the troop's own pages run ahead on copies, which the real ones never see.
+        const charge = await a.evaluate(() => {
+            const was = $gameVariables.value(19);
+            const sw = Game_Switches.prototype.setValue, va = Game_Variables.prototype.setValue;
+            let writes = 0;
+            Game_Switches.prototype.setValue = function () { writes++; return sw.apply(this, arguments); };
+            Game_Variables.prototype.setValue = function () { writes++; return va.apply(this, arguments); };
+            const grab = {};
+            const brief = () => Coop.battleBrief(BattleManager.actor() || $gameParty.members()[0]).grab;
+            try {
+                for (const v of [0, 1, 2, 3]) {
+                    $gameVariables._data[19] = v;
+                    grab[v] = brief();
+                }
+                // Its cleaver arm cut, the forced move falls on a dead part and the charge never comes.
+                const arm = $gameTroop.members().find((e) => /right arm/.test(e.name()));
+                arm.addState(arm.deathStateId());
+                $gameVariables._data[19] = 1;
+                grab.armless = brief();
+            } finally {
+                $gameVariables._data[19] = was;
+                Game_Switches.prototype.setValue = sw;
+                Game_Variables.prototype.setValue = va;
+            }
+            return { grab, sw16: $gameSwitches.value(16), v19: $gameVariables.value(19) === was, writes };
+        });
+        check('the brief names the guard\'s charge in the turn it comes, and only then (not with its cleaver arm off); the run ahead writes nothing real',
+            charge.grab[1] === 'The monster takes a step closer...' && !charge.grab[0] && !charge.grab[2] && !charge.grab[3] && charge.grab.armless === '' && !charge.sw16 && charge.v19 && charge.writes === 0,
+            JSON.stringify(charge));
         await a.evaluate(() => BattleManager.abort());
         await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'A back from the second fight');
+        // Cavegnomes (his 10/28 report: the partner guarded them while they ate its limbs): the brief says what their
+        // Gnaw gives through a guard; a guard's own blows give nothing a guard lets through.
+        await sleep(1000);
+        await a.evaluate(() => { BattleManager.setup(15, true, true); SceneManager.push(Scene_Battle); });
+        await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor(), 20000, 'A in a gnome fight');
+        const gnaw = await a.evaluate(() => Coop.battleBrief(BattleManager.actor()).enemies.map((e) => e.inflicts.join('+')));
+        check('a cavegnome\'s blows are named as giving bleeding and infection through a guard',
+            gnaw.length > 1 && gnaw.every((x) => /Bleeding/.test(x) && /Infection arm/.test(x) && /Infection leg/.test(x)), JSON.stringify(gnaw));
+        await a.evaluate(() => BattleManager.abort());
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'A back from the gnome fight');
+        // The night lurch leaps at the END of the turn its "lowers it's stance..." shows, every third turn while
+        // both legs are on; only a guard in that very turn makes it miss (a lost coin ends the fight in its
+        // scene). The brief names the leap in that turn, and B's guard counts as A's would: the game asks only
+        // whether its protagonist guarded, and by the turn's end every guard is down (his 10/28 report on the
+        // partner's dumb moves; a guest's guard never counted against any grab).
+        await sleep(1000);
+        for (const p of [a, b]) await p.evaluate(() => { for (const id of [1, 3]) { const x = $gameActors.actor(id); x.addParam(0, 9000); x.addParam(2, -999); x.recoverAll(); } });
+        const lurch = await grabFight(a, { troop: 25, sw: 340, gab: 'leap', hit: 0, hitAfter: 99, aGuardsFrom: 1, until: 2, after: 0 });
+        const leapTurns = lurch.grabs.map((l) => l.turn);
+        const seen = lurch.turns.filter((t) => t.turn <= Math.max(0, ...leapTurns));
+        check('the brief names the night lurch\'s leap in the turn it comes, and only then',
+            leapTurns.length >= 2 && seen.every((t) => !!t.grab === leapTurns.includes(t.turn)) && leapTurns.every((n) => seen.some((t) => t.turn === n)),
+            JSON.stringify(lurch));
+        const leapTurn = (n) => lurch.turns.find((t) => t.turn === leapTurns[n]) || {};
+        check('B guarding in that turn makes the leap miss, with no coin', lurch.grabs.length >= 2 && leapTurn(0).guard && !leapTurn(0).guarded && lurch.grabs.every((l) => /evade/.test(l.text)) && lurch.coins === 0 && !lurch.sw[337], JSON.stringify(lurch));
+        check('with A already guarding that turn, B\'s brief names A and B attacks; the leap still misses', leapTurn(1).guarded === 'Ann' && leapTurn(1).guard === false && /evade/.test((lurch.grabs[1] || {}).text), JSON.stringify(lurch));
+        // The salmonsnake's tongue comes out at the end of turn 3 and, out, snatches on its own turn, every turn
+        // until it is hurt at all (a lost coin: eaten whole). A guard acts first in a turn, so one in that turn
+        // makes it miss; the brief names it then, and says hurting the tongue pulls it back.
+        await sleep(1000);
+        const snake = await grabFight(a, { troop: 50, sw: 648, gab: 'snatch', hit: 4, hitAfter: 2, aGuardsFrom: 99, until: 2, after: 3 });
+        // The turns whose end was seen, but the one A hit the tongue in: that hit may land before or after its snatch.
+        const snatchTurns = snake.grabs.map((l) => l.turn), lastTurn = Math.max(0, ...snake.turns.map((t) => t.turn));
+        const known = snake.turns.filter((t) => t.turn < lastTurn && t.turn !== snake.hitTurn);
+        check('the brief names the salmonsnake\'s snatch in the turns it comes, and only then',
+            snake.hitTurn > 0 && snatchTurns.filter((n) => n < snake.hitTurn).length >= 2 && known.every((t) => (t.grab === 'Snatch') === snatchTurns.includes(t.turn)),
+            JSON.stringify(snake));
+        check('B guarding in those turns makes it miss, with no coin', snake.grabs.length >= 2 && snake.grabs.every((l) => /misses/.test(l.text)) && snake.coins === 0, JSON.stringify(snake));
+        check('the tongue is marked as pulling back while out; hit, it pulls back',
+            known.every((t) => t.pull === (t.grab === 'Snatch')) && known.some((t) => t.turn === snake.hitTurn + 1 && !t.grab),
+            JSON.stringify(snake));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

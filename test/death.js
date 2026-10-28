@@ -101,6 +101,43 @@ async function press(page, code) {
         await sleep(600);
         const stone = await a.evaluate(() => ({ stones: $gameParty.numItems($dataItems[115]), spent: $gameSwitches.value(409) }));
         check('two soul stones call B back at a spent circle and are used up in its place', /soul stones/.test(stoneOffer) && stone.stones === 0 && stone.spent, stoneOffer + ' ' + JSON.stringify(stone));
+
+        // The stones leave the bag when the call goes out: none to hand over while B's machine
+        // answers (that was a free call at a spent circle), and a call nobody answers gives them back.
+        const callWithStones = async () => {
+            await waitFor(a, () => SceneManager._scene._messageWindow.isClosed() && !$gameMessage.isBusy() && !$gameMap.isEventRunning(), 8000, 'the last message shut');
+            await a.evaluate((c) => { $gameMap.event(c.id).start(); }, circle);
+            await waitFor(a, () => SceneManager._scene._messageWindow._choiceWindow.active && /soul stones/.test($gameMessage.allText()), 8000, 'the spent circle offers the stones again');
+            await sleep(1500);
+            await press(a, 'ArrowUp');
+            await press(a, 'ArrowUp');
+            await press(a, 'KeyZ');
+        };
+        await b.evaluate(() => SceneManager.goto(Scene_Gameover));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_CoopDead, 8000, 'B dead before the stone calls');
+        await sleep(500);
+        await waitFor(a, (id) => Coop.peers.get(id).st === 'dead', 5000, 'A knows B is dead before the stone calls', idB);
+        // The unanswered call idles A for 7 s: long enough for a wanderer to walk into a fight.
+        await a.evaluate(() => { $gameParty.gainItem($dataItems[115], 2); $gameMap.events().forEach((e) => { if (e.page() && (e._trigger === 1 || e._trigger === 2)) e.erase(); }); });
+        await a.evaluate(() => { const send = Coop.sendTo; window._sendTo = send; Coop.sendTo = (id, type, msg) => type === 'revive' ? null : send(id, type, msg); });
+        await callWithStones();
+        const unanswered = { during: await a.evaluate(() => $gameParty.numItems($dataItems[115])) };
+        await sleep(7000);
+        unanswered.after = await a.evaluate(() => { Coop.sendTo = window._sendTo; return $gameParty.numItems($dataItems[115]); });
+        check('a stone call nobody answers holds the stones meanwhile and gives them back', unanswered.during === 0 && unanswered.after === 2 && await b.evaluate(() => Coop.dead), JSON.stringify(unanswered));
+        // What is still in the bag the moment the call goes out could be handed over before the answer.
+        await a.evaluate(() => { const send = Coop.sendTo; Coop.sendTo = (id, type, msg) => { if (type === 'revive') { window._handed = $gameParty.numItems($dataItems[115]); Coop.sendTo = send; } return send(id, type, msg); }; });
+        // A's map has a tileset a door gave it (as in the Ancient city): B is called back into the same walls.
+        const ts0 = await a.evaluate(() => { const t = $gameMap.tilesetId(); $gameMap.changeTileset(t === 30 ? 28 : 30); return t; });
+        await callWithStones();
+        await waitFor(b, () => !Coop.dead && SceneManager._scene instanceof Scene_Map, 15000, 'B back by the stones a second time');
+        const tsBack = { a: await a.evaluate(() => $gameMap.tilesetId()), b: await b.evaluate(() => $gameMap.tilesetId()) };
+        await a.evaluate((t) => $gameMap.changeTileset(t), ts0);
+        await b.evaluate((t) => $gameMap.changeTileset(t), ts0);
+        check("called back where the caller stands, B has the caller's tileset there", tsBack.a !== ts0 && tsBack.a === tsBack.b, JSON.stringify(tsBack));
+        const handed = await a.evaluate(() => ({ handed: window._handed, left: $gameParty.numItems($dataItems[115]) }));
+        check('no stones are left to hand over while a stone call is answered', handed.handed === 0 && handed.left === 0, JSON.stringify(handed));
+
         await b.evaluate(() => SceneManager.goto(Scene_Gameover));
         await waitFor(b, () => SceneManager._scene instanceof Scene_CoopDead, 8000, 'B dead a third time');
         await sleep(500);

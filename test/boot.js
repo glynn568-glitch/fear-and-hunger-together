@@ -8,8 +8,9 @@ const { startServer, launch, openPlayer, waitFor, shot, sleep } = require('./lib
     let failed = false;
     try {
         const page = await openPlayer(browser, `http://localhost:${port}/`, 'p1');
-        await waitFor(page, () => window.SceneManager && SceneManager._scene, 60000, 'first scene');
-        await sleep(8000);
+        // The title, not a fixed wait: six suites at once can take longer than 8 s to get there.
+        await waitFor(page, () => window.SceneManager && SceneManager._scene instanceof Scene_Title, 90000, 'title');
+        await sleep(3000);
         const state = await page.evaluate(() => ({
             scene: SceneManager._scene && SceneManager._scene.constructor.name,
             stopped: SceneManager._stopped,
@@ -39,5 +40,5 @@ const { startServer, launch, openPlayer, waitFor, shot, sleep } = require('./lib
         server.kill();
     }
     console.log(failed ? 'BOOT FAILED' : 'BOOT OK');
-    process.exit(failed ? 1 : 0);
+    process.exitCode = failed ? 1 : 0; // not exit(): the last line must reach the runner's pipe
 })();
