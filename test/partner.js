@@ -19,6 +19,7 @@ async function press(page, code) {
     server.stdout.on('data', (d) => logs.push(String(d)));
     const browser = await launch();
     let a;
+    let bo = null;
     try {
         a = await openPlayer(browser, `http://localhost:${port}/?name=Ann`, 'Ann');
         await waitFor(a, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'title');
@@ -82,6 +83,194 @@ async function press(page, code) {
         check('F8 again sends it home', true);
         await sleep(2000);
         check('the partner left on purpose, so nothing was kept as a dropped player', parked(server.saves).length === 0, parked(server.saves).join(','));
+
+        //--- the last person leaving ends the run; a dropped line does not ---
+        // New Game while a partner is still in the dungeon used to be that same run.
+        try {
+            await press(a, 'F8');
+            await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'a partner for the reroll');
+            await a.evaluate(() => $gameVariables.setValue(32, 2));
+            await sleep(700);
+            const dice = await a.evaluate(() => $gameVariables.value(32));
+            const runId = await a.evaluate(() => Coop.world.runId);
+            check('a layout die can be set on this run', dice === 2, String(dice));
+
+            await a.evaluate(() => Coop._ws.close());
+            await waitFor(a, () => Coop.connected && Coop.world.live, 15000, 'Ann reconnects after a dropped line');
+            await waitFor(a, () => Coop.others().some((p) => p.bot && p.st === 'map'), 8000, 'the partner is still in after the drop');
+            check('a dropped line leaves the partner and the run', (await a.evaluate(() => Coop.world.runId)) === runId, await a.evaluate(() => Coop.world.runId));
+
+            bo = await openPlayer(browser, `http://localhost:${port}/?name=Bo`, 'Bo');
+            await waitFor(bo, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'Bo at the title');
+            await bo.evaluate(install);
+            await bo.evaluate(() => T.quickStart(4, 27, 65));
+            await waitFor(bo, () => T.onMap(), 60000, 'Bo on the map, not in the run yet');
+            await bo.evaluate(() => T.settle());
+            await bo.evaluate(() => { window.toasts = []; const t = Coop.toast; Coop.toast = function (text) { window.toasts.push(text); return t.apply(this, arguments); }; });
+            const partnerName = await a.evaluate(() => (Coop.others().find((p) => p.bot) || {}).name || '');
+            // Bo is on the map but not in the run, so he still reports "title" and the
+            // partner will not follow him. Ann stays offline only for this join: with
+            // nobody to follow for 12s the partner goes home on its own.
+            await a.evaluate(() => { Coop.refused = true; Coop._ws.close(); });
+            await waitFor(bo, () => !Coop.others().some((p) => p.name === 'Ann'), 8000, 'Bo sees Ann gone');
+            await bo.evaluate(() => T.begin());
+            await waitFor(bo, () => Coop.world.live, 15000, 'Bo joins the run the partner is still in');
+            const toast = await bo.evaluate(() => (window.toasts || []).find((t) => /already in progress/.test(t)) || '');
+            check('joining a run whose only other player is a partner says it is that same run', toast.includes(partnerName) && toast.includes('already in progress with') && toast.includes('It is the same run.') && !toast.includes('\n') && !toast.includes('Ann'), JSON.stringify(toast));
+            await a.evaluate(() => { Coop.refused = false; Coop.connect(); });
+            await waitFor(bo, () => Coop.others().some((p) => p.bot && p.st && p.st !== 'title'), 8000, 'the partner stayed while Ann was gone');
+            await waitFor(a, () => Coop.connected && Coop.world.live, 15000, 'Ann back before Bo leaves');
+
+            await bo.evaluate(() => SceneManager.goto(Scene_Title));
+            await waitFor(bo, () => SceneManager._scene instanceof Scene_Title && !Coop.world.live, 20000, 'Bo back at the title');
+            await sleep(800);
+            const stayed = await a.evaluate(() => {
+                const bots = Coop.others().filter((p) => p.bot).map((p) => ({ name: p.name, st: p.st }));
+                return { run: Coop.world.runId, live: Coop.world.live, partner: bots.some((p) => p.st && p.st !== 'title'), bots };
+            });
+            const stayedOk = stayed.live && stayed.partner && stayed.run === runId;
+            check('a second person leaving does not end the run', stayedOk, JSON.stringify(stayed));
+            // The rest of this block needs the partner still in the run. The catch drains it.
+            if (!stayedOk) throw new Error('stop');
+            const boErrs = bo.errors.filter((e) => !/physical_attack_animation|VideoFrame was garbage collected/.test(e));
+            check('Bo has no script errors', boErrs.length === 0, boErrs.slice(0, 2).join(' || ').slice(0, 400));
+            await bo.close();
+            bo = null;
+
+            await a.evaluate(() => {
+                const p = Coop.others().find((q) => q.bot && q.st && q.st !== 'title');
+                if (!p) throw new Error('no partner in the world');
+                $gameParty.gainItem($dataArmors[36], 1);
+                $gameParty.loseItem($dataArmors[36], 1);
+                Coop.sendTo(p.id, 'give', { kind: 'armor', id: 36 });
+            });
+            await a.keyboard.down('Tab');
+            await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the partner is holding the soul');
+            await a.keyboard.up('Tab');
+            await a.evaluate(() => $gameVariables.setValue(32, 2));
+            await sleep(700);
+            await a.evaluate(() => { window.runEnded = false; Coop.on('runover', () => { window.runEnded = true; }); });
+            await a.evaluate((n) => { $gameSystem.onBeforeSave(); DataManager.saveGame(n); }, 1);
+            const savedRun = await a.evaluate(() => Coop.world.runId);
+            await a.evaluate(() => SceneManager.goto(Scene_Title));
+            await waitFor(a, () => window.runEnded && !Coop.world.live, 20000, 'the run to end when Ann returns to the title');
+            await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the partner to go home with the run');
+            let parks = [];
+            for (let i = 0; i < 20 && !parks.length; i++) { parks = parked(server.saves); if (!parks.length) await sleep(250); }
+            const ended = await a.evaluate(() => ({ over: !!window.runEnded, live: Coop.world.live }));
+            check('the last person returning to the title ends the run and sends the partner home', ended.over && !ended.live && parks.length > 0, JSON.stringify(ended) + ' ' + parks.join(','));
+
+            await a.evaluate(() => { DataManager.loadGame(1); SceneManager.goto(Scene_Map); $gameSystem.onAfterLoad(); });
+            await waitFor(a, () => SceneManager._scene instanceof Scene_Map && Coop.world.live, 30000, 'Ann continues the run');
+            check('Continue is the same run', (await a.evaluate(() => Coop.world.runId)) === savedRun);
+            await waitFor(a, () => Coop.others().some((p) => p.bot && (p.st === 'map' || p.st === 'dead')), 90000, 'the partner is back without F8');
+            await sleep(6500);
+            await a.keyboard.down('Tab');
+            await waitFor(a, () => document.getElementById('coop-sheets').textContent.length > 40, 8000, 'the continued partner\'s sheet');
+            const kept = await a.evaluate(() => ({
+                run: Coop.world.runId,
+                soul: /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent),
+                map: Coop.others().some((p) => p.bot && p.st === 'map'),
+                dice: $gameVariables.value(32),
+                name: (Coop.others().find((p) => p.bot) || {}).name,
+            }));
+            await a.keyboard.up('Tab');
+            check('Continue brings the parked body back, still in the run', kept.run === savedRun && kept.soul && kept.map && kept.dice === 2 && kept.name === partnerName, JSON.stringify(kept));
+
+            await a.evaluate(() => { window.runEnded = false; SceneManager.goto(Scene_Title); });
+            await waitFor(a, () => window.runEnded && !Coop.world.live, 20000, 'the run ends again');
+            await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the partner goes home again');
+            let parkedAgain = [];
+            for (let i = 0; i < 20 && !parkedAgain.length; i++) { parkedAgain = parked(server.saves); if (!parkedAgain.length) await sleep(250); }
+            check('the body is parked again for the run that just ended', parkedAgain.length > 0, parkedAgain.join(','));
+
+            await a.evaluate(() => T.quickStart(1, 27, 67));
+            await waitFor(a, () => T.onMap(), 60000, 'Ann\'s new game');
+            await a.evaluate(() => { T.settle(); T.begin(); });
+            await waitFor(a, () => Coop.world.live, 15000, 'the new run');
+            const freshId = await a.evaluate(() => Coop.world.runId);
+            check('New Game after that is a new run', freshId && freshId !== savedRun, freshId + ' ' + savedRun);
+            await waitFor(a, () => Coop.others().some((p) => p.bot && p.st === 'map'), 90000, 'the partner is back in the new run without F8');
+            await sleep(6500);
+            await a.keyboard.down('Tab');
+            await waitFor(a, () => document.getElementById('coop-sheets').textContent.length > 40, 8000, 'the new partner\'s sheet');
+            const fresh = await a.evaluate(() => ({
+                run: Coop.world.runId,
+                soul: /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent),
+                map: Coop.others().some((p) => p.bot && p.st === 'map'),
+                dice: $gameVariables.value(32),
+                me: Coop.world.runId,
+            }));
+            await a.keyboard.up('Tab');
+            check('the new run calls a new body, not the parked one', fresh.run === freshId && fresh.map && !fresh.soul && fresh.dice === 0, JSON.stringify(fresh));
+
+            await press(a, 'F8');
+            await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the new partner goes home');
+            await sleep(2000);
+            check('nothing is left parked for the next call', parked(server.saves).length === 0, parked(server.saves).join(','));
+        } catch (e) {
+            const msg = String(e && e.message || e);
+            if (msg !== 'stop') check(msg, false);
+            try {
+                await a.keyboard.up('Tab');
+                if (bo) { await bo.close(); bo = null; }
+                if (await a.evaluate(() => Coop.refused)) await a.evaluate(() => { Coop.refused = false; Coop.connect(); });
+                await waitFor(a, () => Coop.connected, 15000, 'Ann connected again').catch(() => {});
+                if (!(await a.evaluate(() => Coop.world.live))) {
+                    if (!(await a.evaluate(() => window.T && T.onMap()))) {
+                        if (!(await a.evaluate(() => SceneManager._scene instanceof Scene_Title))) {
+                            await a.evaluate(() => SceneManager.goto(Scene_Title));
+                            await waitFor(a, () => SceneManager._scene instanceof Scene_Title, 20000, 'Ann at the title to restart').catch(() => {});
+                        }
+                        await a.evaluate(() => T.quickStart(1, 27, 67));
+                        await waitFor(a, () => T.onMap(), 60000, 'Ann back on the map');
+                    }
+                    await a.evaluate(() => { T.settle(); T.begin(); });
+                    await waitFor(a, () => Coop.world.live, 15000, 'Ann live again');
+                }
+                await a.evaluate(() => {
+                    window.partnerNotes = [];
+                    if (!window._partnerNotes) {
+                        window._partnerNotes = true;
+                        Coop.on('partnernote', (m) => window.partnerNotes.push(String(m.text || '')));
+                    }
+                });
+                // A partner the page can no longer see can still be running. F8 then
+                // sends that one home instead of calling, and the two-partner section
+                // never gets two. Drain until a toggle would call, then let stop() finish.
+                let homed = false;
+                for (let pass = 0; pass < 4; pass++) {
+                    if (await a.evaluate(() => Coop.others().some((p) => p.bot))) {
+                        await press(a, 'F8');
+                        await waitFor(a, () => !Coop.others().some((p) => p.bot), 35000, 'the partner is sent home so the rest can run').catch(() => {});
+                        homed = true;
+                        continue;
+                    }
+                    if (parked(server.saves).length) {
+                        await press(a, 'F8');
+                        await waitFor(a, () => Coop.others().some((p) => p.bot), 90000, 'a parked body called so it can be sent home').catch(() => {});
+                        continue;
+                    }
+                    break;
+                }
+                if (!homed && !(await a.evaluate(() => Coop.others().some((p) => p.bot))) && !parked(server.saves).length) {
+                    await a.evaluate(() => { window.partnerNotes = []; });
+                    await press(a, 'F8');
+                    await sleep(700);
+                    const said = await a.evaluate(() => (window.partnerNotes || []).join(' | '));
+                    if (/on the way back/.test(said)) {
+                        await waitFor(a, () => Coop.others().some((p) => p.bot), 90000, 'the recalled partner arrives to be sent home').catch(() => {});
+                        await press(a, 'F8');
+                        await waitFor(a, () => !Coop.others().some((p) => p.bot), 35000, 'the recalled partner is sent home').catch(() => {});
+                        homed = true;
+                    } else if (/on the way/.test(said)) {
+                        await press(a, 'F8');
+                        homed = true;
+                    } else if (/going home/.test(said)) homed = true;
+                }
+                if (homed) await sleep(12000);
+            } catch (e2) { console.error(e2); }
+        }
 
         //--- two called at once: they cannot both be the knight --------------
         await press(a, 'F8');
@@ -154,6 +343,7 @@ async function press(page, code) {
     } catch (e) {
         console.error(e);
         check('test ran to the end', false);
+        if (bo) { try { await bo.close(); } catch (e2) { /* gone */ } }
         if (a) console.log('toast: ' + await a.evaluate(() => document.getElementById('coop-toast').textContent).catch(() => '?'));
         console.log('server said:\n' + logs.join('').split('\n').filter((l) => /\[(Claude|D'arce|Ragnvaldr|Enki|Cahara)|partner|could not/i.test(l)).slice(-12).join('\n'));
     }

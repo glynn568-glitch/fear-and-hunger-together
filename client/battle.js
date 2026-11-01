@@ -538,7 +538,9 @@
     const PASSING = ['map still fading in', 'changing maps', 'not on the map'];
 
     function answerInvite(msg, triesLeft) {
-        if (msg.scenery && Coop.isBot) {
+        // A partner keeps out of doors and bars, unless it walks in that player's line.
+        const lead = Coop.partyLeader && Coop.peers.get(Coop.partyLeader);
+        if (msg.scenery && Coop.isBot && Coop.partyLeader !== msg.from && !(lead && lead.st === 'battle' && lead.br === 'g')) {
             Coop.note('stayed out of ' + peerName(msg.from) + "'s fight: nothing to fight");
             Coop.sendTo(msg.from, 'bdecline', {});
             return;
@@ -759,7 +761,7 @@
         const b = Coop.battle;
         if (b && b.role === 'owner') {
             const asker = Coop.peers.get(msg.from);
-            if (b.scenery && asker && asker.bot) {
+            if (b.scenery && asker && asker.bot && !(Coop.inMyParty && Coop.inMyParty(msg.from)) && !b.guests.has(asker.pl)) {
                 Coop.sendTo(msg.from, 'bdecline', {});
                 return;
             }
@@ -816,7 +818,7 @@
         if (b.eventId) Coop.events.sendHold(b.eventId, 'battle');
         Coop.note('fight: troop ' + troopId + (b.eventId ? ' from event ' + b.eventId : '') + ' on map ' + b.mapId);
         for (const peer of Coop.peersHere()) {
-            if (b.scenery && peer.bot) continue;
+            if (b.scenery && peer.bot && !(Coop.inMyParty && Coop.inMyParty(peer.id))) continue;
             // A party mate is pulled in from anywhere on the map.
             if ((peer.st === 'map' || peer.st === 'event') && (Coop.distanceTo(peer) <= JOIN_RANGE || (Coop.inMyParty && Coop.inMyParty(peer.id)))) {
                 b.invited.set(peer.id, Date.now() + JOIN_WAIT);
@@ -974,7 +976,14 @@
     Coop.on('to:bquit', function (msg) {
         const b = Coop.battle;
         const id = b && b.role === 'owner' ? guestNamed(b, peerName(msg.from)) : 0;
-        if (id) { b.guests.get(id).quit = true; Stream.remove(msg.from); }
+        if (id) {
+            const g = b.guests.get(id);
+            g.quit = true;
+            // Their guard, chosen for this turn, stands until the next time everyone chooses.
+            const lead = $gameActors.actor(g.actors[0]);
+            g.stoodGuard = !!lead && (lead.isStateAffected(GUARD_STATE) || lead._actions.some((x) => x.isGuard()));
+            Stream.remove(msg.from);
+        }
     });
 
     Coop.on('to:bdecline', function (msg) {
@@ -1110,6 +1119,7 @@
             integrate(b);
             b.started = true;
         }
+        if (b && b.guests) for (const g of b.guests.values()) g.stoodGuard = false;
         _startInput.call(this);
     };
 
@@ -1419,7 +1429,7 @@
         const b = Coop.battle;
         if (!b || b.role !== 'owner' || !b.guests.size) return [];
         const leads = [$gameParty._actors.filter((id) => !guestActorIds(b).has(id))[0]];
-        for (const g of b.guests.values()) if (!g.quit) leads.push(g.actors[0]);
+        for (const g of b.guests.values()) if (!g.quit || g.stoodGuard) leads.push(g.actors[0]);
         return leads.map((id) => id && $gameActors.actor(id)).filter((a) => a && a.isAlive());
     }
     function playersGuarding() {

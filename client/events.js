@@ -259,6 +259,13 @@
             return;
         }
         if (erased && !ev._erased) { ev._erased = true; ev.refresh(); }
+        // A kept location already placed this event. An arrival picture that
+        // still has it on the map's original square would put the shelf back.
+        if (snap && Coop.world.el) {
+            const kept = Coop.world.el[$gameMap.mapId() + ',' + row[0]];
+            const home = ev.event();
+            if (kept && home && x === home.x && y === home.y && (kept[0] !== home.x || kept[1] !== home.y)) return;
+        }
         const far = Math.abs(x - ev._x) + Math.abs(y - ev._y) > 2;
         if (snap || far) {
             if (ev._x !== x || ev._y !== y) { ev.setPosition(x, y); ev.refreshBushDepth(); }

@@ -24,25 +24,25 @@
     Coop.parkNow = function (anyway) {
         // anyway: a dead body sent home. The usual park is map-only, so a drop
         // cannot be used to walk back a death or a fight.
-        if (!Coop.connected || !Coop.world.live) return false;
-        if (anyway ? !Coop.dead : !safe()) return false;
-        if (anyway) {
-            // An earlier park's answer can still be on the wire. Only this one's counts.
-            Coop._parkWait = (Coop._parkWait || 0) + 1;
-            Coop._parkAck = 0;
-        }
+        if (!Coop.connected || !Coop.world.live) return 0;
+        if (anyway === 'leaving') { if (Coop.dead || Coop.battle || !(SceneManager._scene instanceof Scene_Map)) return 0; }
+        else if (anyway ? !Coop.dead : !safe()) return 0;
+        // A number on every park, so a send-home can wait until this one is on disk
+        // before the title (which is what throws a living body's park away).
+        Coop._parkWait = (Coop._parkWait || 0) + 1;
+        if (anyway === true) Coop._parkAck = 0;
         $gameSystem.onBeforeSave();
         // Not tied to a bed save: carrying on uses the world as it is now.
         const stamp = Coop.world.saveStamp;
         Coop.world.saveStamp = 0;
         let json;
         try { json = JsonEx.stringify(DataManager.makeSaveContents()); } finally { Coop.world.saveStamp = stamp; }
-        Coop.send({ t: 'park', runId: Coop.world.runId, blob: json, n: anyway ? Coop._parkWait : 0 });
+        Coop.send({ t: 'park', runId: Coop.world.runId, blob: json, n: Coop._parkWait });
         lastSent = Date.now();
-        return true;
+        return Coop._parkWait;
     };
     // The host has this park on disk. A dead send-home waits for that before the page closes.
-    Coop.on('parkok', function (msg) { if (msg && msg.n && msg.n === Coop._parkWait) Coop._parkAck = msg.n; });
+    Coop.on('parkok', function (msg) { if (msg && msg.n && msg.n > (Coop._parkAck || 0)) Coop._parkAck = msg.n; });
 
     // Right after something changes hands, so the parked state never holds
     // an item its owner has already given away.

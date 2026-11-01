@@ -10,9 +10,40 @@
     const FAR_SNAP = 12; // tiles behind before a member is put on their spot
 
     Coop.partyLeader = 0; // the player whose line this one walks in (0 = their own)
+    let leaderName = ''; // that player, by name: a dropped line comes back under a new id
+    let missedAt = 0; // when their id vanished; the line waits out a short drop
+    const LEADER_GRACE = 20000;
+    const lined = new Map(); // name -> when they last walked in this line
 
     function leaderPeer() {
         return Coop.partyLeader ? Coop.peers.get(Coop.partyLeader) : null;
+    }
+
+    function sameName(a, b) {
+        return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+    }
+
+    // The placeholder "Player N" is not them yet: the real name arrives a moment later.
+    function findLeader() {
+        if (!leaderName || /^Player \d+$/.test(leaderName)) return null;
+        for (const p of Coop.peers.values()) if (sameName(p.name, leaderName) && !/^Player \d+$/.test(p.name)) return p;
+        return null;
+    }
+
+    function remember(peer) {
+        if (peer && peer.name && !/^Player \d+$/.test(peer.name)) leaderName = peer.name;
+        if (inWorld(peer)) peer._inWorld = true;
+        missedAt = 0;
+    }
+
+    function adopt(peer) {
+        if (!peer || peer.id === Coop.id) return;
+        const changed = Coop.partyLeader !== peer.id;
+        Coop.partyLeader = peer.id;
+        remember(peer);
+        if (!changed) return;
+        resetTrail();
+        if (Coop.world.live && Coop.connected && Coop.reportPresence) Coop.reportPresence(true);
     }
 
     function inWorld(peer) {
@@ -51,6 +82,7 @@
         // Whoever walked behind this player now walks behind the new leader.
         for (const p of Coop.others()) if (p.pl === Coop.id) Coop.sendTo(p.id, 'partyto', { lead: peer.id });
         Coop.partyLeader = peer.id;
+        remember(peer);
         resetTrail();
         Coop.reportPresence(true);
         say('You fall in behind ' + peer.name + '. Hold a direction to step out of line.', 6000);
@@ -59,8 +91,10 @@
     };
 
     Coop.leaveParty = function (why) {
-        if (!Coop.partyLeader) return;
+        if (!Coop.partyLeader && !leaderName) return;
         Coop.partyLeader = 0;
+        leaderName = '';
+        missedAt = 0;
         held = 0;
         if (Coop.connected) Coop.reportPresence(true);
         if (why) say(why);
@@ -82,6 +116,7 @@
         const lead = Coop.peers.get(msg.lead);
         if (lead && lead.id !== Coop.id) {
             Coop.partyLeader = lead.id;
+            remember(lead);
             resetTrail();
             Coop.reportPresence(true);
             say('Your party now follows ' + lead.name + '.');
@@ -89,14 +124,39 @@
     });
 
     // A line has no leader once they are gone, dead or back at the title.
+    // A dropped socket is not gone: the same name comes back under a new id.
     function checkLeader() {
-        if (!Coop.partyLeader) return;
-        const peer = leaderPeer();
-        if (!Coop.world.live || Coop.dead) Coop.leaveParty();
-        else if (!peer) Coop.leaveParty('Your party leader is gone. You walk on your own.');
-        else if (peer.st === 'dead') Coop.leaveParty(peer.name + ' has fallen. You walk on your own.');
-        else if (peer.st === 'title') Coop.leaveParty(peer.name + ' has left the dungeon. You walk on your own.');
-        else if (loops() && Coop.id === Math.min.apply(null, loops())) Coop.leaveParty(); // joined each other at once: one line, not none
+        if (!leaderName) {
+            if (!Coop.partyLeader) return;
+            const lead = leaderPeer();
+            if (lead) remember(lead); else Coop.leaveParty('Your party leader is gone. You walk on your own.');
+            if (!leaderName) return;
+        }
+        if (Coop.dead) { Coop.leaveParty(); return; }
+        // Our own line is down, or still catching up. The leader has not left.
+        if (!Coop.world.live) {
+            if (!Coop.connected || Coop.world.cut) return;
+            Coop.leaveParty();
+            return;
+        }
+        const peer = findLeader();
+        if (peer) {
+            if (peer.st && peer.st !== 'title' && peer.st !== 'dead') peer._inWorld = true;
+            // The first presence after a new id is the title, until the world catches up. That is not them leaving.
+            if (peer.st === 'dead') { Coop.leaveParty(peer.name + ' has fallen. You walk on your own.'); return; }
+            if (peer._inWorld && peer.st === 'title') { Coop.leaveParty(peer.name + ' has left the dungeon. You walk on your own.'); return; }
+            // A new id says "title" until its world catches up; for ever is not catching up.
+            if (peer.st === 'title') {
+                if (!missedAt) missedAt = Date.now();
+                if (Date.now() - missedAt >= LEADER_GRACE) Coop.leaveParty(peer.name + ' has left the dungeon. You walk on your own.');
+                return;
+            }
+            adopt(peer);
+            if (loops() && Coop.id === Math.min.apply(null, loops())) Coop.leaveParty(); // joined each other at once: one line, not none
+            return;
+        }
+        if (!missedAt) missedAt = Date.now();
+        if (Date.now() - missedAt >= LEADER_GRACE) Coop.leaveParty('Your party leader is gone. You walk on your own.');
     }
     // The ids around a loop of leaders this player is part of, or null.
     function loops() {
@@ -110,19 +170,49 @@
         return at === Coop.id ? seen : null;
     }
     setInterval(checkLeader, 250);
-    // A new connection numbers everyone afresh.
-    Coop.on('online', function () { Coop.partyLeader = 0; });
+    // A new connection numbers everyone afresh. The line is the leader's name, so it is pointed at the new id.
+    Coop.on('online', function () {
+        if (!leaderName) return;
+        const peer = findLeader();
+        // The roster's last presence is where they really are. (A leader reconnecting looks like the title
+        // only to people who stayed; that peer is new, and _inWorld is still false, so the line waits.)
+        if (peer && (peer.st === 'dead' || peer.st === 'title')) {
+            Coop.leaveParty(peer.st === 'dead' ? peer.name + ' has fallen. You walk on your own.' : peer.name + ' has left the dungeon. You walk on your own.');
+            return;
+        }
+        if (peer) adopt(peer);
+        else missedAt = Date.now(); // the wait starts when we are back, not from while we ourselves were down
+    });
 
     // The leader hears who falls in and who leaves.
     Coop.on('p', function (msg) {
         const peer = Coop.peers.get(msg.from);
         if (!peer) return;
+        const wasIn = !!peer._inWorld;
+        if (peer.st && peer.st !== 'title' && peer.st !== 'dead') peer._inWorld = true;
+        if (wasIn && (peer.st === 'dead' || peer.st === 'title')) {
+            const key = (peer.name || '').toLowerCase();
+            if (key) lined.delete(key);
+            if (leaderName && sameName(peer.name, leaderName)) {
+                Coop.leaveParty(peer.st === 'dead' ? peer.name + ' has fallen. You walk on your own.' : peer.name + ' has left the dungeon. You walk on your own.');
+                return;
+            }
+        } else if (leaderName && sameName(peer.name, leaderName) && inWorld(peer)) adopt(peer);
         const was = peer._plWas || 0;
         const now = peer.pl || 0;
         if (was === now) return;
         peer._plWas = now;
-        if (now === Coop.id) say(peer.name + ' falls in behind you.');
-        else if (was === Coop.id && peer.st !== 'dead' && peer.st !== 'title') say(peer.name + ' goes their own way.');
+        const key = (peer.name || '').toLowerCase();
+        if (now === Coop.id) {
+            // Back from a short drop: they were already in the line. Don't announce them twice.
+            const again = key && lined.has(key) && Date.now() - lined.get(key) < LEADER_GRACE;
+            if (key) lined.set(key, Date.now());
+            if (!again) say(peer.name + ' falls in behind you.');
+            if (!mates.has(peer.id) && SceneManager._scene instanceof Scene_Menu) Coop.sendTo(peer.id, 'pactors?', {});
+        } else if (was === Coop.id) {
+            if (key) lined.delete(key);
+            if (peer.st !== 'dead' && peer.st !== 'title') say(peer.name + ' goes their own way.');
+        }
     });
 
     // Lines for the Enter menu facing a partner.

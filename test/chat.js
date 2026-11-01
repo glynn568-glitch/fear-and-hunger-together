@@ -93,6 +93,34 @@ const { twoPlayers, checker, sleep, waitFor } = require('./common');
         await waitFor(b, () => Coop.connected, 10000, 'B back a third time');
         await sleep(2000);
         check('...is said again after a reconnect but shown once', await onA('Bo: only once') === 1, (await onA('Bo: only once')) + ' times');
+        // "er" and "pho" each landed twice in one second (12:14:04, 12:41:00): two sends, or two receives, of one line.
+        await a.evaluate(() => { window._dupHeard = []; Coop.on('heard', (m) => window._dupHeard.push(m.text)); });
+        const twice = await b.evaluate(() => {
+            const n0 = document.querySelectorAll('#coop-chat .line').length;
+            const ok1 = Coop.say('er');
+            const ok2 = Coop.say('er');
+            return { n: document.querySelectorAll('#coop-chat .line').length - n0, ok1, ok2 };
+        });
+        await sleep(800);
+        const gotEr = await a.evaluate(() => ({
+            lines: [...document.querySelectorAll('#coop-chat .line')].filter((l) => l.textContent === 'Bo: er').length,
+            heard: window._dupHeard.filter((t) => t === 'er').length,
+        }));
+        check('a line said twice in one moment is shown and heard once', twice.n === 1 && twice.ok1 === true && twice.ok2 === false && gotEr.lines === 1 && gotEr.heard === 1, JSON.stringify({ twice, gotEr }));
+        const gotPho = await a.evaluate(() => {
+            const peer = Coop.others()[0];
+            if (!peer) return { err: 'no peer' };
+            window._dupHeard = [];
+            const label = peer.name + ': pho';
+            const before = [...document.querySelectorAll('#coop-chat .line')].filter((l) => l.textContent === label).length;
+            Coop._receive({ t: 'chat', from: peer.id, text: 'pho', id: 'dup.1' });
+            Coop._receive({ t: 'chat', from: peer.id, text: 'pho', id: 'dup.2' });
+            return {
+                lines: [...document.querySelectorAll('#coop-chat .line')].filter((l) => l.textContent === label).length - before,
+                heard: window._dupHeard.filter((t) => t === 'pho').length,
+            };
+        });
+        check('the same line received twice in one moment is shown and heard once', gotPho.lines === 1 && gotPho.heard === 1, JSON.stringify(gotPho));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

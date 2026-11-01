@@ -27,8 +27,17 @@ setInterval(function () {
     const ws = Coop._ws;
     if (!Coop._notesOut.length || !ws || ws.readyState !== 1) return;
     const now = Date.now();
-    // A note held back by a dropped line says when it was made.
-    const lines = Coop._notesOut.splice(0, 50).map((n) => (now - n.at > 5000 ? '[' + new Date(n.at).toTimeString().slice(0, 8) + '] ' : '') + n.text);
+    // A note held back by a dropped line says when it was made. One still waiting to learn
+    // why the line died (how long, which close) stays queued until the page can say.
+    const batch = Coop._notesOut.splice(0, 50);
+    const later = [];
+    const lines = [];
+    for (const n of batch) {
+        if (n.hold) { later.push(n); continue; }
+        lines.push((now - n.at > 5000 ? '[' + new Date(n.at).toTimeString().slice(0, 8) + '] ' : '') + n.text);
+    }
+    if (later.length) Coop._notesOut.unshift.apply(Coop._notesOut, later);
+    if (!lines.length) return;
     Coop.send({ t: 'notes', lines });
 }, 2000);
 
@@ -113,6 +122,8 @@ Coop.token = function () {
 Coop.connect = function () {
     const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
     if (Coop.refused) return; // another build, or a dead link: retrying cannot help
+    // Two lines from one tab push each other off for ever (same token), each retry starting the next round.
+    if (Coop._ws && Coop._ws.readyState <= 1) return;
     const b = window.COOP_BUILD || {};
     const query = '?fp=' + encodeURIComponent(b.fp || '') + '&build=' + encodeURIComponent(b.build || '')
         + '&mod=' + encodeURIComponent(b.mod || '') + '&v=' + encodeURIComponent(b.version || '') + (b.stale ? '&stale=1' : '');
@@ -121,6 +132,19 @@ Coop.connect = function () {
     Coop._ws = ws;
     ws.onopen = function () {
         Coop._retry = 0;
+        const drop = Coop._drop;
+        Coop._drop = null;
+        if (!drop || !drop.note) return;
+        const at = Coop._notesOut.indexOf(drop.note);
+        if (at >= 0) Coop._notesOut.splice(at, 1);
+        const secs = ((Date.now() - drop.at) / 1000).toFixed(1);
+        const text = 'lost the connection, retrying (closed ' + (drop.code || 0) + ', down ' + secs + 's, hostdown ' + (drop.hostdown ? 'yes' : 'no') + ')';
+        drop.note.text = text;
+        drop.note.hold = false;
+        // Coop.log keeps the short line: a check reads it the moment the socket dies, before this runs.
+        console.log('[coop] ' + text);
+        // Sent once our name is in, so the host's log names the player and not "Player N".
+        Coop._heldDrop = drop.note;
     };
     ws.onmessage = function (ev) {
         if (typeof ev.data !== 'string') {
@@ -133,14 +157,19 @@ Coop.connect = function () {
         try { msg = JSON.parse(ev.data); } catch (e) { return; }
         Coop._receive(msg);
     };
-    ws.onclose = function () {
+    ws.onclose = function (ev) {
         const was = Coop.connected;
         Coop.connected = false;
         if (was) {
+            // The short line is what the page sees at once. The host's copy, sent on the way back, says why.
             Coop.note('lost the connection, retrying');
+            const note = Coop._notesOut[Coop._notesOut.length - 1];
+            if (note) note.hold = true;
+            Coop._drop = { code: ev && ev.code || 0, at: Date.now(), hostdown: !!Coop._sawHostDown, note: note };
             for (const id of Array.from(Coop.peers.keys())) Coop._dropPeer(id);
             Coop.emit('offline', {});
         }
+        Coop._sawHostDown = false;
         Coop._retry = Math.min(Coop._retry + 1, 6);
         setTimeout(Coop.connect, 500 * Coop._retry);
     };
@@ -178,6 +207,7 @@ Coop._receive = function (msg) {
         }
         if (!Coop.name) Coop.name = Coop.loadName();
         if (Coop.name) Coop.send({ t: 'name', name: Coop.name, token: Coop.token() });
+        if (Coop._heldDrop) { Coop._notesOut.push(Coop._heldDrop); Coop._heldDrop = null; }
         Coop.note('connected as player ' + Coop.id + ', ' + Coop.peers.size + ' other(s) here');
         Coop.emit('online', msg);
         break;
@@ -218,6 +248,10 @@ Coop._receive = function (msg) {
     case 'joinfail':
         Coop.refused = String(msg.why || 'The host could not be joined.');
         Coop.emit('refused', { text: Coop.refused });
+        break;
+    case 'hostdown': // the joiner's own server: the host has gone silent
+        Coop._sawHostDown = true;
+        Coop.emit('hostdown', msg);
         break;
     default:
         Coop.emit(msg.t, msg);

@@ -67,9 +67,14 @@ for (const id of [2271, 2282, 2294, 2311, 2638, 1643]) SW_PRIVATE_IDS.add(id);
 // Buckman), Moonless joining (an autorun that adds him to the party), Seril's
 // senses. Shared, the other player was mauled, moved or given the dog too.
 // What those scenes set afterwards is still world state.
-for (const id of [2881, 2888, 2895, 2909, 2916, 2923, 2970, 724, 2374]) SW_PRIVATE_IDS.add(id);
+// A save carried into someone else's run must not bring the latch along:
+// the scene would play there and its shared writes would hit everyone.
+const DUE_SCENES = [2881, 2888, 2895, 2909, 2916, 2923, 2970, 724, 2374, 2187, 2947, 2761];
+for (const id of DUE_SCENES) SW_PRIVATE_IDS.add(id);
 // The game mode is chosen once and has to match for everyone.
-const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480]);
+// The Crow Mauler's route and "he has been sent" (773, 774, 779): his alert 786 and his death 771 are
+// shared, and one roll on one machine left the partner an empty floor and, if they owned the map, him frozen.
+const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480, 773, 774, 779]);
 
 const sw = {};
 const report = { swWorld: 0, swPrivate: 0, vaWorld: [], vaPrivate: 0, twoWayWorld: [], latchPrivate: [] };
@@ -148,13 +153,66 @@ for (const v of Object.values(usage.va)) {
     if (how.includes('set:rand') && how.every((k) => k === 'set:rand' || k === 'set:const') && where.every((k) => k === 'map:auto' || k === 'map:touch')) ONCE.push(v.id);
 }
 
+// --- what a save's flags stand for, beyond the flags --------------------------
+// kept: events a scene that writes a shared flag walks or sets down, with their
+// home tile. A save from before locations were shared says where they stand only
+// in the plugin's own table, next to every wanderer; this says which ones count.
+// recruits: a shared flag written beside an Add Actor. A body that holds that
+// person came through the flag, so a save brings the flag along.
+const { findGame, readGameJson } = require('./find-game');
+const DATA = path.join(process.env.FH_GAME || findGame(), 'data');
+const commonEvents = readGameJson(path.join(DATA, 'CommonEvents.json'));
+const kept = {};
+const recruits = {};
+function writesShared(list, seen, key) {
+    if (seen.has(list)) return false;
+    seen.add(list);
+    return list.some((c) => {
+        if (c.code === 121) { for (let id = c.parameters[0]; id <= c.parameters[1]; id++) if (sw[id]) return true; return false; }
+        if (c.code === 123) return !ssPrivate[key + ',' + c.parameters[0]];
+        const ce = c.code === 117 && commonEvents[c.parameters[0]];
+        return !!ce && writesShared(ce.list, seen, key);
+    });
+}
+const JUST_FORMS = new Set([8, 9, 11, 12]); // the demon baby and the fused forms: nobody's recruit
+for (const file of fs.readdirSync(DATA)) {
+    if (!/^Map\d+\.json$/.test(file)) continue;
+    const map = readGameJson(path.join(DATA, file));
+    if (!map || !Array.isArray(map.events)) continue;
+    const mapId = Number(file.slice(3, 6));
+    const mapKept = /<save event locations?>/i.test(map.note || '');
+    for (const ev of map.events) {
+        if (!ev) continue;
+        for (const page of ev.pages) {
+            const shares = writesShared(page.list, new Set(), mapId + ',' + ev.id);
+            page.list.forEach((c, i) => {
+                if (c.code === 129 && c.parameters[1] === 0 && !JUST_FORMS.has(c.parameters[0]) && mapId !== 160 && mapId !== 185) {
+                    for (const near of page.list.slice(Math.max(0, i - 4), i + 5)) {
+                        if (near.code !== 121 || near.parameters[2] !== 0) continue;
+                        for (let id = near.parameters[0]; id <= near.parameters[1]; id++) if (sw[id]) recruits[id] = c.parameters[0];
+                    }
+                }
+                const walks = c.code === 205 && c.parameters[1].list.some((r) => r.code >= 1 && r.code <= 14);
+                if (!shares || !(walks || c.code === 203)) return;
+                const target = c.parameters[0] === 0 ? ev : map.events[c.parameters[0]];
+                if (!target || c.parameters[0] < 0 || target.pages.some((p) => p.moveType !== 0)) return;
+                if (mapKept || /<save event locations?>/i.test(target.note || '')) kept[mapId + ',' + target.id] = [target.x, target.y];
+            });
+        }
+    }
+}
+
 const census = {
+    kept,
+    recruits,
     once: ONCE,
     sw: keys(sw).map(Number),
     va: keys(va).map(Number),
     ssPrivate: keys(ssPrivate),
     identity: [242, 243, 244, 245, 246],
     start: 79,
+    // Private latches that only mean "a fight just ended and a scene is due".
+    dueScenes: DUE_SCENES,
     // The build this census was made from (tools/version.js).
     fp: process.env.FH_FP || require('./version').fingerprint(require('./find-game').findGame()).fp,
 };

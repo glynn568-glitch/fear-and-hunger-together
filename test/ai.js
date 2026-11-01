@@ -13,17 +13,22 @@ async function press(page, code, ms) {
 (async () => {
     const check = checker();
     let persona = '';
+    let keepsChoice = false;
     try {
         const brain = require('../tools/brain');
         if (typeof brain.personaBody === 'function') {
             persona = ['mercenary', 'knight', 'priest', 'outlander'].map((c) => brain.personaBody({ name: 'Claude', character: c })).join('\n');
         }
+        keepsChoice = typeof brain.keepTurn === 'function' && brain.keepTurn('[chat] Ann says hi') && !brain.keepTurn('[choice] You are reading: "Leave him"');
     } catch (e) { persona = ''; }
     check('the persona names a want and has no refuse or bargain',
         /What you want: silver and coin/.test(persona) && /What you want: Le'garde/.test(persona) && /What you want: rites and knowledge/.test(persona) && /What you want: the grudge you carry/.test(persona) && !/refus/i.test(persona) && !/bargain/i.test(persona),
         (persona || '(no persona)').slice(0, 240));
     check('both humans are partners and the newest order stands',
-        /Neither outranks the other/.test(persona) && /newest order stands/.test(persona) && /alone in a fight/.test(persona) && /Going with Enki, pho\./.test(persona) && /address the one you are answering by name/.test(persona) && !/refus/i.test(persona) && !/bargain/i.test(persona),
+        /Neither outranks the other/.test(persona) && /newest order stands/.test(persona) && /alone in a fight/.test(persona) && /Going with Enki, pho\./.test(persona) && /address the one you are answering by name/.test(persona) && /Obey unless it is plainly suicidal/.test(persona) && !/refus/i.test(persona) && !/bargain/i.test(persona),
+        (persona || '(no persona)').slice(0, 500));
+    check('it may speak only of what its bag lists, and a dialogue choice is over once picked',
+        /Speak only of items, weapons and armor named in the latest "Your bag" list/.test(persona) && /you do not have it/.test(persona) && /A dialogue choice is over once you have picked/.test(persona) && keepsChoice,
         (persona || '(no persona)').slice(0, 500));
     const port = 8441;
     const server = await startServer(port);
@@ -56,12 +61,16 @@ async function press(page, code, ms) {
                 if (/"[^"]*follow[^"]*"$/.test(text)) return { say: 'Right behind you.', order: 'follow' };
                 if (/"[^"]*torch[^"]*"$/.test(text)) return { say: 'Take it.', give: { kind: 'item', id: 5 } };
                 if (/"[^"]*explore[^"]*"$/.test(text)) return { say: 'I will look around.', order: 'explore' };
+                if (/"[^"]*memories[^"]*"$/.test(text)) return { say: 'Those memories feel чужие.' };
                 const quoted = /"([^"]*)"\s*$/.exec(text);
                 const gid = quoted && /\b(b\d+)\b/.exec(quoted[1]);
                 if (gid) return { goal: gid[1], say: '' };
                 return { say: 'Mm.' };
             }
-            if (kind === 'choice') return { pick: 1, say: '' };
+            if (kind === 'choice') {
+                if (/Leave him/.test(text)) return { pick: 2, say: 'Leave him be.' };
+                return { pick: 1, say: '' };
+            }
             return { say: '' };
         });
         await bot.evaluate(installBot, { character: 'knight', follow: '' });
@@ -117,6 +126,33 @@ async function press(page, code, ms) {
         await sleep(4500);
         const quick = await bot.evaluate(() => ({ mode: BOT.mode, lines: BOT.lines.slice(-3) }));
         check('two quick orders: a slow answer to the older one never undoes the newer', quick.mode === 'follow', JSON.stringify(quick));
+
+        //--- language: English unless a player says otherwise ---------------------
+        const tongues = await bot.evaluate(() => [
+            "d'arce, speak russian from now on no matter what", 'ok then speak russian, d\'arce', 'speak in french', 'talk to me in german',
+            "ok thats enough d'arce just english", 'english only', 'back to english',
+            'claude can you speak chinese', 'she knows russian but not fucking korean', "d'arce, no speaking english", 'i dont speak russian',
+        ].map((s) => BOT.tongueAsked(s)));
+        check('only a plain order changes the language; questions and remarks do not',
+            JSON.stringify(tongues) === JSON.stringify(['Russian', 'Russian', 'French', 'German', 'English', 'English', 'English', '', '', '', '']), JSON.stringify(tongues));
+        const hasSlip = () => BOT.lines.some((l) => /[Ѐ-ӿ]/.test(l));
+        await a.evaluate(() => Coop.say('those memories, what were they'));
+        await waitFor(bot, () => /dropped a line/.test(BOT.said) || BOT.thinking === 0, 10000, 'the bot answers the memories line');
+        await sleep(1000);
+        const chats = asked.filter((x) => x.kind === 'chat');
+        check('every message names the language, English by default', /^Language: every word of "say" in English/.test(chats[chats.length - 1].text), chats[chats.length - 1].text.slice(0, 80));
+        check('a word in another alphabet never reaches the chat while it should speak English', !(await bot.evaluate(hasSlip)), JSON.stringify(await bot.evaluate(() => BOT.lines.slice(-3))));
+        await a.evaluate(() => Coop.say('speak russian'));
+        await waitFor(bot, () => BOT.language === 'Russian', 10000, 'told to speak Russian');
+        await sleep(1500);
+        await a.evaluate(() => Coop.say('those memories again'));
+        await waitFor(bot, () => BOT.lines.some((l) => /[Ѐ-ӿ]/.test(l)), 10000, 'told to, it may speak Russian');
+        const inRussian = asked.filter((x) => x.kind === 'chat').pop();
+        check('told to speak Russian, it is told so and the line goes through', /^Language: every word of "say" in Russian/.test(inRussian.text), inRussian.text.slice(0, 80));
+        await sleep(1500);
+        await a.evaluate(() => Coop.say('ok thats enough, just english'));
+        await waitFor(bot, () => BOT.language === 'English', 10000, 'told back to English');
+        await sleep(1500);
 
         //--- Ann goes through a door with the bot beside her: it comes at once ---
         const door = await bot.evaluate(() => BOT.nav.exits($dataMap, 1).find((e) => e.to === 4));
@@ -514,7 +550,12 @@ async function press(page, code, ms) {
         for (let i = 0; i < 30 && !(await a.evaluate(() => SceneManager._scene instanceof Scene_Map)); i++) await press(a, 'KeyZ');
         await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'Ann back on the map');
         await waitFor(bot, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'the bot back on the map');
-        const told = asked.map((q) => q.text).concat(await bot.evaluate(() => BOT.notes.slice())).join('\n').split('\n').filter((t) => /fight is over/.test(t));
+        // The note is queued as the scenes land, and the call that records it arrives a moment later. Reading once was empty 1 of 3.
+        let told = [];
+        for (let i = 0; i < 8 && !told.length; i++) {
+            if (i) await sleep(500);
+            told = asked.map((q) => q.text).concat(await bot.evaluate(() => BOT.notes.slice())).join('\n').split('\n').filter((t) => /fight is over/.test(t));
+        }
         if (wonInRound) check('a fight won in the round is reported as won', told.some((t) => /won: Guard.* is dead/.test(t)), told.join(' | '));
         else check('a fight that only broke off is not reported as a kill', told.some((t) => /nobody won: it broke off, and Guard.* is still alive/.test(t)), told.join(' | '));
 
@@ -589,7 +630,42 @@ async function press(page, code, ms) {
         });
         await waitFor(bot, () => window.answer >= 0, 20000, 'the bot answers a choice');
         const ch = await bot.evaluate(() => window.answer);
-        check('it answers a dialogue choice the way the model says', ch === 1 && asked.some((q) => q.kind === 'choice' && /A voice asks which way/.test(q.text) && /1 Right/.test(q.text)), 'picked ' + ch);
+        const choiceAsk = asked.find((q) => q.kind === 'choice' && /A voice asks which way/.test(q.text));
+        check('it answers a dialogue choice the way the model says', ch === 1 && !!choiceAsk && /1 Right/.test(choiceAsk.text), 'picked ' + ch);
+        check('every call names what is in its bag', !!choiceAsk && /Your bag:/.test(choiceAsk.text), choiceAsk && choiceAsk.text.slice(-180));
+        // The same menu again (a corpse's "Leave him"): one ask, one line. A second ask is how it kept saying it.
+        const leaveCalls = () => asked.filter((q) => q.kind === 'choice' && /Leave him/.test(q.text)).length;
+        await bot.evaluate(() => {
+            window.leaveN = 0;
+            Coop.answerTest = (n) => { window.leaveN = (window.leaveN || 0) + 1; window.leavePick = n; };
+            window.openLeave = () => {
+                const list = [
+                    { code: 101, indent: 0, parameters: ['', 0, 0, 2] },
+                    { code: 401, indent: 0, parameters: ['The body is still.'] },
+                    { code: 102, indent: 0, parameters: [['Beat him', 'Search him', 'Leave him'], 2, 0, 2, 0] },
+                    { code: 402, indent: 0, parameters: [0, 'Beat him'] }, { code: 355, indent: 1, parameters: ['Coop.answerTest(0)'] }, { code: 0, indent: 1, parameters: [] },
+                    { code: 402, indent: 0, parameters: [1, 'Search him'] }, { code: 355, indent: 1, parameters: ['Coop.answerTest(1)'] }, { code: 0, indent: 1, parameters: [] },
+                    { code: 402, indent: 0, parameters: [2, 'Leave him'] }, { code: 355, indent: 1, parameters: ['Coop.answerTest(2)'] }, { code: 0, indent: 1, parameters: [] },
+                    { code: 404, indent: 0, parameters: [] }, { code: 0, indent: 0, parameters: [] },
+                ];
+                $gameMap._interpreter.setup(list, 0);
+            };
+            BOT.quiet = false;
+            BOT.lastSpokeAt = 0;
+            if (BOT.choiceDone) BOT.choiceDone.clear();
+            window.openLeave();
+        });
+        await waitFor(bot, () => window.leaveN >= 1 && !$gameMap.isEventRunning(), 20000, 'Leave him answered');
+        await waitFor(bot, () => BOT.lines.some((l) => l === 'Leave him be.'), 5000, 'said leave him be');
+        await bot.evaluate(() => { BOT.lastSpokeAt = 0; window.openLeave(); });
+        await waitFor(bot, () => window.leaveN >= 2 && !$gameMap.isEventRunning() && !BOT.thinking, 10000, 'the same menu again');
+        await sleep(600);
+        const leave = await bot.evaluate(() => ({ said: BOT.lines.filter((l) => l === 'Leave him be.').length, pick: window.leavePick }));
+        check('the same dialogue choice is asked and answered once', leaveCalls() === 1 && leave.said === 1 && leave.pick === 2, JSON.stringify({ calls: leaveCalls(), said: leave.said, pick: leave.pick }));
+        // Another body with the same words is its own question.
+        await bot.evaluate(() => { window.openLeave(); $gameMap._interpreter._eventId = 7; });
+        await waitFor(bot, () => window.leaveN >= 3 && !$gameMap.isEventRunning() && !BOT.thinking, 20000, 'the same words on another body');
+        check('the same words on another body are asked again', leaveCalls() === 2, 'calls ' + leaveCalls());
 
         //--- Ann dies; the bot walks to the circle ----------------------------
         await a.evaluate(() => SceneManager.goto(Scene_Gameover));

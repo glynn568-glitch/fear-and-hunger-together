@@ -62,21 +62,44 @@ async function stop() {
     stopping = true;
     const leave = (async () => {
         if (!page) return;
-        // Alive: the title first, so a drop is not kept. Dead: park this body and stay out of the
-        // title, which would throw it away; the next call would be someone new.
+        // Park first, then the title. The title is what throws a living body away,
+        // and it must not win the race against this park: an ordinary send-home
+        // deletes the file once it is there, and the last person leaving keeps it
+        // so the same run can call this body back. Dead: park and stay out of the
+        // title, which would throw the body away; the next call would be someone new.
         const left = await page.evaluate(() => {
             if (window.BOT) BOT.leaving = true;
             if (!(window.Coop && Coop.world && Coop.world.live && window.SceneManager)) return '';
             // Dead and cannot park now (line down): the title would throw the body away.
-            if (Coop.dead) return Coop.parkNow && Coop.parkNow(true) ? Coop._parkWait : '';
-            SceneManager.goto(Scene_Title);
-            return 'alive';
+            if (Coop.dead) return (Coop.parkNow && Coop.parkNow(true)) || '';
+            const go = () => { SceneManager.goto(Scene_Title); return 'alive'; };
+            // A scene in progress cannot be parked. Wait it out: titling with no
+            // file throws the body away, and the last person leaving needs it.
+            return new Promise((resolve) => {
+                const begin = Date.now();
+                const tick = () => {
+                    // A scene still running after a moment is parked as it stands; only a fight cannot be.
+                    const n = Coop.parkNow && (Coop.parkNow() || (Date.now() - begin > 1500 && Coop.parkNow('leaving')));
+                    if (!n) {
+                        if (Date.now() - begin > 4000) resolve(go());
+                        else setTimeout(tick, 80);
+                        return;
+                    }
+                    const got = Date.now();
+                    const waitAck = () => {
+                        if (Coop._parkAck >= n || Date.now() - got > 4000) resolve(go());
+                        else setTimeout(waitAck, 40);
+                    };
+                    waitAck();
+                };
+                tick();
+            });
         });
         // Dead: do not close until the host has this body.
-        if (typeof left === 'number') { try { await page.waitForFunction((n) => Coop._parkAck === n, { timeout: 5000 }, left); } catch (e) { /* no answer */ } }
+        if (typeof left === 'number') { try { await page.waitForFunction((n) => Coop._parkAck >= n, { timeout: 5000 }, left); } catch (e) { /* no answer */ } }
         else if (left) await new Promise((r) => setTimeout(r, 1500));
     })();
-    try { await Promise.race([leave, new Promise((r) => setTimeout(r, 6500))]); } catch (e) { /* the page is already gone */ }
+    try { await Promise.race([leave, new Promise((r) => setTimeout(r, 9000))]); } catch (e) { /* the page is already gone */ }
     try {
         const proc = browser && browser.process && browser.process();
         const pid = proc && proc.pid;

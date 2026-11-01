@@ -20,7 +20,7 @@ class Room {
         this.nextId = 1;
         this.freedAt = new Map(); // player id -> when its connection closed
         this.runId = '';
-        this.world = { sw: {}, va: {}, ss: {} };
+        this.world = { sw: {}, va: {}, ss: {}, el: {} };
         this.balance = true; // host's "Balance changes", for the whole run; on unless they turn it off
         this.founded = false; // a run is in progress with at least one player in it
         this.entered = new Set(); // names that have been in the current run since it was founded
@@ -30,6 +30,7 @@ class Room {
         this.chatSeen = new Map(); // ids of the last chat lines passed on, oldest first
         this.mapOwners = new Map(); // mapId -> peer id simulating that map's events
         this.dirty = false;
+        this._recall = null; // partners sent home because the last person left: { names, runId }
         this.relayOnly = process.env.FH_RELAY !== '0'; // private hosting (the default): no direct browser-to-browser video
         setInterval(() => this.persist(), 5000).unref();
         // A machine that went to sleep or lost its network never says
@@ -286,6 +287,62 @@ class Room {
         }
     }
 
+    // A partner sent home with the run, whose park this rule is keeping.
+    recallHolds(peer) {
+        const rec = this._recall;
+        if (!rec || !peer || !peer.named) return false;
+        const want = peer.name.toLowerCase();
+        return rec.names.some((n) => String(n).toLowerCase() === want);
+    }
+
+    // The last person went back to the title on purpose. A partner never does,
+    // so the run would otherwise stay up and the next New Game would be that
+    // same run. Send the partners home too, and remember to call them back
+    // when a person is in a world again. A dropped line does not come here.
+    endWithPartners(peer) {
+        if (!this.partners || this.isBot(peer)) return;
+        if ([...this.peers.values()].some((p) => p !== peer && p.live && !this.isBot(p))) return;
+        const names = this.partners.names();
+        if (!names.length) return;
+        this._recall = { names: names.slice(), runId: this.runId };
+        for (const p of this.peers.values()) {
+            if (!p.live || p === peer) continue;
+            if (!this.recallHolds(p)) continue;
+            p.live = false;
+            p.ini = null;
+            this.leaveMap(p);
+        }
+        for (const n of names) this.partners.stop(n);
+    }
+
+    // The host is in a world again: bring back the partners the title sent home.
+    // The same run keeps the parked body. A new run must not: that body would
+    // be refused (worldbusy) and the partner would never come in.
+    maybeRecall() {
+        const rec = this._recall;
+        if (!rec || !this.partners || !this.founded) return;
+        const host = this.hostPerson();
+        if (!host || !host.live) return;
+        // The process just sent home, or its tab not gone yet: starting now would
+        // be a second body under the same name, and the name would be refused.
+        const stillHere = (n) => this.partners.leaving.has(n) || this.partners.running.has(n)
+            || [...this.peers.values()].some((p) => p.named && p.name.toLowerCase() === String(n).toLowerCase());
+        if (rec.names.some(stillHere)) {
+            clearTimeout(this._recallTimer);
+            this._recallTimer = setTimeout(() => this.maybeRecall(), 200);
+            if (this._recallTimer.unref) this._recallTimer.unref();
+            return;
+        }
+        this._recall = null;
+        clearTimeout(this._recallTimer);
+        if (this.runId !== rec.runId) for (const n of rec.names) this.unpark(n);
+        const taken = new Set([...this.peers.values()].filter((p) => p.named).map((p) => p.name.toLowerCase()));
+        for (let i = 0; i < rec.names.length; i++) {
+            this.partners.start(taken, this.takenInitials());
+            for (const n of this.partners.names()) taken.add(n.toLowerCase());
+        }
+    }
+
     // One player simulates each map's wandering events and the rest follow.
     // Ownership goes to whoever is on the map with their map scene running.
     assignOwner(mapId) {
@@ -408,8 +465,8 @@ class Room {
                 if (latest > this.baseStamp) newer = latest;
                 this.persist();
                 this.runId = carried ? String(msg.runId) : crypto.randomBytes(6).toString('hex');
-                this.world = saved || { sw: {}, va: {}, ss: {} };
-                for (const k of ['sw', 'va', 'ss']) this.world[k] = this.world[k] || {};
+                this.world = saved || { sw: {}, va: {}, ss: {}, el: {} };
+                for (const k of ['sw', 'va', 'ss', 'el']) this.world[k] = this.world[k] || {};
                 this.founded = true;
                 this.dirty = true;
                 founded = true;
@@ -429,6 +486,7 @@ class Room {
             this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, balance: this.balance });
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
+            if (peer === this.hostPerson()) this.maybeRecall();
             break;
         }
         case 'balance': { // the host turns Balance changes on or off; a joiner's word is dropped
@@ -446,6 +504,9 @@ class Room {
             const say = (text) => this.send(peer, { t: 'partnernote', text });
             if (!this.partners) { say('AI partners are not available on this server.'); break; }
             if (!peer.host) { say('Only the player hosting the game can call an AI partner.'); break; }
+            // Already coming back because the last person left. A second start here
+            // would be two bodies under the recall.
+            if (this._recall) { say(this._recall.names.length > 1 ? 'Your partners are on the way back.' : 'Your partner is on the way back.'); break; }
             // The server knows about partners still starting up, which the game cannot see yet.
             const on = msg.toggle ? this.partners.names().length === 0 : !!msg.on;
             if (!on) {
@@ -506,12 +567,15 @@ class Room {
             break;
         }
         case 'leftworld':
-            // Back to the title on purpose: nothing to carry on from.
-            this.unpark(peer.name);
+            // Back to the title on purpose. The last person takes the partners
+            // with them; a partner sent home that way keeps the body just parked.
+            if (!this.isBot(peer)) this.endWithPartners(peer);
+            if (!this.recallHolds(peer)) this.unpark(peer.name);
             this.leaveWorld(peer);
             break;
         case 'park': // a player's own state, parked against a dropped connection
-            if (!peer.live || !peer.named || typeof msg.blob !== 'string' || msg.blob.length > 24 * 1024 * 1024) break;
+            // A partner sent home with the run parks after its live flag is cleared.
+            if ((!peer.live && !this.recallHolds(peer)) || !peer.named || typeof msg.blob !== 'string' || msg.blob.length > 24 * 1024 * 1024) break;
             try {
                 fs.mkdirSync(path.join(this.saveDir, 'parked'), { recursive: true });
                 // Sync: a send-home closes the page as soon as this is answered, and an async write can lose the race.
@@ -651,12 +715,16 @@ function meterLine(s) {
     return parts.join(', ');
 }
 
-// A world write is [kind, key, value]: a switch or variable id, or a self
-// switch key like "12,34,A", with a plain value.
+// A world write is [kind, key, value]: a switch or variable id, a self
+// switch key like "12,34,A", or a kept event "map,event" -> [x, y, direction].
 function validWrite(row) {
     if (!Array.isArray(row) || row.length !== 3) return false;
     const [kind, key, value] = row;
-    if (kind !== 'sw' && kind !== 'va' && kind !== 'ss') return false;
+    if (kind !== 'sw' && kind !== 'va' && kind !== 'ss' && kind !== 'el') return false;
+    if (kind === 'el') {
+        if (!/^\d+,\d+$/.test(String(key)) || !Array.isArray(value) || value.length !== 3) return false;
+        return value.every((n) => Number.isInteger(n) && n >= 0 && n <= 9999);
+    }
     if (kind === 'ss' ? !/^\d+,\d+,[A-Z]$/.test(String(key)) : !(Number.isInteger(key) && key > 0 && key < 100000)) return false;
     return typeof value === 'number' || (kind === 'va' && typeof value === 'string' && value.length < 2000);
 }

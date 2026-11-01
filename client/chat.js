@@ -64,9 +64,14 @@
     const unsent = [];
     const tag = Math.random().toString(36).slice(2, 8);
     let said = 0;
+    let lastSaid = { text: '', at: 0 };
     Coop.say = function (text) {
         text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
         if (!text) return false;
+        // A Deck has two pads, and Enter repeats. Both fired one line as two, a moment apart.
+        const now = Date.now();
+        if (text === lastSaid.text && now - lastSaid.at < 400) return false;
+        lastSaid = { text, at: now };
         const line = { id: tag + '.' + (++said), text, row: show(Coop.name || 'You', text, true) };
         unsent.push(line);
         if (Coop.connected) {
@@ -86,11 +91,22 @@
         for (const l of unsent) Coop.send({ t: 'chat', text: l.text, id: l.id });
     });
 
+    // The same line from the same person, twice in one moment: shown and heard once.
+    // A real second "er" a beat later still goes. A reconnect resend is seconds later, and the host already keeps its id.
+    const recentChat = [];
     Coop.on('chat', function (msg) {
         const peer = Coop.peers.get(msg.from);
         // Spaces at either end are dropped here too: not every sender is this page's own Coop.say.
         const text = String(msg.text || '').trim().slice(0, 200);
         if (!peer || !text) return;
+        const now = Date.now();
+        const key = String(msg.from) + '\n' + text;
+        for (let i = recentChat.length - 1; i >= 0; i--) {
+            if (now - recentChat[i].at > 400) break;
+            if (recentChat[i].key === key) return;
+        }
+        recentChat.push({ key, at: now });
+        if (recentChat.length > 20) recentChat.shift();
         show(peer.name, text, false);
         Coop.emit('heard', { from: msg.from, name: peer.name, text });
     });
@@ -133,7 +149,7 @@
         input.addEventListener(type, function (e) {
             e.stopPropagation();
             if (type !== 'keydown') return;
-            if (e.key === 'Enter') { closingKey = e.code; Coop.say(input.value); close(); }
+            if (e.key === 'Enter') { if (e.repeat) return; closingKey = e.code; Coop.say(input.value); close(); }
             else if (e.key === 'Escape') { closingKey = e.code; close(); }
         });
     }

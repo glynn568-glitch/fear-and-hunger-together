@@ -349,6 +349,11 @@ async function press(page, code, ms) {
         await a.evaluate(() => SceneManager.goto(Scene_Title));
         await waitFor(b, () => Coop.partyLeader === 0, 8000, 'B on their own');
         check('when the leader leaves, the member walks on alone', (await toast(b)).includes('walk on your own'));
+
+        // A leader who never gave a name: gone is still gone.
+        await b.evaluate(() => { Coop.partyLeader = 987654; });
+        await waitFor(b, () => Coop.partyLeader === 0, 3000, 'the nameless leader let go').catch(() => {});
+        check('a leader id with nobody behind it does not hold the line', await b.evaluate(() => Coop.partyLeader === 0));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

@@ -423,6 +423,20 @@
         }
     };
 
+    // A door or iron bars has no actions and the object element. On-hit bleed and poison
+    // are for a body; the battle log was saying the door bled (troop 91, enemy 224).
+    function objectTroop(battler) {
+        if (!battler || !battler.isEnemy || !battler.isEnemy()) return false;
+        const e = battler.enemy && battler.enemy();
+        if (!e || (e.actions && e.actions.length)) return false;
+        return (e.traits || []).some((t) => t.code === 11 && t.dataId === 5 && t.value === 0);
+    }
+    const _addAttackState = Game_Action.prototype.itemEffectAddAttackState;
+    Game_Action.prototype.itemEffectAddAttackState = function (target, effect) {
+        if (objectTroop(target)) return;
+        return _addAttackState.call(this, target, effect);
+    };
+
     // Silver coins stopped at 99 like any item, and a long run finds more. Coins only, up to 999
     // (the shops read the count into a variable, which has no cap).
     const COIN = 59;

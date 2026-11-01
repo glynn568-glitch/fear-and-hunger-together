@@ -69,6 +69,51 @@ function holdTraps(ids) {
         for (const p of [a, bot]) await p.evaluate(() => { for (const ev of $gameMap.events()) if (/guard|enemy|chaser/i.test(ev.event().name)) ev.erase(); });
         await sleep(1500);
 
+        // Troop 91 is iron bars (enemy 224): an object, and it does not resist bleed. The scimitar's on-hit does.
+        const bleed = await a.evaluate(() => {
+            const actor = $gameParty.leader();
+            const weapon = $dataWeapons[44];
+            const slot = actor.equipSlots().indexOf(weapon.etypeId);
+            if (slot < 0) return { err: 'no weapon slot' };
+            const equip = actor._equips[slot];
+            const prev = equip.object();
+            const rnd = Math.random;
+            let foeId = 0;
+            for (let i = 1; i < $dataEnemies.length; i++) {
+                const e = $dataEnemies[i];
+                if (!e || !(e.actions && e.actions.length)) continue;
+                if ((e.traits || []).some((t) => t.code === 14 && t.dataId === 29 && t.value >= 1)) continue;
+                foeId = i;
+                break;
+            }
+            equip.setObject(weapon);
+            try {
+                Math.random = function () { return 0; };
+                const action = new Game_Action(actor);
+                action.setAttack();
+                const effect = { value1: 1, value2: 0 };
+                $gameTroop.setup(91);
+                const door = $gameTroop.members()[0];
+                door.clearResult();
+                action.itemEffectAddAttackState(door, effect);
+                const foe = new Game_Enemy(foeId, 0, 0);
+                foe.clearResult();
+                action.itemEffectAddAttackState(foe, effect);
+                return {
+                    door: door.isStateAffected(29), doorAdded: door.result().addedStates.slice(),
+                    enemyId: door.enemyId(), troop: $gameTroop._troopId, foe: foe.isStateAffected(29), foeId, attackStates: actor.attackStates().slice(),
+                };
+            } finally {
+                Math.random = rnd;
+                equip.setObject(prev);
+                actor.refresh();
+                if ($gameTroop.clear) $gameTroop.clear();
+            }
+        });
+        check('a scimitar does not bleed an iron-bars door, and still bleeds a foe',
+            bleed.door === false && bleed.doorAdded && bleed.doorAdded.indexOf(29) < 0 && bleed.foe === true && bleed.troop === 91 && bleed.enemyId === 224,
+            JSON.stringify(bleed));
+
         //--- orders in plain words ----------------------------------------------
         await a.evaluate(() => Coop.say('Wait here!'));
         await waitFor(bot, () => BOT.mode === 'wait', 10000, 'the bot takes the wait order');
@@ -130,10 +175,87 @@ function holdTraps(ids) {
             "how come you're still back there": null, "I can't wait to get out": null, "there's a scout ahead": null,
             "I'll use a herb on you once I'm there": null, 'wait in line': 'wait', 'bear with me': null, 'come on': null,
             "it's no use": null, 'give me a herb': 'say', 'come here': 'follow',
+            // The speaker is the one waiting. "you should wait" is still an order.
+            'i think i have to wait for u to go to the main menu': null, 'i have to wait': null, "i'm gonna wait": null, "i'll wait for u": null,
+            'i think you should wait': 'wait',
         };
         const got = await bot.evaluate((ls) => Object.keys(ls).map((l) => { const r = BOT.plainReply(l); return [l, r ? r.order || (r.give ? 'give' : r.say ? 'say' : '') : null]; }), lines);
         const wrong = got.filter(([l, o]) => (o || null) !== lines[l]);
         check('lines that only sound like orders are not taken as orders', !wrong.length, JSON.stringify(wrong));
+        // The model says "wait" anyway. A bare yea, and a line about the speaker waiting, must not become one.
+        const mis = await bot.evaluate(async () => {
+            const ann = Coop.others().find((p) => !p.bot);
+            const brain = window.fhBrain;
+            const prev = { mode: BOT.mode, with: BOT.with, quiet: BOT.quiet };
+            const waitThink = async () => { for (let i = 0; i < 30 && BOT.thinking; i++) await new Promise((r) => setTimeout(r, 50)); await new Promise((r) => setTimeout(r, 50)); };
+            window.fhBrain = async (kind) => (kind === 'chat' ? { say: 'Holding here.', order: 'wait' } : null);
+            try {
+                BOT.mode = 'follow';
+                BOT.addressed = null;
+                BOT.askedYou = null;
+                BOT.waitFor = null;
+                const before = BOT.lines.length;
+                Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'i think i have to wait for u to go to the main menu' });
+                await waitThink();
+                const speaker = { mode: BOT.mode, said: BOT.lines.slice(before) };
+                BOT.mode = 'follow';
+                Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'yea' });
+                await waitThink();
+                const yea = { mode: BOT.mode, said: BOT.lines.slice(before) };
+                Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 });
+                let calls = 0;
+                window.fhBrain = async (kind) => { if (kind === 'chat') calls++; return { say: "I'll press it.", order: 'wait' }; };
+                BOT.mode = 'follow';
+                BOT.addressed = null;
+                const linesAt = BOT.lines.length;
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you must press it to continue' });
+                await waitThink();
+                const cold = { calls, mode: BOT.mode, said: BOT.lines.length - linesAt };
+                calls = 0;
+                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
+                BOT.mode = 'follow';
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you, grab that' });
+                await waitThink();
+                const warm = { calls, mode: BOT.mode };
+                // Its own question, then a yes: what it said it would do goes through.
+                window.fhBrain = async () => ({ say: 'Going.', order: 'explore' });
+                BOT.mode = 'follow';
+                BOT.askedYou = { id: 4242, until: Date.now() + 5000 };
+                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'yes' });
+                await waitThink();
+                const answered = BOT.mode;
+                BOT.askedYou = null;
+                // "you ..." right after it spoke, two people about: the model is told it may be for the other.
+                let seen = '';
+                window.fhBrain = async (kind, text) => { seen = text; return { say: '' }; };
+                BOT.mode = 'follow';
+                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you must press it' });
+                await waitThink();
+                const hint = /perhaps to you/.test(seen);
+                return { speaker, yea, cold, warm, answered, hint };
+            } finally {
+                window.fhBrain = brain;
+                Coop.peers.delete(4242);
+                BOT.mode = 'follow';
+                BOT.with = ann ? ann.id : prev.with;
+                BOT.addressed = null;
+                BOT.spokeTo = 0;
+                BOT.waitFor = null;
+                BOT.quiet = prev.quiet;
+                BOT.askedYou = null;
+                if (BOT.aside) BOT.aside.splice(0);
+            }
+        });
+        check('a line about the speaker waiting, or a bare yea, is not taken as wait even when the model says so',
+            mis.speaker.mode === 'follow' && mis.speaker.said.length === 0 && mis.yea.mode === 'follow' && mis.yea.said.length === 0,
+            JSON.stringify({ speaker: mis.speaker, yea: mis.yea }));
+        check('a yes to its own question goes through with what it said', mis.answered === 'explore', String(mis.answered));
+        check('with two people, "you" right after it spoke reaches the model as maybe for someone else', mis.hint);
+        check('with two people, "you" and no recent address is not for it; a recent one still is',
+            mis.cold.calls === 0 && mis.cold.mode === 'follow' && mis.cold.said === 0 && mis.warm.calls === 1,
+            JSON.stringify({ cold: mis.cold, warm: mis.warm }));
         const followed = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
             Coop.peers.set(4242, { id: 4242, name: 'Enki', st: 'map', m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y, bot: 0, hp: 100, mhp: 100, an: 'Enki' });
@@ -360,6 +482,68 @@ function holdTraps(ids) {
         check('vs cavegnomes it is told their bites go through a guard; a guard it picks unasked becomes a blow on the weakest, a wind-up still gets one',
             spent.gnomeTold && spent.gnome1.do === 'attack' && spent.gnome1.target === 0 && spent.gnome1Overruled && spent.gnome2.do === 'guard',
             JSON.stringify({ gnome1: spent.gnome1, overruled: spent.gnome1Overruled, told: spent.gnomeTold, gnome2: spent.gnome2 }));
+
+        const oneName = await bot.evaluate(() => {
+            const ann = Coop.others().find((p) => !p.bot);
+            Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 });
+            try {
+                return ['joining your party, Ann.', 'Ann, joining you, Ann.', 'following you, Claude.', 'Right behind you.', 'What about Enki?']
+                    .map((s) => BOT.addressSay(ann, s));
+            } finally { Coop.peers.delete(4242); }
+        });
+        check('a line names the one it answers once: no "Ann, ... , Ann", no echo of its own name',
+            JSON.stringify(oneName) === JSON.stringify(['joining your party, Ann.', 'Ann, joining you.', 'Ann, following you.', 'Ann, right behind you.', 'Ann, what about Enki?']),
+            JSON.stringify(oneName));
+        const ruName = await bot.evaluate(() => {
+            const enki = { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 };
+            Coop.peers.set(4242, enki);
+            const lang = BOT.language;
+            BOT.language = 'Russian';
+            try {
+                return { plain: BOT.addressSay(enki, 'Хорошо, Энки'), both: BOT.addressSay(enki, 'Enki, Хорошо, Энки'), alone: BOT.addressSay(enki, 'Хорошо') };
+            } finally { Coop.peers.delete(4242); BOT.language = lang; }
+        });
+        check('a Russian spelling of a name is the name, so it is not said twice',
+            ruName.plain === 'Хорошо, Энки' && ruName.both === 'Enki, Хорошо.' && ruName.alone === 'Enki, Хорошо',
+            JSON.stringify(ruName));
+        const loot = await bot.evaluate(() => {
+            const has = (list) => BOT.pageGives({ list: list.concat({ code: 0, indent: 0, parameters: [] }) });
+            return {
+                crate: has([{ code: 126, indent: 0, parameters: [15, 0, 0, 1] }]),
+                soul: has([{ code: 126, indent: 1, parameters: [115, 1, 0, 1] }, { code: 126, indent: 1, parameters: [116, 0, 0, 1] }]),
+            };
+        });
+        const started = await bot.evaluate(() => {
+            const ev = $gameMap.events().find((e) => e.page() && !e.isStarting());
+            const key = $gameMap.mapId() + ':' + ev.eventId();
+            BOT.visited.delete(key);
+            BOT.pressing = key;
+            ev.start();
+            $gameMap._interpreter.clear();
+            ev._starting = false;
+            if (ev.unlock) ev.unlock();
+            return { visited: BOT.visited.has(key), cleared: BOT.pressing === '' };
+        });
+        const cured = await bot.evaluate(async () => {
+            const me = $gameParty.leader();
+            BOT.aside.splice(0);
+            $gameParty.gainItem($dataItems[8], 1);
+            me.addState(5);
+            const want = me.isStateAffected(5);
+            for (let i = 0; i < 40 && me.isStateAffected(5); i++) await new Promise((r) => setTimeout(r, 200));
+            return { want, gone: !me.isStateAffected(5), told: BOT.aside.join(' / ') };
+        });
+        check('what it spends on itself goes in its next message, so it does not ask for what it just used', cured.want && cured.gone && /no longer bleeding/.test(cured.told), JSON.stringify(cured));
+        const parks = await bot.evaluate(() => {
+            $gameMap._interpreter.setup([{ code: 230, indent: 0, parameters: [600] }, { code: 0, indent: 0, parameters: [] }], 0);
+            const normal = Coop.parkNow();
+            const leaving = Coop.parkNow('leaving');
+            $gameMap._interpreter.clear();
+            return { normal, leaving };
+        });
+        check('in a scene no ordinary park is taken, but one sent home is parked as it stands', !parks.normal && parks.leaving > 0, JSON.stringify(parks));
+        check('a search that started counts as done, so it is not pressed again', started.visited && started.cleared, JSON.stringify(started));
+        check('remains that only offer Soul stone -> soul are not loot; a crate is', loot.crate && !loot.soul, JSON.stringify(loot));
 
         const named = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
@@ -804,6 +988,44 @@ function holdTraps(ids) {
         await waitFor(a, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'Ann leaves the iron bars');
         await waitFor(bot, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'the bot was not in the iron bars');
         await waitFor(a, () => !SceneManager.isSceneChanging() && SceneManager._scene._gabWindow, 15000, "Ann's map is up again");
+        // Walking in Ann's line it does come along: a party mate is in her fights, doors and bars too.
+        const annId = await a.evaluate(() => Coop.id);
+        const botId = await bot.evaluate(() => Coop.id);
+        await bot.evaluate((id) => Coop.joinParty(id), annId);
+        await waitFor(a, (id) => Coop.peers.get(id).pl === Coop.id, 5000, 'Ann sees the bot in her line', botId);
+        await a.evaluate(() => { BattleManager.setup(90, true, true); SceneManager.push(Scene_Battle); });
+        let barsInLine = false;
+        for (let i = 0; i < 20 && !barsInLine; i++) {
+            barsInLine = await bot.evaluate(() => SceneManager._scene instanceof Scene_CoopSpectate || (Coop.battle && Coop.battle.role === 'guest'));
+            if (!barsInLine) await sleep(500);
+        }
+        check('walking in her line, the partner comes into her iron-bars fight', barsInLine);
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Battle && SceneManager._scene.isActive() && (BattleManager._phase === 'input' || BattleManager._phase === 'turn'), 20000, "Ann's bars fight has begun");
+        await a.evaluate(() => { BattleManager.abort(); });
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'Ann leaves the bars again');
+        await waitFor(bot, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'the bot is back from the bars');
+        await bot.evaluate(() => Coop.leaveParty());
+        await waitFor(a, (id) => !Coop.peers.get(id).pl, 5000, 'the bot is out of her line', botId);
+        await waitFor(a, () => !SceneManager.isSceneChanging() && SceneManager._scene._gabWindow, 15000, "Ann's map is up once more");
+        // Its leader sits as a guest in Ann's bars fight: it comes along too, and Ann lets it.
+        await a.evaluate(() => { BattleManager.setup(90, true, true); SceneManager.push(Scene_Battle); });
+        await waitFor(a, () => Coop.battle && Coop.battle.role === 'owner' && SceneManager._scene instanceof Scene_Battle, 15000, 'Ann at the bars with a guest');
+        await a.evaluate(() => { Coop.battle.guests.set(4243, { name: 'Enki', actors: [6], prior: { 6: $gameActors._data[6] }, inv: null, input: {}, inputAt: Date.now() }); });
+        await bot.evaluate(() => {
+            Coop.peers.set(4243, { id: 4243, name: 'Enki', st: 'battle', br: 'g', m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y, _inWorld: true });
+            Coop.partyLeader = 4243;
+        });
+        let barsAsGuest = false;
+        for (let i = 0; i < 20 && !barsAsGuest; i++) {
+            barsAsGuest = await bot.evaluate(() => SceneManager._scene instanceof Scene_CoopSpectate || (Coop.battle && Coop.battle.role === 'guest'));
+            if (!barsAsGuest) await sleep(500);
+        }
+        check('its leader a guest in a door fight, the partner in their line comes too', barsAsGuest);
+        await a.evaluate(() => { BattleManager.abort(); });
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'Ann leaves the bars a third time');
+        await bot.evaluate(() => { Coop.leaveParty(); Coop.peers.delete(4243); });
+        await waitFor(bot, () => SceneManager._scene instanceof Scene_Map && !Coop.battle, 15000, 'the bot is back from the bars again');
+        await waitFor(a, () => !SceneManager.isSceneChanging() && SceneManager._scene._gabWindow, 15000, "Ann's map is up yet again");
         await a.evaluate(() => { const me = $gameParty.leader(); me.setHp(Math.max(1, Math.floor(me.mhp * 0.1))); BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
         await waitFor(bot, () => SceneManager._scene instanceof Scene_CoopSpectate, 10000, 'the bot is pulled into Ann\'s fight');
         await waitFor(a, () => BattleManager._phase === 'input' && BattleManager.actor() && BattleManager.actor().actorId() === 1, 20000, 'Ann chooses first');
@@ -849,7 +1071,8 @@ function holdTraps(ids) {
             const t = p && await nameOf(p.pick.target);
             order.push(t + (p ? '' : ' (' + await a.evaluate(() => [BattleManager._phase, BattleManager.actor() && BattleManager.actor().actorId(), $gameMessage.isBusy(), JSON.stringify(Coop.battle && [...Coop.battle.guests.values()].map((g) => [g.actors, g.quit]))].join(' ')) + ')'));
             // That part comes off before the next round, as the blow would have done.
-            await a.evaluate((k) => { const e = $gameTroop.members()[k]; if (e && !/torso/.test(e.name())) { e.setHp(0); e.die(); } const me = $gameParty.leader(); me.setHp(me.mhp); const body = $gameTroop.members()[0]; body.setHp(body.mhp); }, p ? p.pick.target : -1);
+            // The blow on the torso lands after this: a crit past 75% ends the fight (troop 1 page 8), so it cannot now.
+            await a.evaluate((k) => { const e = $gameTroop.members()[k]; if (e && !/torso/.test(e.name())) { e.setHp(0); e.die(); } const me = $gameParty.leader(); me.setHp(me.mhp); const body = $gameTroop.members()[0]; if (e === body) body.addParam(0, 100000); body.setHp(body.mhp); }, p ? p.pick.target : -1);
         }
         if (order.some((o) => !/^Guard/.test(o))) console.log('bot side: ' + JSON.stringify(await bot.evaluate(() => ({ scene: SceneManager._scene.constructor.name, battle: Coop.battle && { role: Coop.battle.role, owner: Coop.battle.owner, refused: Coop.battle.refused }, picks: BOT.picks.slice(-4), thinking: BOT.thinking, log: (Coop.log || []).slice(-15) }))) + ' | owner side: ' + JSON.stringify(await a.evaluate(() => ({ seq: Coop.battle && Coop.battle.turnSeq, log: (Coop.log || []).slice(-15) }))));
         if (order.some((o) => !/^Guard/.test(o))) console.log(JSON.stringify(await a.evaluate(() => window.picks.filter((p) => p.actor === 3).slice(-4))));

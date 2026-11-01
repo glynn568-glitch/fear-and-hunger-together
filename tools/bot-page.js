@@ -26,7 +26,10 @@ module.exports = function installBot(options) {
         said: '', wanted: options.character || '', joinedAt: 0, lastHop: 0, stuck: 0, lastPress: 0, character: '',
         mode: 'follow', errand: null, goal: null, journal: [], beenMaps: new Set(), notes: [], aside: [], lastNoteAt: 0, lastSpokeAt: 0, thinking: 0, picks: [], lines: [],
         with: 0, waitFor: null, fightOrder: null, orders: {}, orderFrom: 0, addressed: null, spokeTo: 0, wasDead: false, deadSilent: false, lastBrief: null,
+        language: 'English',
     };
+    if (options.follow) BOT.withName = options.follow;
+    let withMissed = 0; // when the one we follow vanished; a short drop is not a new leader
     Coop.isBot = true;
     // Shown beside its name in everyone's corner list.
     Coop.botActivity = function () {
@@ -47,14 +50,46 @@ module.exports = function installBot(options) {
 
     //--- talking to the model ---------------------------------------------------
 
+    // English unless a player tells it otherwise. Said on every message: a long thread drifts.
+    const LATIN = 'English|French|German|Spanish|Italian|Portuguese|Polish|Dutch|Latin|Gaelic|Turkish|Swedish|Finnish|Norwegian|Danish';
+    const OTHER = 'Russian|Ukrainian|Chinese|Mandarin|Japanese|Korean|Arabic|Greek|Hindi';
+    const TONGUE = '(' + LATIN + '|' + OTHER + ')';
+    const ASKS_TONGUE = [
+        new RegExp('(?<!(?:no|not|stop|dont|don\'t|never|i|you)\\s)\\b(?:speak|talk|answer|reply|write)(?:\\s+(?:only|just|in|to me in))*\\s+' + TONGUE + '\\b', 'i'),
+        new RegExp('\\b(?:just|only|back to)\\s+' + TONGUE + '\\b', 'i'),
+        new RegExp('\\b' + TONGUE + '\\s+only\\b', 'i'),
+    ];
+    function tongueAsked(text) {
+        for (const re of ASKS_TONGUE) {
+            const m = re.exec(String(text || ''));
+            if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+        }
+        return '';
+    }
+    // A slip into another alphabet is dropped: other Latin-script languages cannot be told apart this way.
+    function inTongue(say) {
+        if (new RegExp('^(' + OTHER + ')$').test(BOT.language)) return true;
+        return !/(?![\p{Script=Latin}])\p{L}/u.test(String(say || ''));
+    }
+    BOT.tongueAsked = tongueAsked;
+
     function think(kind, text, limit) {
         if (BOT.deadSilent || Coop.dead) return Promise.resolve(null);
         if (typeof window.fhBrain !== 'function') return Promise.resolve(null);
         // Overheard lines never start a call. They ride on the next real one.
         if (BOT.aside.length) text = 'Overheard:\n' + BOT.aside.splice(0).join('\n') + '\n' + text;
+        text = 'Language: every word of "say" in ' + BOT.language + ', nothing else mixed in.\n' + text;
+        // Chat and notes already carry the bag. A choice or a fight turn did not, and it named keys it was not holding.
+        if (text.indexOf('Your bag:') < 0) {
+            try { if (window.$gameParty) text += '\nYour bag: ' + bagText() + '.'; } catch (e) { /* the party is not in yet */ }
+        }
         BOT.thinking++;
         const t0 = Date.now();
-        const ask = window.fhBrain(kind, text).then((r) => { if (r && kind !== 'battle' && BOT.talked) BOT.talked(Date.now() - t0); return r || null; }, () => null);
+        const ask = window.fhBrain(kind, text).then((r) => {
+            if (r && kind !== 'battle' && BOT.talked) BOT.talked(Date.now() - t0);
+            if (r && r.say && !inTongue(r.say)) { log('dropped a line not in ' + BOT.language + ': ' + r.say + ' | asked: ' + String(text).slice(-400).replace(/\s+/g, ' ')); r.say = ''; }
+            return r || null;
+        }, () => null);
         const late = new Promise((r) => setTimeout(() => r(null), limit || 60000));
         return Promise.race([ask, late]).finally(() => { BOT.thinking--; });
     }
@@ -67,6 +102,7 @@ module.exports = function installBot(options) {
         if (!prompted && (BOT.quiet || Date.now() - BOT.lastSpokeAt < gap)) return;
         BOT.lastSpokeAt = Date.now();
         BOT.lines.push(text);
+        if (/\?/.test(text)) BOT.askedYou = { id: BOT.spokeTo || 0, until: Date.now() + 5000 };
         console.log('[bot] says: ' + text);
         Coop.say(text);
     }
@@ -190,17 +226,19 @@ module.exports = function installBot(options) {
         for (const c of CURES) {
             if (!c.states.some((s) => me.isStateAffected(s))) { toldNeed.delete(c.what); continue; }
             const id = c.items.find(has);
-            if (id) { if (used($dataItems[id])) { journal('used ' + $dataItems[id].name + ' on ' + c.what); return; } }
+            if (id) { if (used($dataItems[id])) { journal('used ' + $dataItems[id].name + ' on ' + c.what); BOT.aside.push('You just used your ' + $dataItems[id].name + ' on yourself: no longer ' + c.what + '.'); return; } }
             if (!toldNeed.has(c.what)) { toldNeed.add(c.what); note('You are ' + c.what + ' and have nothing for it. Ask your partner for ' + c.ask + ', plainly.'); BOT.lastNoteAt = 0; }
         }
         if (me.hp > me.mhp * 0.25) { toldNeed.delete('hurt'); return; }
         const heals = HEALS.filter(has);
-        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) { journal('used ' + it.name); return; } }
+        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) { journal('used ' + it.name); BOT.aside.push('You just used your ' + it.name + ' on yourself.'); return; } }
         // Out on its own, it turns back to whoever sent it rather than die alone where nobody can call it back.
         // Once: a test run's host, or a walker with no way on foot, is sent exploring again at once.
         if (BOT.mode === 'explore' && !options.lead && !toldNeed.has('hurt')) {
             BOT.mode = 'follow';
-            BOT.with = BOT.orderFrom || 0;
+            const back = (BOT.orderName && peerNamed(BOT.orderName)) || peerById(BOT.orderFrom);
+            if (back) stick(back);
+            else BOT.with = BOT.orderFrom || 0;
             BOT.explore = null;
             if (BOT.errand && BOT.errand.kind === 'explore') BOT.errand = null;
             journal('turned back, close to death');
@@ -331,8 +369,13 @@ module.exports = function installBot(options) {
 
     // A command that adds to the bag. Gold takes its operation first, items and gear second; a
     // spent item (the Tinderbox, the Explosive Vial: a Yes/No that defaults to Yes) is not loot.
-    function gives(c) {
-        return (c.code === 125 && c.parameters[0] === 0) || ((c.code === 126 || c.code === 127 || c.code === 128) && c.parameters[1] === 0);
+    function gives(c, i, list) {
+        if (!((c.code === 125 && c.parameters[0] === 0) || ((c.code === 126 || c.code === 127 || c.code === 128) && c.parameters[1] === 0))) return false;
+        // A swap is not loot: every guard's remains hold Soul stone -> Lesser soul, on the page for good.
+        for (let j = i - 1; list && j >= 0 && list[j].indent >= c.indent; j--) {
+            if (list[j].indent === c.indent && list[j].code === 126 && list[j].parameters[1] === 1) return false;
+        }
+        return true;
     }
     function pageGives(page) {
         return !!page && page.list.some(gives);
@@ -445,9 +488,41 @@ module.exports = function installBot(options) {
         if (id == null || id === '' || !Coop.peers) return null;
         return Coop.peers.get(id) || Coop.peers.get(Number(id)) || Coop.peers.get(String(id)) || null;
     }
+    function peerNamed(name) {
+        if (!name || /^Player \d+$/.test(name) || !Coop.peers) return null;
+        const want = String(name).toLowerCase();
+        for (const p of Coop.peers.values()) if (p.name && p.name.toLowerCase() === want && !/^Player \d+$/.test(p.name)) return p;
+        return null;
+    }
+    function stick(peer) {
+        if (!peer) { BOT.with = 0; BOT.withName = ''; withMissed = 0; return; }
+        BOT.with = peer.id;
+        if (peer.name && !/^Player \d+$/.test(peer.name)) BOT.withName = peer.name;
+        withMissed = 0;
+    }
+    // A dropped line comes back under a new id. The order is off the list at once (they did leave)
+    // and put back if that name returns before the wait is over.
+    const orderHold = new Map();
+    const ORDER_FOR = 20000;
+    function reclaimOrders() {
+        const now = Date.now();
+        for (const [name, held] of orderHold) {
+            if (now - held.at >= ORDER_FOR) { orderHold.delete(name); continue; }
+            const p = peerNamed(name);
+            if (!p || p.bot || !p.st || p.st === 'dead') continue;
+            if (p.st === 'title') {
+                if (p._inWorld) orderHold.delete(name); // they went back to the title on purpose
+                continue;
+            }
+            BOT.orders[String(p.id)] = held.order;
+            if (held.from) { BOT.orderFrom = p.id; BOT.orderName = p.name; }
+            orderHold.delete(name);
+        }
+    }
     // A player who has left is not still giving orders.
     function pruneOrders() {
         if (!BOT.orders) BOT.orders = {};
+        reclaimOrders();
         for (const id of Object.keys(BOT.orders)) {
             const p = peerById(id);
             if (!p || p.bot || !p.st || p.st === 'title') delete BOT.orders[id];
@@ -455,8 +530,15 @@ module.exports = function installBot(options) {
     }
     Coop.on('leave', function (peer) {
         if (!peer || peer.id == null || !BOT.orders) return;
-        delete BOT.orders[String(peer.id)];
-        if (String(BOT.orderFrom) === String(peer.id)) BOT.orderFrom = 0;
+        const key = String(peer.id);
+        const o = BOT.orders[key];
+        delete BOT.orders[key];
+        const name = (o && o.name) || peer.name;
+        if (o && name && !/^Player \d+$/.test(name)) orderHold.set(name.toLowerCase(), { order: o, at: Date.now(), from: String(BOT.orderFrom) === key });
+        if (String(BOT.orderFrom) === key) {
+            if (name && !/^Player \d+$/.test(name)) BOT.orderName = name;
+            BOT.orderFrom = 0;
+        }
     });
     function ago(at) {
         const s = Math.max(0, Math.round((Date.now() - (at || Date.now())) / 1000));
@@ -516,16 +598,55 @@ module.exports = function installBot(options) {
             const go = kind === 'wait' ? 'Waiting here. ' : kind === 'explore' ? 'Looking around. ' : 'Following ' + peer.name + '. ';
             line = go + old.name + ", I'm off.";
         }
-        if (STANCE[kind]) { BOT.orderFrom = peer.id; BOT.stanceAt = at; }
+        if (STANCE[kind]) { BOT.orderFrom = peer.id; BOT.orderName = peer.name; BOT.stanceAt = at; }
         return line;
     }
+    // Latin letters, plus Russian ones so "Энки" is Enki. Used only when a line is named.
+    const CYRILLIC = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'i', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sh', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+    function foldName(s) {
+        const raw = String(s || '').toLowerCase().replace(/['’]/g, '');
+        let t = '';
+        for (const ch of raw) t += Object.prototype.hasOwnProperty.call(CYRILLIC, ch) ? CYRILLIC[ch] : ch;
+        t = t.replace(/[^a-z0-9]+/g, '');
+        if (t === 'darse') return 'darce';
+        if (t === 'kahara') return 'cahara';
+        if (t === 'klod') return 'claude';
+        return t;
+    }
+    function foldLine(s) {
+        const raw = String(s || '').toLowerCase().replace(/['’]/g, '');
+        let t = '';
+        for (const ch of raw) {
+            if (Object.prototype.hasOwnProperty.call(CYRILLIC, ch)) t += CYRILLIC[ch];
+            else t += /[a-z0-9]/.test(ch) ? ch : ' ';
+        }
+        return t.replace(/\s+/g, ' ').trim();
+    }
+    function mentionsName(text, name) {
+        const esc = String(name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (esc && new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '(?![\\p{L}\\p{N}])', 'iu').test(text)) return true;
+        const who = foldName(name);
+        return !!who && new RegExp('(?:^| )' + who + '(?: |$)').test(foldLine(text));
+    }
     function addressSay(peer, say) {
-        const text = String(say || '').trim();
+        let text = String(say || '').trim();
         if (!text || !peer || !peer.name) return text;
+        const esc = String(peer.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // One name to a line: drop a closing ", Name" if the line opens with it, or if
+        // it is this partner's own name echoed back ("following you, Claude").
+        const tail = /,\s*([^,.!?]+)([.!?]*)$/.exec(text);
+        if (tail) {
+            const who = foldName(tail[1]);
+            const head = text.slice(0, tail.index);
+            const peerFold = foldName(peer.name);
+            const own = who && who !== peerFold && (namesOfMine().indexOf(who) >= 0 || [Coop.name, BOT.character, CALLED[BOT.character], 'Claude'].filter(Boolean).some((n) => foldName(n) === who));
+            const twice = who === peerFold && mentionsName(head, peer.name);
+            if (who && (own || twice)) text = head + (tail[2] || '.');
+        }
         const people = humans().filter((p) => p.st && p.st !== 'title');
         if (people.length < 2) return text;
-        if (new RegExp('^' + String(peer.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(text)) return text;
-        const rest = /^[A-Z]/.test(text) && !/^I\b/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+        if (mentionsName(text, peer.name)) return text;
+        const rest =/^[A-Z]/.test(text) && !/^I\b/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
         return peer.name + ', ' + rest;
     }
     function situation() {
@@ -558,6 +679,8 @@ module.exports = function installBot(options) {
     }
 
     BOT.situationText = situation;
+    BOT.addressSay = addressSay;
+    BOT.pageGives = pageGives;
 
     // Every so often, what happened goes to the model, which may remark on it.
     setInterval(function () {
@@ -583,17 +706,39 @@ module.exports = function installBot(options) {
 
     //--- who to stay with -----------------------------------------------------
 
+    // Still in the room, and they meant to go: the title or dead, after we had seen them in the dungeon.
+    function meantToLeave(peer) {
+        return !!(peer && peer._inWorld && (peer.st === 'title' || peer.st === 'dead'));
+    }
     // The player to stick to: a named one if asked for, else a person in the world.
     function leader() {
         if (options.lead) return null; // the host follows nobody
+        reclaimOrders();
         const inWorld = Coop.others().filter((p) => p.st && p.st !== 'title');
-        if (options.follow) return inWorld.find((p) => p.name.toLowerCase() === options.follow.toLowerCase()) || null;
+        if (options.follow) {
+            const named = inWorld.find((p) => p.name.toLowerCase() === options.follow.toLowerCase());
+            if (named) { stick(named); return named; }
+            const gone = peerNamed(options.follow);
+            if (meantToLeave(gone)) { withMissed = 0; return null; }
+            // A short drop comes back under a new id. Don't switch to someone else, and don't go home.
+            withMissed = withMissed || Date.now();
+            return null;
+        }
         const people = inWorld.filter((p) => !p.bot);
         // follow / party stick to the one who said it, not whoever joined first. Dead, they wait for a
         // circle; meanwhile it stays with whoever is still on their feet.
-        if (BOT.with) {
-            const named = inWorld.find((p) => p.id === BOT.with);
-            if (named && (named.st !== 'dead' || !people.some((p) => p.st !== 'dead'))) return named;
+        if (BOT.with || BOT.withName) {
+            const named = (BOT.with && inWorld.find((p) => p.id === BOT.with))
+                || (BOT.withName && inWorld.find((p) => p.name.toLowerCase() === String(BOT.withName).toLowerCase()));
+            if (named && (named.st !== 'dead' || !people.some((p) => p.st !== 'dead'))) { stick(named); return named; }
+            if (!named) {
+                const still = peerNamed(BOT.withName) || peerById(BOT.with);
+                if (meantToLeave(still)) withMissed = 0;
+                else {
+                    withMissed = withMissed || Date.now();
+                    if (Date.now() - withMissed < ORDER_FOR) return null;
+                }
+            }
         }
         return people.find((p) => p.st !== 'dead') || people[0] || inWorld.find((p) => p.st !== 'dead') || null;
     }
@@ -995,7 +1140,7 @@ module.exports = function installBot(options) {
         const me = $gameParty.leader();
         if (!me || me.hp <= 0) return;
         // The same reach as the game's own pull into a fight that starts.
-        const peer = Coop.peersHere().find((p) => p.st === 'battle' && p.br === 'o' && !p.oe && Coop.distanceTo(p) <= 6);
+        const peer = Coop.peersHere().find((p) => p.st === 'battle' && p.br === 'o' && (!p.oe || p.id === Coop.partyLeader || leaderIsGuest()) && Coop.distanceTo(p) <= 6);
         if (!peer) { toldFighting = ''; return; }
         if (toldFighting !== peer.id) { toldFighting = peer.id; note(peer.name + ' is in a fight right beside you. You are joining it.'); }
         Coop.askToJoinBattle(peer.id);
@@ -1044,7 +1189,8 @@ module.exports = function installBot(options) {
     }
     function callsMe(text) {
         const t = lineWords(text);
-        if (/^you\b/.test(t) && !/^your\b/.test(t) && !/^you're\b/.test(t) && !/^you re\b/.test(t)) return true;
+        // 'you' with no name. Two people talking, that word is not this partner unless they just were.
+        if (/^you\b/.test(t) && !/^your\b/.test(t) && !/^you're\b/.test(t) && !/^you re\b/.test(t)) return 'you';
         const alt = nameAlt();
         return !!alt && new RegExp('^(?:hey |ok |yo |oi )?(' + alt + ')\\b', 'i').test(t);
     }
@@ -1058,12 +1204,28 @@ module.exports = function installBot(options) {
         // A comma is not enough: "Okay, wait" and "Hey, come" name nobody. "Enki, look" does.
         return Coop.others().some((p) => normName(p.name) === word || (p.an && normName(p.an) === word));
     }
+    function leaderIsGuest() {
+        const lead = Coop.partyLeader && Coop.peers.get(Coop.partyLeader);
+        return !!(lead && lead.st === 'battle' && lead.br === 'g');
+    }
+    function maybeOther(text) {
+        return callsMe(text) === 'you' && humans().filter((p) => p.st && p.st !== 'title').length >= 2;
+    }
     // Meant for this partner: "you", its name or a short form of it, or the person it just spoke to.
+    function recentlyAddressed(peer) {
+        return !!(BOT.addressed && peer && BOT.addressed.id === peer.id && Date.now() < BOT.addressed.until);
+    }
     function forMe(text, peer) {
         if (aboutMe(text)) return false;
-        if (callsMe(text)) return true;
+        const called = callsMe(text);
+        if (called === 'you') {
+            const people = humans().filter((p) => p.st && p.st !== 'title');
+            if (people.length >= 2) return recentlyAddressed(peer);
+            return true;
+        }
+        if (called) return true;
         if (callsOther(text)) return false;
-        if (BOT.addressed && peer && BOT.addressed.id === peer.id && Date.now() < BOT.addressed.until) return true;
+        if (recentlyAddressed(peer)) return true;
         const people = humans().filter((p) => p.st && p.st !== 'title');
         return people.length <= 1;
     }
@@ -1110,9 +1272,11 @@ module.exports = function installBot(options) {
         BOT.spokeTo = peer.id;
         BOT.addressed = { id: peer.id, until: Date.now() + 5000 };
         const heardAt = Date.now();
+        const tongue = tongueAsked(msg.text);
+        if (tongue && tongue !== BOT.language) { BOT.language = tongue; log('speaking ' + tongue + ', told by ' + peer.name); }
         const fromWords = plainReply(msg.text);
         const pending = BOT.notes.splice(0);
-        let text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + ' says to you: "' + msg.text + '"';
+        let text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + (maybeOther(msg.text) ? ' says, perhaps to you, perhaps to someone else here (if not to you, {"say":""}): "' : ' says to you: "') + msg.text + '"';
         const fight = fightContext();
         if (fight) text += '\nThe fight right now:\n' + fight;
         think('chat', text).then(function (r) {
@@ -1120,6 +1284,15 @@ module.exports = function installBot(options) {
             if (r && fromWords && (fromWords.order === 'guard' || fromWords.order === 'attack' || fromWords.order === 'item')) {
                 r.order = fromWords.order;
                 if (fromWords.what) r.what = fromWords.what;
+            }
+            // The model (and the word "wait" itself) will take "i have to wait" and a bare "yea" as an order. Neither is.
+            if (r && speakerWaits(msg.text) && String(r.order || '').toLowerCase() === 'wait') {
+                r.order = '';
+                if (/\b(wait|holding here|stay put|waiting here)\b/i.test(r.say || '')) r.say = '';
+            }
+            if (r && bareYes(msg.text)) {
+                const asked = BOT.askedYou && peer && BOT.askedYou.id === peer.id && Date.now() < BOT.askedYou.until;
+                if (!asked) { r.order = ''; r.give = null; r.use = null; r.goal = null; r.say = ''; }
             }
             heardNote(msg, r);
             if (!r) return;
@@ -1194,7 +1367,8 @@ module.exports = function installBot(options) {
         // "Stay close" and "search with me" are following, so following is read first.
         if (has(/\b(follow|come (here|with me|along|back)|^ come $|stay close|stay behind|stay with me|regroup|back to me|this way|over here)\b/)) return { order: 'follow', say: 'Coming.' };
         if (has(/\b(explore|look around|go scout|split up|go (look|search|loot)|search (around|alone|on your own))\b/)) return { order: 'explore', say: 'I will look around.' };
-        if (has(/\b(wait|stay (here|put|there|back)|hold (on|up|here|position)|freeze)\b|^ stop\b/)) return { order: 'wait', say: 'Waiting here.' };
+        // "i have to wait" / "i think i have to wait for u" is the speaker's plan. "wait here" is an order.
+        if (!speakerWaits(text) && has(/\b(wait|stay (here|put|there|back)|hold (on|up|here|position)|freeze)\b|^ stop\b/)) return { order: 'wait', say: 'Waiting here.' };
         if (has(/\b(how are you|you ok|you okay|status|are you hurt|your health)\b/)) {
             const me = $gameParty.leader();
             const ails = conditionsOf(me);
@@ -1205,6 +1379,15 @@ module.exports = function installBot(options) {
             return { say: names.length ? names.join(', ') + '.' : 'Nothing.' };
         }
         return null;
+    }
+    // The speaker is the one who waits. "you should wait" is still an order to this partner.
+    function speakerWaits(text) {
+        const t = ' ' + String(text || '').toLowerCase().replace(/[^a-z' ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+        return /\b(i'll|i will|i'm|i am)\s+(?:gonna |going to )?wait/.test(t) || /\bi (?:think i )?(?:just )?(?:have to |gotta |got to |need to |should |must )wait\b/.test(t);
+    }
+    // "yea" on its own confirms a question. It is never an order. "ok come with me" is not on its own.
+    function bareYes(text) {
+        return /^(?:yea|yeah|yes|yep|yup|ya|ok|okay|sure|alright|all right|mhm|uh huh|y)[.!]?$/.test(String(text || '').trim().toLowerCase());
     }
     BOT.plainReply = plainReply;
     BOT.leader = leader;
@@ -1234,7 +1417,7 @@ module.exports = function installBot(options) {
         if (STANCE[order]) BOT.selfWait = 0;
         if (order === 'party' && peer && Coop.joinParty && Coop.joinParty(peer.id)) {
             BOT.mode = 'follow';
-            BOT.with = peer.id;
+            stick(peer);
             BOT.waitFor = null;
             BOT.explore = null;
             BOT.errand = null;
@@ -1243,9 +1426,11 @@ module.exports = function installBot(options) {
         if (order === 'wait') {
             BOT.mode = 'wait';
             BOT.with = 0;
+            BOT.withName = '';
+            withMissed = 0;
             BOT.errand = null;
             const me = window.$gameParty && $gameParty.leader();
-            BOT.waitFor = { id: peer ? peer.id : 0, map: peer ? peer.m : 0, hp: me ? me.hp : 0 };
+            BOT.waitFor = { id: peer ? peer.id : 0, name: peer ? peer.name : '', map: peer ? peer.m : 0, hp: me ? me.hp : 0 };
             log('waiting where told');
         }
         if (order === 'follow') {
@@ -1253,12 +1438,14 @@ module.exports = function installBot(options) {
             BOT.waitFor = null;
             BOT.explore = null;
             if (BOT.errand && BOT.errand.kind === 'explore') BOT.errand = null;
-            if (peer) BOT.with = peer.id;
+            if (peer) stick(peer);
             log('following ' + (peer ? peer.name : 'again'));
         }
         if (order === 'explore') {
             BOT.mode = 'explore';
             BOT.with = 0;
+            BOT.withName = '';
+            withMissed = 0;
             BOT.waitFor = null;
             BOT.explore = null;
             log('exploring alone');
@@ -1266,7 +1453,7 @@ module.exports = function installBot(options) {
         if (order === 'quiet') { BOT.quiet = true; log('keeping quiet'); }
         if (order === 'talk') { BOT.quiet = false; log('talking again'); }
         if (order === 'let go' && Coop.dead && Coop.letGo) { log('letting this character go'); Coop.letGo(); return; }
-        if (order === 'leave' && window.fhLeave) { log('going home'); BOT.leaving = true; BOT.with = 0; window.fhLeave(); return; }
+        if (order === 'leave' && window.fhLeave) { log('going home'); BOT.leaving = true; BOT.with = 0; BOT.withName = ''; withMissed = 0; window.fhLeave(); return; }
         if (!window.$gameParty || Coop.dead) return;
         const find = (kind, id) => {
             const table = kind === 'weapon' ? $dataWeapons : kind === 'armor' ? $dataArmors : $dataItems;
@@ -1331,10 +1518,27 @@ module.exports = function installBot(options) {
             return;
         }
         // The same question again and again (a shop, a lever): the way out, the last choice.
-        const asked = said + '|' + choices.join('|');
+        // Once answered, that menu is not asked again and not said again. "Leave him" was.
+        // Only this thing's menu, for a few minutes: another body with the same words gets its own answer.
+        const asked = $gameMap.mapId() + ':' + $gameMap._interpreter.eventId() + ':' + said + '|' + choices.join('|');
+        if (!BOT.choiceDone) BOT.choiceDone = new Map();
         BOT.asked = BOT.asked && BOT.asked.key === asked && Date.now() - BOT.asked.at < 60000 ? { key: asked, n: BOT.asked.n + 1, at: Date.now() } : { key: asked, n: 1, at: Date.now() };
         if (BOT.asked.n >= 4) {
-            for (let i = choices.length - 1; i >= 0; i--) { win.select(i); if (win.isCurrentItemEnabled()) { win.processOk(); BOT.asked.n = 0; log('asked the same again: took "' + choices[i] + '"'); return; } }
+            for (let i = choices.length - 1; i >= 0; i--) {
+                win.select(i);
+                if (win.isCurrentItemEnabled()) { BOT.choiceDone.set(asked, { pick: i, at: Date.now() }); win.processOk(); BOT.asked.n = 0; log('asked the same again: took "' + choices[i] + '"'); return; }
+            }
+        }
+        const done = BOT.choiceDone.get(asked);
+        if (done && Date.now() - done.at < 180000) {
+            done.at = Date.now();
+            for (const i of [done.pick].concat(choices.map((c, k) => k))) {
+                if (!win.active) break;
+                win.select(Math.min(i, choices.length - 1));
+                if (win.isCurrentItemEnabled()) { win.processOk(); return; }
+            }
+            if (win.active) win.processCancel();
+            return;
         }
         // A test run's set answer (options.prefer: the difficulty, say), when it is offered.
         const set = (options.prefer || []).map((t) => choices.indexOf(t)).find((i) => i >= 0);
@@ -1347,12 +1551,15 @@ module.exports = function installBot(options) {
             BOT.choosing = false;
             if (!win.active) return;
             const n = r && Number.isInteger(Number(r.pick)) && Number(r.pick) >= 0 && Number(r.pick) < choices.length ? Number(r.pick) : Math.max(0, $gameMessage.choiceDefaultType());
+            let taken = n;
             // A choice the game has greyed out does not take; the next one that does.
             for (const i of [n].concat(choices.map((c, k) => k))) {
                 if (!win.active) break;
-                win.select(Math.min(i, choices.length - 1));
-                if (win.isCurrentItemEnabled()) win.processOk();
+                const at = Math.min(i, choices.length - 1);
+                win.select(at);
+                if (win.isCurrentItemEnabled()) { taken = at; win.processOk(); }
             }
+            BOT.choiceDone.set(asked, { pick: taken, at: Date.now() });
             if (win.active) win.processCancel();
             if (r && r.say) speak(r.say, false);
         });
@@ -1899,13 +2106,13 @@ module.exports = function installBot(options) {
         }
         const ev = $gameMap.event(f.id);
         const page = ev && ev.page();
-        const gives = page && page.list.some((c) => c.code === 125 || c.code === 126 || c.code === 127 || c.code === 128);
-        if (!ev || ev._erased || !gives || BOT.visited.has(f.map + ':' + f.id)) { BOT.forage = null; return false; }
+        if (!ev || ev._erased || !pageGives(page) || BOT.visited.has(f.map + ':' + f.id)) { BOT.forage = null; return false; }
         const solid = ev.isNormalPriority();
         const at = solid ? Math.abs(ev.x - player.x) + Math.abs(ev.y - player.y) === 1 : ev.x === player.x && ev.y === player.y;
         if (at) {
             if (solid) player.setDirection(dirTo(ev.x, ev.y));
             rememberLoot(thingName(ev, 'body'));
+            BOT.pressing = f.map + ':' + f.id;
             press('ok');
             if (++f.tries > 4) { BOT.visited.add(f.map + ':' + f.id); BOT.forage = null; }
             return true;
@@ -2006,6 +2213,7 @@ module.exports = function installBot(options) {
         if (at) {
             if (solid) player.setDirection(dirTo(ev.x, ev.y));
             rememberLoot(thingName(ev, 'body'));
+            BOT.pressing = x.map + ':' + x.target;
             press('ok');
             // Searched once it has been tried; the event itself says what was there.
             if (++x.tries > 3) BOT.visited.add(x.map + ':' + x.target);
@@ -2027,6 +2235,16 @@ module.exports = function installBot(options) {
             BOT.stuck = 0;
         }
     }
+
+    // A search that started is a search done: the presses after it only re-read the same body.
+    const _eventStart = Game_Event.prototype.start;
+    Game_Event.prototype.start = function () {
+        if (BOT.pressing && BOT.pressing === $gameMap.mapId() + ':' + this.eventId()) {
+            BOT.visited.add(BOT.pressing);
+            BOT.pressing = '';
+        }
+        _eventStart.call(this);
+    };
 
     // What it picks up while out on its own.
     const _gainItem = Game_Party.prototype.gainItem;
@@ -2066,17 +2284,29 @@ module.exports = function installBot(options) {
         const me = window.$gameParty && $gameParty.leader();
         if (SceneManager._scene instanceof Scene_Battle || (Coop.battle && Coop.battle.role === 'owner')) return 'a fight started';
         if (me && me.hp < w.hp) return 'hurt';
-        const peer = w.id && Coop.peers.get(w.id);
-        if (w.id && (!peer || !peer.st || peer.st === 'title' || peer.st === 'dead')) return 'they left';
-        if (peer && w.map && peer.m && peer.m !== w.map) return 'they left the map';
+        let peer = w.id && Coop.peers.get(w.id);
+        if ((!peer || /^Player \d+$/.test(peer.name || '')) && w.name) {
+            const named = peerNamed(w.name);
+            if (named) { w.id = named.id; peer = named; w.missed = 0; }
+        }
+        if (!peer) {
+            if (!w.id && !w.name) return '';
+            w.missed = w.missed || Date.now();
+            if (Date.now() - w.missed < ORDER_FOR) return '';
+            return 'they left';
+        }
+        if (!peer.st || peer.st === 'dead') return 'they left';
+        if (peer.st === 'title') return peer._inWorld ? 'they left' : '';
+        if (w.map && peer.m && peer.m !== w.map) return 'they left the map';
         return '';
     }
     function dropWait(why) {
         // Back to the one who said wait, while they are still about; else whoever is.
         const w = BOT.waitFor;
-        const teller = w && w.id && Coop.peers.get(w.id);
+        const teller = (w && w.name && peerNamed(w.name)) || (w && w.id && Coop.peers.get(w.id));
         BOT.mode = 'follow';
-        BOT.with = teller && teller.st && teller.st !== 'title' ? w.id : 0;
+        if (teller && teller.st && teller.st !== 'title') stick(teller);
+        else { BOT.with = 0; BOT.withName = ''; withMissed = 0; }
         BOT.waitFor = null;
         log('the wait is over');
         Coop.note('the wait is over (' + why + ')');
@@ -2184,6 +2414,12 @@ module.exports = function installBot(options) {
         // A test run's host has nobody to follow: it goes on into the dungeon.
         if (options.lead) { if (BOT.mode !== 'explore') { BOT.mode = 'explore'; BOT.explore = null; } return; }
         if (!who) {
+            // A short drop of the one we follow is not "everyone has left".
+            if ((BOT.withName || options.follow) && withMissed && Date.now() - withMissed < ORDER_FOR) {
+                BOT.aloneSince = 0;
+                log('waiting for ' + (BOT.withName || options.follow) + ' to come back');
+                return;
+            }
             // Nobody left to follow. A bot must not keep a world going on its
             // own: the next player to start would walk into whatever it did there.
             BOT.aloneSince = BOT.aloneSince || Date.now();
@@ -2241,7 +2477,7 @@ module.exports = function installBot(options) {
             // A test run's partner (options.party) walks in its leader's party once they stand together.
             if (options.party && !Coop.partyLeader && !Coop.dead && Coop.world.live && Date.now() - partyAskedAt > 3000 && SceneManager._scene instanceof Scene_Map && Coop.joinParty) {
                 const who = leader();
-                if (who && who.st !== 'dead' && who.m === $gameMap.mapId() && Coop.distanceTo(who) <= 3) { partyAskedAt = Date.now(); if (Coop.joinParty(who.id)) log('joined ' + who.name + "'s party"); }
+                if (who && who.st !== 'dead' && who.m === $gameMap.mapId() && Coop.distanceTo(who) <= 3) { partyAskedAt = Date.now(); if (Coop.joinParty(who.id)) { stick(who); log('joined ' + who.name + "'s party"); } }
             }
             if (window.$gameMap && Coop.world.live && SceneManager._scene instanceof Scene_Map && $gameMap.mapId() !== lastMap) {
                 if (lastMap) note('You are now in ' + placeName($gameMap.mapId()) + '.');

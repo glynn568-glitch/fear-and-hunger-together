@@ -267,15 +267,30 @@
     setInterval(drawHud, 250);
 
     // Said once their name has arrived; an AI partner introduces itself instead.
+    // Back within a few seconds: one line replaces "X disconnected.", which would still be up.
+    const BACK_FOR = 10000;
+    const leftAt = new Map();
     Coop.on('join', function (peer) {
         setTimeout(function () {
             const p = Coop.peers.get(peer.id);
-            // Late, so it never covers something that matters more.
-            if (p && !p.bot && !/^Player \d+$/.test(p.name) && Coop.world.live && toast.style.opacity !== '1') Coop.toast(p.name + ' connected.');
+            if (!p || p.bot || /^Player \d+$/.test(p.name) || !Coop.world.live) return;
+            const key = p.name.toLowerCase();
+            const at = leftAt.get(key);
+            if (at && Date.now() - at < BACK_FOR) {
+                leftAt.delete(key);
+                Coop.toast(p.name + ' is back.');
+                return;
+            }
+            // Late, so a first arrival never covers something that matters more.
+            if (toast.style.opacity !== '1') Coop.toast(p.name + ' connected.');
         }, 1500);
     });
     // Someone who never gave a name ("Player 3") was never really here.
-    Coop.on('leave', function (peer) { if (Coop.world.live && !/^Player \d+$/.test(peer.name)) Coop.toast(peer.name + ' disconnected.'); });
+    Coop.on('leave', function (peer) {
+        if (!Coop.world.live || /^Player \d+$/.test(peer.name)) return;
+        leftAt.set(peer.name.toLowerCase(), Date.now());
+        Coop.toast(peer.name + ' disconnected.');
+    });
 
     // A menu freezes this player's picture, not the world: the others play on.
     // Said on opening one, now and then, so a still screen is not taken for a pause.

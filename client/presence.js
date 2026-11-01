@@ -362,7 +362,7 @@
         } else if (msg.founded && msg.stamp) Coop.toast('The world is as it was at the save of ' + when(msg.stamp) + '.', 5000);
         else if (msg.founded) Coop.toast('A new world begins.', 3500);
         else if (msg.behind) Coop.toast(msg.by + ' has carried this run on from a later save than any of yours (' + when(msg.stamp) + ').\nYou join as you were when you last saved; what happened since has happened.', 12000);
-        else Coop.toast('You have joined a world already in progress' + (names.length ? ' with ' + names.join(' and ') : '') + '.\nWhat happened there before you arrived has happened.', 8000);
+        else Coop.toast('You have joined a world already in progress' + (names.length ? ' with ' + names.join(' and ') : '') + '. It is the same run.', 8000);
     });
 
     const _mapUpdate = Game_Map.prototype.update;

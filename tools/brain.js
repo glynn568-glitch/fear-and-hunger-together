@@ -55,9 +55,11 @@ function personaBody(o) {
         '- React to what actually happened. Silence is the default: most things that happen deserve no remark, and a fight needs a word only now and then.',
         '- No stock companion lines ("stay close", "I will come running", "watch our backs", "lead on"). Say the specific thing only this character would say about this moment, or nothing.',
         '- Never repeat a line you have already said.',
+        '- Each message names the language to speak. Use it and only it, whatever you said before; never claim you cannot.',
         '- When your partner speaks to you, always answer, even in two words. An order you take gets a word of acknowledgement.',
         '- Your condition is the one in the latest message, not what you said before: if it says nothing is wrong, nothing is.',
         '- You only know what you have seen in this run. Never reveal secrets, puzzle answers, enemy weaknesses or story from outside knowledge of the game, even if you know them.',
+        '- Speak only of items, weapons and armor named in the latest "Your bag" list. If it is not listed, you do not have it.',
         '',
         'How to fight:',
         '- Enemies are split into body parts you target one at a time, each with its chance to hit. Cutting off limbs weakens them; losing the head usually kills, but a head is often hard to hit. Each part says about how many of your blows it takes, misses counted. Parts marked (attacks) are the ones that hurt you; parts marked (bring it down and the enemy falls) end the fight. Spend your blows where they count: a striking part that comes off in a blow or two, else whatever ends the fight soonest.',
@@ -77,6 +79,7 @@ function personaBody(o) {
         '- your partner talks: {"say":"...","order":"wait"|"follow"|"party"|"explore"|"quiet"|"talk"|"let go"|"leave"|null,"give":{"kind":"item"|"weapon"|"armor","id":number}|null,"use":item id|null,"goal":"id"|null}',
         '- something happened: {"say":"...","use":item id|null,"goal":"id"|null} or {"say":""} to stay quiet. "use" is for something from your own bag on yourself, when it plainly helps. Exploring alone, tell your partner what you find that matters (food, weapons, keys, danger) in a few words.',
         '- a choice in dialogue: {"pick":number,"say":"..."}',
+        'A dialogue choice is over once you have picked. Do not mention it again, and do not answer it on a later message.',
         'Leave "say" empty whenever you have nothing worth saying.',
     ].join('\n');
 }
@@ -203,6 +206,11 @@ function claudeCli(o) {
     };
 }
 
+// A dialogue choice is answered once. It is not kept, or a later remark answers it again.
+function keepTurn(text) {
+    return String(text || '').indexOf('[choice] ') !== 0;
+}
+
 // History kept here for the API providers; the oldest turns fall away.
 function history(limit) {
     const turns = [];
@@ -231,13 +239,14 @@ function anthropicApi(o) {
     return {
         name: 'Anthropic API (' + model + ')',
         async send(text) {
-            turns.add('user', text);
+            const keep = keepTurn(text);
+            if (keep) turns.add('user', text);
             const body = {
                 model,
                 max_tokens: 2000,
                 output_config: { effort: o.effort || 'low' },
                 system: [{ type: 'text', text: o.system, cache_control: { type: 'ephemeral' } }],
-                messages: turns.list(),
+                messages: keep ? turns.list() : turns.list().concat([{ role: 'user', content: text }]),
             };
             // A grim game: a declined turn goes to another model rather than to
             // nothing. Where that is not offered (a 400), it is asked plainly from then on.
@@ -253,7 +262,7 @@ function anthropicApi(o) {
             }
             if (!response) response = await client.messages.create(body, { timeout: LIMIT, maxRetries: 1 });
             const reply = response.stop_reason === 'refusal' ? '' : response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-            turns.add('assistant', reply || '{}');
+            if (keep) turns.add('assistant', reply || '{}');
             return reply;
         },
         close() {},
@@ -365,12 +374,15 @@ function openaiApi(o) {
     return {
         name: (svc.label ? svc.label + ' (' + o.model + ')' : o.model + ' at ' + base),
         async send(text) {
-            turns.add('user', text);
-            const data = await post([{ role: 'system', content: o.system }].concat(turns.list()));
+            const keep = keepTurn(text);
+            if (keep) turns.add('user', text);
+            const messages = [{ role: 'system', content: o.system }].concat(turns.list());
+            if (!keep) messages.push({ role: 'user', content: text });
+            const data = await post(messages);
             const reply = data.choices && data.choices[0] && data.choices[0].message ? String(data.choices[0].message.content || '') : '';
             // A reasoning model that ran out before answering leaves content empty.
-            if (!reply.trim()) { turns.add('assistant', '{}'); throw new Error('the model answered with nothing'); }
-            turns.add('assistant', reply);
+            if (!reply.trim()) { if (keep) turns.add('assistant', '{}'); throw new Error('the model answered with nothing'); }
+            if (keep) turns.add('assistant', reply);
             return reply;
         },
         close() {},
@@ -659,7 +671,7 @@ function codexCli(o) {
     const dir = path.join(__dirname, '..', 'data', 'partners', 'codex');
     const work = path.join(dir, 'work');
     fs.mkdirSync(work, { recursive: true });
-    let proc = null, ready = null, buf = '', ids = 0, lent = null, wake = null;
+    let proc = null, ready = null, buf = '', ids = 0, lent = null, wake = null, choices = null;
     const calls = new Map();
     // What each turn said and how it ended, by its id: a late word from one
     // turn never answers the next.
@@ -704,6 +716,7 @@ function codexCli(o) {
         const old = proc, l = lent;
         proc = null;
         ready = null;
+        choices = null;
         lent = null;
         for (const c of calls.values()) c.reject(new Error('Codex stopped'));
         calls.clear();
@@ -724,10 +737,15 @@ function codexCli(o) {
         return ids.length ? light.concat(ids.filter((m) => !light.includes(m))) : [null];
     }
     // The first model the account takes (a ChatGPT login refuses some).
-    async function thread() {
+    // once: a dialogue choice, on a thread of its own so the run's thread never sees it again.
+    async function thread(once) {
         let why = null;
         for (const model of await models()) {
-            try { return (await rpc('thread/start', { model, cwd: work, baseInstructions: o.system, approvalPolicy: 'untrusted', sandbox: 'read-only', ephemeral: true })).thread.id; } catch (e) { why = e; }
+            try {
+                const id = (await rpc('thread/start', { model, cwd: work, baseInstructions: o.system, approvalPolicy: 'untrusted', sandbox: 'read-only', ephemeral: true })).thread.id;
+                if (!once) o.log('mind: Codex (' + (model || 'the default') + ')');
+                return id;
+            } catch (e) { why = e; }
         }
         throw why || new Error('no model to start with');
     }
@@ -792,7 +810,12 @@ function codexCli(o) {
                 timer = setTimeout(() => { reject(new Error('no answer in ' + LIMIT / 1000 + ' s')); stop(); }, LIMIT);
             });
             try {
-                const threadId = await Promise.race([ready, late]);
+                await Promise.race([ready, late]);
+                if (!keepTurn(question) && !choices) {
+                    choices = thread(true);
+                    choices.catch(() => { choices = null; });
+                }
+                const threadId = await Promise.race([keepTurn(question) ? ready : choices, late]);
                 const r = await Promise.race([rpc('turn/start', { threadId, input: [{ type: 'text', text: question }], effort: o.effort || 'low' }), late]);
                 const id = r.turn && r.turn.id;
                 if (!id) throw new Error('Codex started no turn');
@@ -1030,4 +1053,4 @@ function createBrain(options) {
     };
 }
 
-module.exports = { createBrain, parseReply, tidy, findClaude, detect, minds, listModels, checkMind, savedMind, saveMind, keyFor, ownHermes, SERVICES, personaBody, systemPrompt };
+module.exports = { createBrain, parseReply, tidy, findClaude, detect, minds, listModels, checkMind, savedMind, saveMind, keyFor, ownHermes, SERVICES, personaBody, systemPrompt, keepTurn };
