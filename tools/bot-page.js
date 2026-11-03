@@ -209,13 +209,19 @@ module.exports = function installBot(options) {
     // treats infection and poison, and heals only when close to death, since
     // healing is scarce. With nothing to hand it says so, once, to its partner.
     const CURES = [
-        { states: [5], items: [8], what: 'bleeding', ask: 'a cloth fragment to bind it' },
-        { states: [55, 56], items: [94, 135], what: 'infected', ask: 'a green herb' },
-        { states: [17, 90], items: [52, 135], what: 'poisoned', ask: 'a white vial' },
+        { states: [5], items: [8], what: 'bleeding', ask: 'a cloth fragment to bind it', gone: "Bleeding's stopped." },
+        { states: [55, 56], items: [94, 135], what: 'infected', ask: 'a green herb', gone: "Infection's gone." },
+        { states: [17, 90], items: [52, 135], what: 'poisoned', ask: 'a white vial', gone: "Poison's gone." },
     ];
     const HEALS = [132, 95, 28, 67, 167]; // red herb, blue herb, blue vial, light blue vial, elixir of body
     const toldNeed = new Set();
     let wellAt = 0;
+    // A partner about to spend their own herb on this needs to hear it now, not after the remark gap.
+    function tellUsed(line) {
+        if (BOT.quiet) return;
+        if (BOT.language === 'English' || typeof window.fhBrain !== 'function') { speak(line, true); return; }
+        think('note', 'Tell your partner, in a few words: ' + line).then((r) => { if (r && r.say) speak(r.say, true); });
+    }
     function keepWell() {
         const me = $gameParty.leader();
         if (!me || me.isDead() || $gameParty.inBattle() || $gameMap.isEventRunning() || $gameMessage.isBusy()) return;
@@ -226,12 +232,12 @@ module.exports = function installBot(options) {
         for (const c of CURES) {
             if (!c.states.some((s) => me.isStateAffected(s))) { toldNeed.delete(c.what); continue; }
             const id = c.items.find(has);
-            if (id) { if (used($dataItems[id])) { journal('used ' + $dataItems[id].name + ' on ' + c.what); BOT.aside.push('You just used your ' + $dataItems[id].name + ' on yourself: no longer ' + c.what + '.'); return; } }
+            if (id) { if (used($dataItems[id])) { journal('used ' + $dataItems[id].name + ' on ' + c.what); BOT.aside.push('You just used your ' + $dataItems[id].name + ' on yourself: no longer ' + c.what + '.'); tellUsed('Used my ' + $dataItems[id].name + '. ' + c.gone); return; } }
             if (!toldNeed.has(c.what)) { toldNeed.add(c.what); note('You are ' + c.what + ' and have nothing for it. Ask your partner for ' + c.ask + ', plainly.'); BOT.lastNoteAt = 0; }
         }
         if (me.hp > me.mhp * 0.25) { toldNeed.delete('hurt'); return; }
         const heals = HEALS.filter(has);
-        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) { journal('used ' + it.name); BOT.aside.push('You just used your ' + it.name + ' on yourself.'); return; } }
+        if (heals.length) { const it = $dataItems[heals[0]]; if (used(it)) { journal('used ' + it.name); BOT.aside.push('You just used your ' + it.name + ' on yourself.'); tellUsed('Used my ' + it.name + '.'); return; } }
         // Out on its own, it turns back to whoever sent it rather than die alone where nobody can call it back.
         // Once: a test run's host, or a walker with no way on foot, is sent exploring again at once.
         if (BOT.mode === 'explore' && !options.lead && !toldNeed.has('hurt')) {

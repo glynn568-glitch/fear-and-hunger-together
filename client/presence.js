@@ -65,6 +65,7 @@
             st: state,
             m: $gameMap.mapId(),
             ts: $gameMap.tilesetId(), // a door can change it after the move (Ancient city): who follows needs it too
+            nt: $gameSwitches.value(798) ? 1 : 0, // Ma'habre by its own doors, not by the Passages: no running out of time there
             x: $gamePlayer.x,
             y: $gamePlayer.y,
             d: $gamePlayer.direction(),
@@ -305,9 +306,32 @@
     // To where another player stands, with the tileset they have there: a door can change it after its
     // transfer (Ancient city 114 -> 111 sets 30, the map's own is 28), and arriving any other way skips that.
     let arriveTileset = null;
+    // The Passages of Ma'habre keep where their reader goes back to (variables 102-104), and maps 26 and
+    // 164 send anyone on them back there when their time runs out. Whoever came along without reading
+    // them had nowhere: "map 0", a black screen for good. Their way back is where they came from.
+    const TIMED_VISIT = [26, 164];
+    function keepWayBack(toMap) {
+        if (TIMED_VISIT.includes($gameMap.mapId()) || !$gameMap.mapId() || !TIMED_VISIT.includes(toMap)) return;
+        $gameVariables.setValue(102, $gameMap.mapId());
+        $gameVariables.setValue(103, $gamePlayer.x);
+        $gameVariables.setValue(104, $gamePlayer.y);
+        $gameVariables.setValue(101, 0);
+    }
     Coop.transferTo = function (peer, d) {
+        keepWayBack(peer.m);
+        if (TIMED_VISIT.includes(peer.m) && peer.nt !== undefined) $gameSwitches.setValue(798, !!peer.nt);
         $gamePlayer.reserveTransfer(peer.m, peer.x, peer.y, d || peer.d || 2, 0);
         arriveTileset = peer.ts ? { m: peer.m, ts: peer.ts } : null;
+    };
+    // A way back that was never kept (a save from before this, a walk onto those maps): to a partner if
+    // there is one, else nowhere. Never to a map that does not exist.
+    const _reserveNowhere = Game_Player.prototype.reserveTransfer;
+    Game_Player.prototype.reserveTransfer = function (mapId) {
+        if (mapId > 0) return _reserveNowhere.apply(this, arguments);
+        // Not onto the ending map: that is reached with its ending (death.js), never by standing on it.
+        const peer = Coop.world.live && Coop.others().find((p) => p.m > 0 && p.m !== 86 && !TIMED_VISIT.includes(p.m) && ['map', 'event', 'menu', 'battle'].includes(p.st));
+        Coop.note('a transfer to map ' + mapId + (peer ? ': going to ' + peer.name + ' instead' : ': stayed'));
+        if (peer) _reserveNowhere.call(this, peer.m, peer.x, peer.y, 2, 0);
     };
     const _performTransfer = Game_Player.prototype.performTransfer;
     Game_Player.prototype.performTransfer = function () {

@@ -208,7 +208,6 @@
             const again = key && lined.has(key) && Date.now() - lined.get(key) < LEADER_GRACE;
             if (key) lined.set(key, Date.now());
             if (!again) say(peer.name + ' falls in behind you.');
-            if (!mates.has(peer.id) && SceneManager._scene instanceof Scene_Menu) Coop.sendTo(peer.id, 'pactors?', {});
         } else if (was === Coop.id) {
             if (key) lined.delete(key);
             if (peer.st !== 'dead' && peer.st !== 'title') say(peer.name + ' goes their own way.');
@@ -279,7 +278,8 @@
     // The leader went to another map: so does the line, onto their tile.
     setInterval(function () {
         const peer = leaderPeer();
-        if (!peer || !window.$gameMap || !Coop.world.live || !peer.m || peer.m === $gameMap.mapId()) return;
+        // The ending map is reached with the ending's own message (death.js), never by walking in line.
+        if (!peer || !window.$gameMap || !Coop.world.live || !peer.m || peer.m === $gameMap.mapId() || peer.m === 86) return;
         if ((peer.st !== 'map' && peer.st !== 'event') || !freeToHop() || Date.now() - lastHop < 1500) return;
         lastHop = Date.now();
         resetTrail();
@@ -348,6 +348,7 @@
     // gear is theirs to change.
 
     const mates = new Map(); // player id -> [Game_Actor]
+    const heard = new Map(); // player id -> the answer those copies came from
 
     function ghosts() {
         const out = [];
@@ -355,19 +356,33 @@
         return out.slice(0, Math.max(0, 4 - $gameParty.size()));
     }
 
+    // In a fight the owner's party also holds its guests' characters. Those are not theirs to report.
+    Coop.ownMembers = function () {
+        const lent = new Set();
+        if (Coop.battle && Coop.battle.guests) for (const g of Coop.battle.guests.values()) for (const id of g.actors) lent.add(id);
+        return $gameParty.members().filter((a) => !lent.has(a.actorId()));
+    };
+
     Coop.on('to:pactors?', function (msg) {
         if (!window.$gameParty || !Coop.world.live || !Coop.inMyParty(msg.from) || (Coop.battle && Coop.battle.role === 'guest')) return;
-        Coop.sendTo(msg.from, 'pactors', { list: $gameParty.members().map((a) => JsonEx.stringify(a)) });
+        Coop.sendTo(msg.from, 'pactors', { list: Coop.ownMembers().map((a) => JsonEx.stringify(a)) });
     });
     Coop.on('to:pactors', function (msg) {
         if (!Array.isArray(msg.list)) return;
+        const answer = msg.list.join('\n');
+        if (heard.get(msg.from) === answer) return;
         try { mates.set(msg.from, msg.list.map((j) => JsonEx.parse(j)).filter((a) => a instanceof Game_Actor)); } catch (e) { return; }
+        heard.set(msg.from, answer);
         refreshLineup();
     });
-    function refreshLineup() {
+    // The window showing party mates on this screen, if any.
+    function lineupWindow() {
         const scene = SceneManager._scene;
-        if (!(scene instanceof Scene_Menu) || !scene._statusWindow) return;
-        const w = scene._statusWindow;
+        return scene instanceof Scene_Menu ? scene._statusWindow : scene instanceof Scene_Item ? scene._actorWindow : null;
+    }
+    function refreshLineup() {
+        const w = lineupWindow();
+        if (!w) return;
         if (w.index() >= w.maxItems()) w.select(Math.max(0, w.maxItems() - 1));
         w.refresh();
     }
@@ -375,17 +390,28 @@
     // A mate leaving the line (gone, dead, at the title) takes their row with them.
     let shown = -1;
     Coop.on('p', function () {
-        if (!(SceneManager._scene instanceof Scene_Menu)) { shown = -1; return; }
+        if (!lineupWindow()) { shown = -1; return; }
         const n = ghosts().length;
         if (shown >= 0 && n !== shown) refreshLineup();
         shown = n;
     });
-    Coop.on('leave', function (peer) { mates.delete(peer.id); });
+    Coop.on('leave', function (peer) { mates.delete(peer.id); heard.delete(peer.id); });
 
+    function askMates() {
+        for (const p of Coop.partyMates()) Coop.sendTo(p.id, 'pactors?', {});
+    }
     const _menuCreate = Scene_Menu.prototype.create;
     Scene_Menu.prototype.create = function () {
         _menuCreate.call(this);
-        for (const p of Coop.partyMates()) Coop.sendTo(p.id, 'pactors?', {});
+        askMates();
+    };
+    // The rows are copies: while they are on screen, keep them current.
+    setInterval(function () {
+        if (window.$gameParty && Coop.world.live && lineupWindow()) askMates();
+    }, 1000);
+    // The game leaves room for 4 status icons; a new one pushes another off the row. Use the row's width.
+    Window_MenuStatus.prototype.drawActorIcons = function (actor, x, y, width) {
+        Window_Base.prototype.drawActorIcons.call(this, actor, x, y, width || Math.max(144, this.bustWidth() - this.textPadding() - 5));
     };
 
     // The menu lineup lists party mates. The item menu's "who?" list does too,

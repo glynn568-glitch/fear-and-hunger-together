@@ -399,6 +399,10 @@ class Room {
             let founded = false;
             const who = peer.name.toLowerCase();
             const how = ['new', 'load', 'park', 'again'].indexOf(msg.how) >= 0 ? msg.how : 'new';
+            // Someone still reading an ending (map 86) is not holding the run open: it is over.
+            // A New Game at this moment is a new run, not the finished one with its flags.
+            // Only a New Game: a load or a carried-on line may be refused, or may be the ending's own player.
+            if (how === 'new') for (const p of [...this.peers.values()]) if (p !== peer && p.live && p.last && p.last.m === 86) this.leaveWorld(p);
             const ini = Array.isArray(msg.ini) ? msg.ini.filter((n) => Number.isInteger(n)).slice(0, 8) : [];
             // One player per protagonist: the game keeps each character's
             // body and death in flags named after the character.

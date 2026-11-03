@@ -526,7 +526,7 @@
         if (!(scene instanceof Scene_Map) || SceneManager.isSceneChanging() || !scene.isActive()) return 'not on the map';
         if (scene._fadeDuration > 0) return 'map still fading in';
         if ($gamePlayer.isTransferring()) return 'changing maps';
-        if ($gameMessage.isBusy() || $gameMap.isEventRunning()) return 'busy with an event';
+        if ($gameMessage.isBusy() || ($gameMap.isEventRunning() && $gameMap._interpreter._waitMode !== 'coopFight')) return 'busy with an event';
         const leader = $gameParty.leader();
         return leader && leader.isAlive() ? '' : 'no living character';
     }
@@ -851,6 +851,13 @@
         if (hold && hold.k === 'battle') {
             if (Coop.peers.has(hold.by)) joinAfter = { id: hold.by, until: Date.now() + 15000 };
             Coop.note('event ' + this._eventId + ' is already in ' + (hold.name || 'someone') + "'s fight: going into that one");
+            // A fight with no won/lost branches goes straight on to what follows it, and at the end of the
+            // game that is an ending (the new gods, the Void): this scene waits to see how that fight ends.
+            const next = this._list[this._index + 1];
+            if (!next || [601, 602, 603].indexOf(next.code) < 0) {
+                this._coopFightSince = Date.now();
+                this.setWaitMode('coopFight');
+            }
             return true; // its won/fled/lost branches are skipped; the fight's owner plays them
         }
         // This scene was under way before the enemy was beaten in someone else's
@@ -862,6 +869,16 @@
             return true;
         }
         return _command301.call(this);
+    };
+    const _updateWaitMode = Game_Interpreter.prototype.updateWaitMode;
+    Game_Interpreter.prototype.updateWaitMode = function () {
+        if (this._waitMode !== 'coopFight') return _updateWaitMode.call(this);
+        const hold = Coop.world.live ? Coop.events.holdOf(this._eventId) : null;
+        if (hold && hold.k === 'battle') return true;
+        this._waitMode = '';
+        // Not beaten after all: nothing of what comes after the fight is earned. The scene ends here.
+        if (Coop.events.beatenAt(this._eventId) < this._coopFightSince) this.command115();
+        return false;
     };
     // When each scene began, so a fight won meanwhile can be told apart. A
     // common event a scene calls counts from the scene.

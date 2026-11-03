@@ -38,7 +38,52 @@ const TWINS = {
     'whose-scene': {
         why: 'world switches started other players\' scenes on everyone (the hound, the elevator, Trortur)',
         suite: 'scenes', file: 'client/state.js',
-        find: 'return actsOnPlayer(page.list);', put: 'return false;',
+        find: 'return leadsToActing(page, ev._mapId, ev._eventId, new Set());', put: 'return false;',
+    },
+    'passages-way-back': {
+        why: 'a follower onto the Passages of Ma\'habre had no way back: map 0, black for good (11/02)',
+        suite: 'mahabre', file: 'client/presence.js',
+        find: '        keepWayBack(peer.m);\n', put: '',
+    },
+    'scene-steps': {
+        why: 'the Beacon of the Depths ran its steps on a bystander: tint and light for good (11/02)',
+        suite: 'mahabre', file: 'client/state.js',
+        find: 'if (!yes && window.$dataMap && $dataMap.events) {', put: 'if (false) {',
+    },
+    'whoever-alone': {
+        why: 'Le\'garde waited on the next plane only for whoever set his flag: the other stood there unseen, no menu (11/02)',
+        suite: 'mahabre', file: 'client/state.js',
+        find: "        if (WHOEVER_IS_THERE.has(ev._mapId + ',' + ev._eventId) && !Coop.peersHere().length) return false;\n", put: '',
+    },
+    'ending-of-this-run': {
+        why: 'someone still in the credits pulled a fresh New Game back into the old ending (11/02)',
+        suite: 'endpartner', file: 'client/death.js',
+        find: '(!msg.run || msg.run === Coop.world.runId)', put: 'true',
+    },
+    'ending-exact': {
+        why: 'the ending hand-off OR\'ed switches: a player partway along ending A got A when the partner walked out (Grok 11/02)',
+        suite: 'endings', file: 'client/death.js', env: { FH_ENDINGS: 'mix-a' },
+        find: '        setExactly(ENDINGS, e.sw || []);\n', put: '        for (const id of e.sw || []) $gameSwitches.setValue(id, true);\n',
+    },
+    'teller-of-s': {
+        why: 'ending S told every machine its own story: Cahara\'s crown read to D\'arce as Le\'garde raised (11/02)',
+        suite: 'endings', file: 'client/death.js', env: { FH_ENDINGS: 's-crown' },
+        find: '            ini = tellerOfS();\n', put: '            ini = INITIALS.filter((id) => $gameSwitches.value(id));\n',
+    },
+    'teller-at-gate': {
+        why: 'Grok 11/02: the crown flag stays on, so a later S (the god beaten, Le\'garde raised) was told as Cahara\'s crown',
+        suite: 'endings', file: 'client/death.js', env: { FH_ENDINGS: 's-god-after-crown' },
+        find: ' || $gameMap.mapId() !== GATE || Coop.world.mine.has', put: ' || Coop.world.mine.has',
+    },
+    'second-at-fight': {
+        why: 'the second player at the Void\'s god of themselves skipped the fight and walked into ending D (Grok 11/02)',
+        suite: 'endings', file: 'client/battle.js', env: { FH_ENDINGS: 'two-gods' },
+        find: "                this.setWaitMode('coopFight');\n", put: '',
+    },
+    'run-after-ending': {
+        why: 'a New Game while the partner was still in the credits joined the finished run (11/02)',
+        suite: 'endpartner', file: 'room.js',
+        find: "            if (how === 'new') for (const p of [...this.peers.values()]) if (p !== peer && p.live && p.last && p.last.m === 86) this.leaveWorld(p);\n", put: '',
     },
     'settle-start': {
         why: 'his 10/20: the Cave Mother, just won in Enki\'s fight, fought him again at full health and left him stuck',

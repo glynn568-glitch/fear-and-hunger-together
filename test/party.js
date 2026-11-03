@@ -307,6 +307,100 @@ async function press(page, code, ms) {
             JSON.stringify({ hungry, snap, fed, aAfter }));
         check('a skill still cannot be aimed at a party mate', skills === 1, 'targets ' + skills);
 
+        // A party mate's statuses, as the lineup really draws them: current while the menu is open.
+        await b.evaluate(() => {
+            window.__icons = {};
+            window.__rowDraws = 0;
+            const icons = Window_Base.prototype.drawActorIcons;
+            Window_Base.prototype.drawActorIcons = function (actor) {
+                if (this instanceof Window_MenuStatus) window.__rowDraws++;
+                window.__drawing = [];
+                window.__icons[actor.actorId()] = window.__drawing;
+                const r = icons.apply(this, arguments);
+                window.__drawing = null;
+                return r;
+            };
+            const icon = Window_Base.prototype.drawIcon;
+            Window_Base.prototype.drawIcon = function (index) {
+                if (window.__drawing) window.__drawing.push(index);
+                return icon.apply(this, arguments);
+            };
+        });
+        const drawnOnB = () => b.evaluate(() => (window.__icons[1] || []).slice());
+        const drawnBecomes = async (want, what) => {
+            let got = null;
+            for (let i = 0; i < 16; i++) {
+                got = await drawnOnB();
+                if (got.join() === want.join()) return true;
+                await sleep(250);
+            }
+            console.log('   ' + what + ': want ' + want + ', drawn ' + got);
+            return false;
+        };
+        const iconsOfA = () => a.evaluate(() => $gameParty.leader().allIcons());
+        await a.evaluate(() => $gameParty.leader().clearStates());
+        await b.evaluate(() => SceneManager.push(Scene_Menu));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene._statusWindow && SceneManager._scene._statusWindow.maxItems() === 2, 8000, 'A in the lineup, statuses');
+        await a.evaluate(() => $gameParty.leader().addState(56));
+        check('a status the mate gets while the menu is open shows in the lineup', await drawnBecomes(await iconsOfA(), 'gained'));
+        await a.evaluate(() => $gameParty.leader().removeState(56));
+        check('a status the mate loses while the menu is open leaves the lineup', await drawnBecomes(await iconsOfA(), 'lost'));
+        await sleep(600);
+        const quiet = await b.evaluate(() => window.__rowDraws);
+        await sleep(2500);
+        check('nothing changed: the lineup is not redrawn', await b.evaluate(() => window.__rowDraws) === quiet);
+        await a.evaluate(() => { const m = $gameParty.leader(); for (const id of [39, 5, 17, 55, 56, 61]) m.addState(id); });
+        const many = await iconsOfA();
+        check('five or more statuses all fit on the row', many.length > 4 && await drawnBecomes(many, 'many'), JSON.stringify(many));
+        await a.evaluate(() => $gameParty.leader().clearStates());
+        await drawnBecomes([], 'cleared');
+        // Out of the line and back with the menu open: their state now, not the copy from before.
+        await b.evaluate(() => Coop.leaveParty());
+        await waitFor(b, () => SceneManager._scene._statusWindow.maxItems() === 1, 5000, 'A out of the lineup');
+        await a.evaluate(() => $gameParty.leader().addState(17));
+        await b.evaluate((id) => Coop.joinParty(id), idA);
+        await waitFor(b, () => SceneManager._scene._statusWindow.maxItems() === 2, 5000, 'A back in the lineup');
+        check('back in the line, the row shows the mate as they are now', await drawnBecomes(await iconsOfA(), 'rejoined'));
+        await a.evaluate(() => $gameParty.leader().clearStates());
+        await b.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(b, () => T.onMap(), 10000, 'B back on the map, statuses');
+
+        // The reason to look: A catches an infection while B has the item menu open. The herb must go through.
+        await b.evaluate(() => { const herb = $dataItems[94]; $gameParty.loseItem(herb, 99); $gameParty.gainItem(herb, 2); });
+        await b.evaluate(() => SceneManager.push(Scene_Menu));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene._statusWindow && SceneManager._scene._statusWindow.maxItems() === 2, 8000, 'A in the lineup, herb');
+        await sleep(400);
+        await b.evaluate(() => SceneManager.push(Scene_Item));
+        await waitFor(b, () => SceneManager._scene instanceof Scene_Item && SceneManager._scene._itemWindow && SceneManager._scene._actorWindow, 8000, 'the item menu, herb');
+        await a.evaluate(() => $gameParty.leader().addState(55));
+        await sleep(1800);
+        const herbed = await b.evaluate(() => {
+            const scene = SceneManager._scene, cat = scene._categoryWindow, iw = scene._itemWindow, aw = scene._actorWindow;
+            cat.select(0);
+            cat.update();
+            const idx = (iw._data || []).indexOf($dataItems[94]);
+            if (idx < 0) return { error: 'no herb' };
+            iw.select(idx);
+            iw.processOk();
+            aw.select($gameParty.size());
+            aw.processOk();
+            return { herbs: $gameParty.numItems($dataItems[94]) };
+        });
+        let cured = false;
+        for (let i = 0; i < 20 && !cured; i++) { cured = !await a.evaluate(() => $gameParty.leader().isStateAffected(55)); if (!cured) await sleep(250); }
+        check('a herb from the item menu cures an infection the mate caught with that menu open', herbed.herbs === 1 && cured, JSON.stringify({ herbed, cured }));
+        await b.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(b, () => T.onMap(), 10000, 'B back on the map, herb');
+
+        // In a fight the owner's party holds its guests' characters: only its own go in the answer.
+        const owned = await a.evaluate(() => {
+            const real = Coop.battle, actors = $gameParty._actors.slice();
+            $gameParty._actors.push(5);
+            Coop.battle = { role: 'owner', guests: new Map([[99, { actors: [5] }]]) };
+            try { return Coop.ownMembers().map((m) => m.actorId()); } finally { Coop.battle = real; $gameParty._actors = actors; }
+        });
+        check('a fight\'s owner reports only their own characters to the lineup', owned.join() === '1', owned.join());
+
         // Holding a direction steps out of line, even while the line is walking.
         const walking = a.evaluate(async () => { for (let i = 0; i < 5; i++) { T.step(8); await new Promise((r) => setTimeout(r, 280)); } });
         await sleep(250);

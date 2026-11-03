@@ -527,13 +527,40 @@ function holdTraps(ids) {
         const cured = await bot.evaluate(async () => {
             const me = $gameParty.leader();
             BOT.aside.splice(0);
-            $gameParty.gainItem($dataItems[8], 1);
-            me.addState(5);
-            const want = me.isStateAffected(5);
-            for (let i = 0; i < 40 && me.isStateAffected(5); i++) await new Promise((r) => setTimeout(r, 200));
-            return { want, gone: !me.isStateAffected(5), told: BOT.aside.join(' / ') };
+            const bleed = async () => {
+                const from = BOT.lines.length;
+                $gameParty.gainItem($dataItems[8], 1);
+                me.clearResult(); // a state an action just removed cannot come back until this
+                me.addState(5);
+                for (let i = 0; i < 40 && me.isStateAffected(5); i++) await new Promise((r) => setTimeout(r, 200));
+                return BOT.lines.slice(from);
+            };
+            $gameParty.loseItem($dataItems[8], 99);
+            me.removeState(5);
+            const want = true;
+            BOT.lastSpokeAt = Date.now(); // it spoke a moment ago: the line must not wait out the remark gap
+            const said = await bleed();
+            const gone = !me.isStateAffected(5);
+            const told = BOT.aside.join(' / ');
+            BOT.quiet = true;
+            const hushed = await bleed();
+            BOT.quiet = false;
+            // Told to speak Russian: the model says it, not a fixed English line.
+            const brain = window.fhBrain, tongue = BOT.language, asked = [];
+            window.fhBrain = (kind, text) => { asked.push(text); return Promise.resolve({ say: 'Кровь остановилась.' }); };
+            BOT.language = 'Russian';
+            BOT.lastSpokeAt = Date.now();
+            const foreign = await bleed();
+            await new Promise((r) => setTimeout(r, 200));
+            const translated = BOT.lines.slice(-1)[0];
+            window.fhBrain = brain;
+            BOT.language = tongue;
+            return { want, gone, told, said, hushed, foreign, translated, reachedModel: asked.some((t) => /Bleeding's stopped/.test(t)), clothLeft: $gameParty.numItems($dataItems[8]) };
         });
         check('what it spends on itself goes in its next message, so it does not ask for what it just used', cured.want && cured.gone && /no longer bleeding/.test(cured.told), JSON.stringify(cured));
+        check('it says out loud that it cured itself, at once', cured.said.join() === "Used my Cloth fragment. Bleeding's stopped.", JSON.stringify(cured.said));
+        check('told to be quiet, it does not', cured.hushed.length === 0 && cured.clothLeft === 0, JSON.stringify(cured));
+        check('in another language the model says it, no fixed English line', cured.reachedModel && cured.translated === 'Кровь остановилась.' && !cured.foreign.some((l) => /Used my/.test(l)), JSON.stringify(cured));
         const parks = await bot.evaluate(() => {
             $gameMap._interpreter.setup([{ code: 230, indent: 0, parameters: [600] }, { code: 0, indent: 0, parameters: [] }], 0);
             const normal = Coop.parkNow();

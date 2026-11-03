@@ -26,8 +26,9 @@
     Coop.dead = false;
     let realGameover = false;
 
+    // Someone on the ending map is in the credits of a run that is over: not alive in this one.
     function living() {
-        return Coop.others().filter((p) => p.st && p.st !== 'title' && p.st !== 'dead');
+        return Coop.others().filter((p) => p.st && p.st !== 'title' && p.st !== 'dead' && p.m !== ENDING_MAP);
     }
     Coop.livingPeers = living;
 
@@ -41,7 +42,8 @@
     SceneManager.goto = function (sceneClass) {
         // The Game Over that closes an ending is the real one.
         const ended = window.$gameMap && $gameMap.mapId() === ENDING_MAP;
-        if (sceneClass === Scene_Gameover && Coop.world.live && !realGameover && !Coop.dead && !ended && living().length > 0) {
+        // Dying with someone's ending on its way here: they wait for it among the dead (it takes them along).
+        if (sceneClass === Scene_Gameover && Coop.world.live && !realGameover && !Coop.dead && !ended && (living().length > 0 || endingDue())) {
             Coop.dead = true;
             // Whatever they were in the middle of (the enemy that killed them) never
             // finishes here: let it go, or it stands frozen for everyone else.
@@ -428,18 +430,90 @@
 
     // His ruling (10/18): the ending plays for everyone. Whoever heads into it
     // takes the others along, the dead too, with the same ending switches.
-    let ending = null; // { sw, x, y }: the ending to play on this machine
+    // The first one in decides which: everyone plays exactly that ending. A player partway along another
+    // route (ending A's switch comes on long before its door) does not get a mix of the two.
+    let ending = null; // { sw, ini, x, y }: the ending to play on this machine
     let endingSent = false;
+    const endingDue = () => !!ending;
+
+    // Ending S is told as the person who earned it (map 86 picks the page by INITIAL_*): Cahara's crown,
+    // D'arce's Le'garde. Everyone hears that one, not a story of their own that never happened.
+    const INITIALS = [661, 662, 663, 664];
+    const ENDING_S = 2249, WALK_OUT_S = 2662, CROWN = 2664, ROUTE_CROWN = 661, ROUTE_SOULS = 664;
+    const GATE = 74; // the fortress's way out, where 2662 turns walking out into S
+    function tellerOfS() {
+        const own = INITIALS.filter((id) => $gameSwitches.value(id));
+        // The way out (a world flag) belongs to whoever earned it: Cahara with the crown (hard mode, Cahara in
+        // the digger's party) or Ragnvaldr with every soul (CE 248). Only there: 2662 stays on for good, and an S
+        // reached another way (Le'garde raised, the god beaten) is its finisher's.
+        if (!$gameSwitches.value(WALK_OUT_S) || $gameMap.mapId() !== GATE || Coop.world.mine.has('sw' + WALK_OUT_S)) return own;
+        const played = [ROUTE_CROWN, ROUTE_SOULS].filter((id) => Coop.others().some((p) => p.st && p.st !== 'title' && p.ini && p.ini.indexOf(id) >= 0));
+        if (played.length === 1) return played;
+        // Both played by others: 2664 is only "the chest was opened", so it is a guess between the two.
+        if (played.length === 2) return [$gameSwitches.value(CROWN) ? ROUTE_CROWN : ROUTE_SOULS];
+        return own;
+    }
+    function setExactly(ids, wanted) {
+        for (const id of ids) $gameSwitches.setValue(id, wanted.indexOf(id) >= 0);
+    }
 
     const _reserveTransfer = Game_Player.prototype.reserveTransfer;
     Game_Player.prototype.reserveTransfer = function (mapId, x, y) {
+        // Someone's ending came while this player was winning their own way out (a fight, a scene): theirs stands.
+        if (mapId === ENDING_MAP && ending) {
+            setExactly(ENDINGS, ending.sw || []);
+            if (ending.ini) setExactly(INITIALS, ending.ini);
+            endingSent = true;
+            ending = null;
+        }
         _reserveTransfer.apply(this, arguments);
         if (mapId !== ENDING_MAP || endingSent || !Coop.world.live) return;
         endingSent = true;
         const sw = ENDINGS.filter((id) => $gameSwitches.value(id));
-        for (const p of Coop.others()) if (p.st && p.st !== 'title') Coop.sendTo(p.id, 'ending', { sw, x, y });
+        let ini = null;
+        if (sw.indexOf(ENDING_S) >= 0) {
+            ini = tellerOfS();
+            setExactly(INITIALS, ini);
+        }
+        for (const p of Coop.others()) if (p.st && p.st !== 'title') Coop.sendTo(p.id, 'ending', { sw, ini, x, y, run: Coop.world.runId });
     };
-    Coop.on('to:ending', function (msg) { if (!endingSent && Coop.world.live) ending = msg; });
+    // Only an ending of this run: someone still in the credits of the last one is not this run's ending.
+    Coop.on('to:ending', function (msg) { if (!endingSent && Coop.world.live && (!msg.run || msg.run === Coop.world.runId)) ending = msg; });
+
+    // That message died with a dropped line: someone on the ending map says which one it is.
+    let endingAsked = 0, endingAskN = 0;
+    setInterval(function () {
+        if (ending || endingSent || !Coop.world.live || !Coop.connected || Date.now() - endingAsked < 2000) return;
+        // Each of them in turn: one there without an ending to give does not answer.
+        const all = Coop.others().filter((p) => p.m === ENDING_MAP && p.st && p.st !== 'title');
+        if (!all.length) return;
+        const there = all[(endingAskN++) % all.length];
+        endingAsked = Date.now();
+        Coop.sendTo(there.id, 'ending?', {});
+    }, 500);
+    Coop.on('to:ending?', function (msg) {
+        if (!endingSent || !window.$gameSwitches) return;
+        const sw = ENDINGS.filter((id) => $gameSwitches.value(id));
+        Coop.sendTo(msg.from, 'ending', { sw, ini: sw.indexOf(ENDING_S) >= 0 ? INITIALS.filter((id) => $gameSwitches.value(id)) : null, x: 8, y: 7, run: Coop.world.runId });
+    });
+
+    // The ending's Game Over ends the run for this player, there and then: sitting on that screen
+    // must not keep it open, or the partner's next New Game is this finished run again.
+    const _gameoverStart = Scene_Gameover.prototype.start;
+    Scene_Gameover.prototype.start = function () {
+        _gameoverStart.call(this);
+        if (window.$gameMap && $gameMap.mapId() === ENDING_MAP && Coop.world.live) {
+            Coop.world.leave();
+            Coop.reportPresence(true);
+        }
+    };
+
+    let unseenOnArrival = false;
+    const _endingArrive = Game_Player.prototype.performTransfer;
+    Game_Player.prototype.performTransfer = function () {
+        _endingArrive.apply(this, arguments);
+        if (unseenOnArrival && $gameMap.mapId() === ENDING_MAP) { unseenOnArrival = false; this.setTransparent(true); }
+    };
 
     // Taken along once out of any fight. True when it happens.
     function playEnding() {
@@ -448,7 +522,8 @@
         const e = ending;
         ending = null;
         endingSent = true;
-        for (const id of e.sw || []) $gameSwitches.setValue(id, true);
+        setExactly(ENDINGS, e.sw || []);
+        if (e.ini) setExactly(INITIALS, e.ini);
         Coop.dead = false;
         Coop.deadFromSave = false;
         const leader = $gameParty.leader();
@@ -459,6 +534,10 @@
         $gameMessage.clear();
         $gameScreen.clear();
         $gameTimer.stop();
+        // Unseen on arrival, as the scenes that go there leave the one who walks in. Set again on arrival:
+        // a parallel event of the map left behind (the Void's) can still show them on the way out.
+        $gamePlayer.setTransparent(true);
+        unseenOnArrival = true;
         $gamePlayer.reserveTransfer(ENDING_MAP, e.x, e.y, 2, 0);
         if (!(scene instanceof Scene_Map)) SceneManager.goto(Scene_Map);
         Coop.reportPresence(true);

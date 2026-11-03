@@ -438,10 +438,58 @@
         if (yes || top) actsMemo.set(list, yes); // a "no" is final only when worked out from the top
         return yes;
     }
+    // A step of such a scene acts too, though it only waits and sets the next flag (the Beacon of the
+    // Depths: run by a bystander too, its tint and light stayed on their screen for good, since the last
+    // step, which acts, is not theirs to undo them; the Girl's question at the pit: whoever answered first
+    // got the god's fight, and if they lost it the one she spoke to stood there with no way on).
+    function setsOn(list, mapId, eventId) {
+        const on = { sw: new Set(), letters: new Set() };
+        const seen = new Set();
+        (function walk(cmds) {
+            if (!cmds || seen.has(cmds)) return;
+            seen.add(cmds);
+            for (const c of cmds) {
+                if (c.code === 121 && c.parameters[2] === 0) { for (let id = c.parameters[0]; id <= c.parameters[1]; id++) if (World.isShared('sw', id)) on.sw.add(id); }
+                else if (c.code === 123 && c.parameters[1] === 0 && World.isShared('ss', [mapId, eventId, c.parameters[0]].join(','))) on.letters.add(c.parameters[0]);
+                else if (c.code === 117) { const ce = $dataCommonEvents[c.parameters[0]]; if (ce) walk(ce.list); }
+            }
+        })(list);
+        return on;
+    }
+    let leadsMemo = new WeakMap();
+    function leadsToActing(page, mapId, eventId, seen) {
+        if (leadsMemo.has(page)) return leadsMemo.get(page);
+        if (seen.has(page)) return false; // a loop of steps: answered where it began
+        seen.add(page);
+        const top = seen.size === 1;
+        let yes = actsOnPlayer(page.list);
+        if (!yes && window.$dataMap && $dataMap.events) {
+            const on = setsOn(page.list, mapId, eventId);
+            for (const data of $dataMap.events) {
+                if (!data || yes) continue;
+                for (const next of data.pages) {
+                    if (next === page || (next.trigger !== 3 && next.trigger !== 4)) continue;
+                    const c = next.conditions;
+                    const opens = (c.switch1Valid && on.sw.has(c.switch1Id)) || (c.switch2Valid && on.sw.has(c.switch2Id))
+                        || (data.id === eventId && c.selfSwitchValid && on.letters.has(c.selfSwitchCh));
+                    if (opens && leadsToActing(next, mapId, data.id, seen)) { yes = true; break; }
+                }
+            }
+        }
+        if (yes || top) leadsMemo.set(page, yes); // a "no" is final only when worked out from the top
+        return yes;
+    }
+    Coop.on('census', function () { leadsMemo = new WeakMap(); });
+    // The last scenes of the end game belong to whoever stands there alone. Le'garde waits on the next plane
+    // for whoever sits on the chair next (M140 EV4: else that player stands there unseen with no menu and the
+    // chair is shut for good), the Void's arrival sets its visitor down, and the god's fight at the pit must
+    // still be there when the one who started it fell or left.
+    const WHOEVER_IS_THERE = new Set(['140,4', '140,18', '142,24', '142,26', '142,70', '125,320', '146,320', '160,483', '160,485', '185,483', '185,485']);
     // Not only while in the world: a save being loaded is out of it until it is back in.
     World.othersScene = function (ev) {
         const page = ev.page();
         if (!page || (page.trigger !== 3 && page.trigger !== 4)) return false;
+        if (WHOEVER_IS_THERE.has(ev._mapId + ',' + ev._eventId) && !Coop.peersHere().length) return false;
         const c = page.conditions;
         const flags = [];
         if (c.switch1Valid) flags.push(['sw', c.switch1Id]);
@@ -450,7 +498,7 @@
         // The shared flags say whose scene it is (a private one is only this machine's state).
         const shared = flags.filter(([kind, key]) => World.isShared(kind, key));
         if (!shared.length || shared.some(([kind, key]) => World.mine.has(kind + key))) return false;
-        return actsOnPlayer(page.list);
+        return leadsToActing(page, ev._mapId, ev._eventId, new Set());
     };
     // A latch that means "a fight just ended and a scene is due" (census.dueScenes).
     function duePage(ev) {
@@ -510,6 +558,8 @@
             // A player under this one's own name is this tab's old line, which the host has
             // not yet noticed is dead (back within seconds of a drop); this name replaces it.
             if (Coop.name && String(peer.name).toLowerCase() === Coop.name.toLowerCase()) continue;
+            // Someone in the credits of a finished run (the ending map, 86) plays nobody in this one.
+            if (peer.m === 86) continue;
             if (peer.st && peer.st !== 'title' && peer.ini && peer.ini.some((id) => mine.indexOf(id) >= 0)) return peer.name;
         }
         return '';
