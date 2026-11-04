@@ -6,6 +6,7 @@ const crypto = require('crypto');
 
 const LAG = Number(process.env.FH_LAG || 0);
 const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
+const TITLE_GHOST = Number(process.env.FH_TITLE_GHOST) || 10000; // ms a player in the run may say "title" before they are taken out of it
 const RATE = Number(process.env.FH_RATE || 0);
 const JITTER = Number(process.env.FH_JITTER || 0);
 const METER_LOG_MS = Number(process.env.FH_METER_LOG_MS) || 60000; // how often a player's meter goes in the log
@@ -277,6 +278,14 @@ class Room {
         this.broadcast({ t: 'leave', id: peer.id });
     }
 
+    // Back to the title on purpose. The last person takes the partners
+    // with them; a partner sent home that way keeps the body just parked.
+    wentToTitle(peer) {
+        if (!this.isBot(peer)) this.endWithPartners(peer);
+        if (!this.recallHolds(peer)) this.unpark(peer.name);
+        this.leaveWorld(peer);
+    }
+
     leaveWorld(peer) {
         peer.live = false;
         peer.ini = null;
@@ -502,6 +511,17 @@ class Room {
         case 'p': // where a player is; kept so that someone joining later
             // learns it at once, even from a player whose tab is asleep
             peer.last = msg;
+            // Let in, but their game says title: the join never took (11/03, a world reply
+            // that threw kept Enki in the run for good, and pho could not load his own save).
+            // Ten seconds of that and they are out, as if they had gone back to the title.
+            if (peer.live && msg.st === 'title') {
+                if (!peer.titleSince) peer.titleSince = Date.now();
+                else if (Date.now() - peer.titleSince > TITLE_GHOST) {
+                    peer.titleSince = 0;
+                    console.log(`player ${peer.id} (${peer.name || '?'}) said title while in the run; out of it`);
+                    this.wentToTitle(peer);
+                }
+            } else peer.titleSince = 0;
             this.broadcast(msg, peer.id);
             break;
         case 'partner': { // { toggle } F8, or { on }: call an AI partner in, or send one home
@@ -540,7 +560,12 @@ class Room {
         }
         case 'partnerminds': // the host opened the partner panel: what could think here
             if (!this.partners || !peer.host) break;
-            require('./tools/brain').minds().then((m) => this.send(peer, Object.assign({ t: 'partnerminds' }, m)), () => {});
+            require('./tools/brain').minds().then((m) => this.send(peer, Object.assign({ t: 'partnerminds', plays: require('./tools/brain').savedMind().plays || '' }, m)), () => {});
+            break;
+        case 'partnerplays': // the host picked who the next partner plays
+            if (!this.partners || !peer.host) break;
+            if (['', 'knight', 'mercenary', 'priest', 'outlander'].indexOf(msg.plays) < 0) break;
+            require('./tools/brain').savePlays(msg.plays);
             break;
         case 'partnermodels': { // the models a service offers, for the panel's list
             if (!this.partners || !peer.host) break;
@@ -571,11 +596,7 @@ class Room {
             break;
         }
         case 'leftworld':
-            // Back to the title on purpose. The last person takes the partners
-            // with them; a partner sent home that way keeps the body just parked.
-            if (!this.isBot(peer)) this.endWithPartners(peer);
-            if (!this.recallHolds(peer)) this.unpark(peer.name);
-            this.leaveWorld(peer);
+            this.wentToTitle(peer);
             break;
         case 'park': // a player's own state, parked against a dropped connection
             // A partner sent home with the run parks after its live flag is cleared.

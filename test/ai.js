@@ -733,12 +733,11 @@ async function press(page, code, ms) {
             BOT.waitFor = null;
             BOT.notes.splice(0);
             if (BOT.aside) BOT.aside.splice(0);
-            BOT.addressed = null;
             BOT.lastNoteAt = Date.now();
             Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 40, mhp: 100 });
         });
         await sleep(6000);
-        await bot.evaluate(() => { BOT.notes.splice(0); if (BOT.aside) BOT.aside.splice(0); BOT.addressed = null; BOT.lastNoteAt = Date.now(); });
+        await bot.evaluate(() => { BOT.notes.splice(0); if (BOT.aside) BOT.aside.splice(0); BOT.lastNoteAt = Date.now(); });
         const beforeOver = asked.length;
         await a.evaluate(() => Coop.say('Enki, look at this'));
         for (let i = 0; i < 20; i++) {
@@ -760,17 +759,17 @@ async function press(page, code, ms) {
         const aboutCalls = asked.length - markAbout;
         await a.evaluate(() => Coop.say('you, grab that'));
         let youCall = null;
-        for (let i = 0; i < 30 && !youCall; i++) { await sleep(300); youCall = asked.slice(markAbout).find((q) => q.kind === 'chat' && /you, grab that/.test(q.text)); }
-        await bot.evaluate(() => { BOT.mode = 'follow'; BOT.addressed = null; });
+        for (let i = 0; i < 10 && !youCall; i++) { await sleep(300); youCall = asked.slice(markAbout).find((q) => q.kind === 'chat' && /you, grab that/.test(q.text)); }
+        await bot.evaluate(() => { BOT.mode = 'follow'; });
         await a.evaluate(() => Coop.say('Darce, wait'));
         let nick = false;
         for (let i = 0; i < 20 && !nick; i++) { await sleep(200); nick = await bot.evaluate(() => BOT.mode === 'wait'); }
         const markNext = asked.length;
         await a.evaluate(() => Coop.say('and bring the torch'));
         let nextCall = null;
-        for (let i = 0; i < 30 && !nextCall; i++) { await sleep(300); nextCall = asked.slice(markNext).find((q) => q.kind === 'chat'); }
-        check('you, a short name, and the next line are for it; talk about it is not',
-            aboutCalls === 0 && !!youCall && nick && !!nextCall, 'about ' + aboutCalls + ' you ' + !!youCall + ' nick ' + nick + ' next ' + !!nextCall);
+        for (let i = 0; i < 10 && !nextCall; i++) { await sleep(300); nextCall = asked.slice(markNext).find((q) => q.kind === 'chat'); }
+        check('with two people a short name is for it; "you", the line after it answered, and talk about it are not',
+            aboutCalls === 0 && !youCall && nick && !nextCall, 'about ' + aboutCalls + ' you ' + !!youCall + ' nick ' + nick + ' next ' + !!nextCall);
         await sleep(600);
         await bot.evaluate(() => {
             if (BOT.giving) BOT.giving = null;
@@ -778,7 +777,6 @@ async function press(page, code, ms) {
             Coop.peers.delete(4242);
             BOT.with = 0;
             BOT.mode = 'follow';
-            BOT.addressed = null;
             BOT.waitFor = null;
             BOT.fightOrder = null;
             if (window.keepAlive) { clearInterval(window.keepAlive); window.keepAlive = 0; }

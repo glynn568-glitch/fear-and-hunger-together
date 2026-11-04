@@ -892,9 +892,16 @@ function savedMind() {
 function saveMind(pick) {
     const m = savedMind();
     if (pick.key) m.keys[keySlot(pick)] = pick.key;
-    const keys = m.keys;
+    writeMind({ brain: pick.brain, model: pick.model || '', url: pick.url || '', plays: m.plays || '', keys: m.keys });
+}
+// Who the next partner plays: knight, mercenary, priest, outlander, or '' for any free one.
+function savePlays(plays) {
+    const m = savedMind();
+    writeMind({ brain: m.brain || '', model: m.model || '', url: m.url || '', plays, keys: m.keys });
+}
+function writeMind(m) {
     fs.mkdirSync(path.dirname(MIND_FILE), { recursive: true });
-    fs.writeFileSync(MIND_FILE, JSON.stringify({ brain: pick.brain, model: pick.model || '', url: pick.url || '', keys }, null, 1) + '\n');
+    fs.writeFileSync(MIND_FILE, JSON.stringify(m, null, 1) + '\n');
 }
 
 // A key for some other address is not the OpenAI key.
@@ -1053,4 +1060,4 @@ function createBrain(options) {
     };
 }
 
-module.exports = { createBrain, parseReply, tidy, findClaude, detect, minds, listModels, checkMind, savedMind, saveMind, keyFor, ownHermes, SERVICES, personaBody, systemPrompt, keepTurn };
+module.exports = { createBrain, parseReply, tidy, findClaude, detect, minds, listModels, checkMind, savedMind, saveMind, savePlays, keyFor, ownHermes, SERVICES, personaBody, systemPrompt, keepTurn };

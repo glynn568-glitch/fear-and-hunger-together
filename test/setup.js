@@ -100,9 +100,21 @@ async function press(page, code) {
         // opened from the Together panel's button instead, and this time: no AI.
         await a.evaluate(() => Coop.openPartnerSetup());
         await waitFor(a, () => document.querySelector('#coop-setup.open .minds button.on'), 15000, 'the panel again');
+        // Who it plays: picked here, kept with the rest, and the next one called in is that one
+        // (Ragnvaldr: Ann plays Cahara, and a pick someone already plays falls back to a free one).
+        const first = await a.evaluate(() => document.querySelector('#coop-setup .plays button.on').getAttribute('data-plays'));
+        await a.evaluate(() => document.querySelector('#coop-setup [data-plays=outlander]').click());
+        for (let i = 0; i < 20 && JSON.parse(fs.readFileSync(process.env.FH_MIND_FILE, 'utf8')).plays !== 'outlander'; i++) await sleep(100);
+        const picked = JSON.parse(fs.readFileSync(process.env.FH_MIND_FILE, 'utf8'));
+        check('"Plays as" starts on any free one, and a pick is kept beside the mind and its key',
+            first === '' && picked.plays === 'outlander' && picked.brain === 'openai' && picked.keys['openai-url'] === 'good-key-123',
+            JSON.stringify({ first, plays: picked.plays, brain: picked.brain }));
         await a.evaluate(() => document.querySelector('#coop-setup [data-do=anyway]').click());
         await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'the partner arrives');
         check('"call it in without AI" still brings a partner that follows and fights', !(await a.evaluate(() => !!document.querySelector('#coop-setup.open'))));
+        const who = await a.evaluate(() => { const p = Coop.others().find((x) => x.bot === 1); return { name: p.name, ini: p.ini }; });
+        check('the partner called in after the pick plays Ragnvaldr',
+            who.name === 'Ragnvaldr' && Array.isArray(who.ini) && who.ini.indexOf(664) >= 0, JSON.stringify(who));
         await press(a, 'F8');
         await waitFor(a, () => !Coop.others().some((p) => p.bot), 20000, 'the partner leaves');
     } catch (e) {

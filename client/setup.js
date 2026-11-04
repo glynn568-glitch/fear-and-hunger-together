@@ -20,6 +20,9 @@
         '#coop-setup .minds button { text-align: left; }',
         '#coop-setup .minds button.on { background: #4a3324; border-color: #f2d28a; }',
         '#coop-setup .minds small { color: #a8957a; }',
+        '#coop-setup h3 { margin: 12px 0 6px; font-size: 1em; font-weight: normal; color: #c9b998; }',
+        '#coop-setup .plays { display: flex; gap: 6px; flex-wrap: wrap; }',
+        '#coop-setup .plays button.on { background: #4a3324; border-color: #f2d28a; }',
         '#coop-setup .note { margin-top: 10px; color: #c9b998; }',
         '#coop-setup .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }',
         '#coop-setup button { font: inherit; color: #e8dcc0; background: #2a1d17; border: 1px solid #6b5a45; padding: 4px 12px; cursor: pointer; outline: none; }',
@@ -33,6 +36,7 @@
         + '<p class="lead"></p>'
         + '<div class="minds"></div>'
         + '<div class="note"></div>'
+        + '<h3>Plays as</h3><div class="plays"></div>'
         + '<input data-field="url" spellcheck="false" autocomplete="off" placeholder="Address, like https://api.example.com/v1">'
         + '<input data-field="key" type="password" spellcheck="false" autocomplete="off">'
         + '<input data-field="model" spellcheck="false" autocomplete="off" list="fh-setup-models">'
@@ -44,7 +48,17 @@
     const why = $('.why');
     const field = { url: $('[data-field=url]'), key: $('[data-field=key]'), model: $('[data-field=model]') };
 
-    let list = [], chosen = null, models = {};
+    let list = [], chosen = null, models = {}, plays = '';
+    // Taken by someone already playing: the next free one instead.
+    const PLAYS = [['', 'Any free'], ['knight', "D'arce"], ['mercenary', 'Cahara'], ['priest', 'Enki'], ['outlander', 'Ragnvaldr']];
+    function showPlays() {
+        for (const b of box.querySelectorAll('.plays button')) b.classList.toggle('on', b.getAttribute('data-plays') === plays);
+    }
+    function pickPlays(id) {
+        plays = id;
+        showPlays();
+        Coop.send({ t: 'partnerplays', plays });
+    }
 
     function show() {
         const m = list.find((x) => x.id === chosen) || {};
@@ -93,6 +107,16 @@
             b.lastChild.textContent = mark;
             minds.appendChild(b);
         }
+        const row = $('.plays');
+        row.innerHTML = '';
+        for (const [id, label] of PLAYS) {
+            const b = document.createElement('button');
+            b.setAttribute('data-plays', id);
+            b.textContent = label;
+            row.appendChild(b);
+        }
+        plays = msg.plays || '';
+        showPlays();
         const start = list.some((x) => x.id === msg.current && x.id !== 'none') ? msg.current : 'anthropic';
         pick(start, start === msg.current ? msg.model : '');
         (field.key.hidden ? box.querySelector('.minds button.on') : field.key).focus();
@@ -126,6 +150,7 @@
         const b = e.target.closest('button');
         if (!b) return;
         if (b.hasAttribute('data-mind')) pick(b.getAttribute('data-mind'));
+        else if (b.hasAttribute('data-plays')) pickPlays(b.getAttribute('data-plays'));
         else act(b.getAttribute('data-do'));
     });
     field.key.addEventListener('change', askModels);
@@ -142,6 +167,7 @@
                 if (e.repeat) return;
                 if (at && at.tagName === 'INPUT') act('save');
                 else if (at && at.hasAttribute('data-mind')) pick(at.getAttribute('data-mind'));
+                else if (at && at.hasAttribute('data-plays')) pickPlays(at.getAttribute('data-plays'));
                 else act((at && at.getAttribute('data-do')) || 'save');
             } else if (e.key === 'Escape') close();
         });

@@ -191,7 +191,6 @@ function holdTraps(ids) {
             window.fhBrain = async (kind) => (kind === 'chat' ? { say: 'Holding here.', order: 'wait' } : null);
             try {
                 BOT.mode = 'follow';
-                BOT.addressed = null;
                 BOT.askedYou = null;
                 BOT.waitFor = null;
                 const before = BOT.lines.length;
@@ -206,42 +205,59 @@ function holdTraps(ids) {
                 let calls = 0;
                 window.fhBrain = async (kind) => { if (kind === 'chat') calls++; return { say: "I'll press it.", order: 'wait' }; };
                 BOT.mode = 'follow';
-                BOT.addressed = null;
                 const linesAt = BOT.lines.length;
                 Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you must press it to continue' });
                 await waitThink();
                 const cold = { calls, mode: BOT.mode, said: BOT.lines.length - linesAt };
+                // Right after it answered Enki: a line without its name is still not for it.
                 calls = 0;
-                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
+                BOT.lastSpokeAt = Date.now();
                 BOT.mode = 'follow';
                 Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you, grab that' });
                 await waitThink();
                 const warm = { calls, mode: BOT.mode };
+                // Its name at the end of the line is its name.
+                calls = 0;
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'ok stop yapping so much claude' });
+                await waitThink();
+                const named = { calls };
+                // Someone at the title is still a person here: 11/03, Enki's join failed and he
+                // showed at the title, so it took every line from either of them as its own.
+                calls = 0;
+                Coop.peers.get(4242).st = 'title';
+                Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'bro' });
+                await waitThink();
+                const titled = { calls };
+                Coop.peers.get(4242).st = 'map';
+                // It answers Ann with a question: Ann's unnamed answer is for it, Enki's is not.
+                calls = 0;
+                window.fhBrain = async (kind) => { if (kind === 'chat') calls++; return { say: 'Which herb, Ann?' }; };
+                Coop.emit('heard', { from: ann.id, name: 'Ann', text: "D'arce, look at this" });
+                await waitThink();
+                const askedAnn = !!(BOT.askedYou && BOT.askedYou.id === ann.id);
+                calls = 0;
+                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'yes' });
+                await waitThink();
+                const enkiYes = calls;
+                Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'the red one' });
+                await waitThink();
+                const annAnswer = calls - enkiYes;
+                BOT.askedYou = null;
+                window.fhBrain = async (kind) => { if (kind === 'chat') calls++; return { say: "I'll press it.", order: 'wait' }; };
                 // Its own question, then a yes: what it said it would do goes through.
                 window.fhBrain = async () => ({ say: 'Going.', order: 'explore' });
                 BOT.mode = 'follow';
                 BOT.askedYou = { id: 4242, until: Date.now() + 5000 };
-                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
                 Coop.emit('heard', { from: 4242, name: 'Enki', text: 'yes' });
                 await waitThink();
                 const answered = BOT.mode;
                 BOT.askedYou = null;
-                // "you ..." right after it spoke, two people about: the model is told it may be for the other.
-                let seen = '';
-                window.fhBrain = async (kind, text) => { seen = text; return { say: '' }; };
-                BOT.mode = 'follow';
-                BOT.addressed = { id: 4242, until: Date.now() + 5000 };
-                Coop.emit('heard', { from: 4242, name: 'Enki', text: 'you must press it' });
-                await waitThink();
-                const hint = /perhaps to you/.test(seen);
-                return { speaker, yea, cold, warm, answered, hint };
+                return { speaker, yea, cold, warm, named, titled, answered, asked: { askedAnn, enkiYes, annAnswer } };
             } finally {
                 window.fhBrain = brain;
                 Coop.peers.delete(4242);
                 BOT.mode = 'follow';
                 BOT.with = ann ? ann.id : prev.with;
-                BOT.addressed = null;
-                BOT.spokeTo = 0;
                 BOT.waitFor = null;
                 BOT.quiet = prev.quiet;
                 BOT.askedYou = null;
@@ -252,10 +268,11 @@ function holdTraps(ids) {
             mis.speaker.mode === 'follow' && mis.speaker.said.length === 0 && mis.yea.mode === 'follow' && mis.yea.said.length === 0,
             JSON.stringify({ speaker: mis.speaker, yea: mis.yea }));
         check('a yes to its own question goes through with what it said', mis.answered === 'explore', String(mis.answered));
-        check('with two people, "you" right after it spoke reaches the model as maybe for someone else', mis.hint);
-        check('with two people, "you" and no recent address is not for it; a recent one still is',
-            mis.cold.calls === 0 && mis.cold.mode === 'follow' && mis.cold.said === 0 && mis.warm.calls === 1,
-            JSON.stringify({ cold: mis.cold, warm: mis.warm }));
+        check('a question it puts to Ann opens only Ann\'s answer to it, not Enki\'s',
+            mis.asked.askedAnn && mis.asked.enkiYes === 0 && mis.asked.annAnswer === 1, JSON.stringify(mis.asked));
+        check('with two people only its name is for it: not "you", not the line after it spoke, not with one at the title; the name at the end is',
+            mis.cold.calls === 0 && mis.cold.mode === 'follow' && mis.cold.said === 0 && mis.warm.calls === 0 && mis.titled.calls === 0 && mis.named.calls === 1,
+            JSON.stringify({ cold: mis.cold, warm: mis.warm, titled: mis.titled, named: mis.named }));
         const followed = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
             Coop.peers.set(4242, { id: 4242, name: 'Enki', st: 'map', m: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y, bot: 0, hp: 100, mhp: 100, an: 'Enki' });
@@ -574,11 +591,10 @@ function holdTraps(ids) {
 
         const named = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
-            const prev = { mode: BOT.mode, with: BOT.with, addressed: BOT.addressed, spokeTo: BOT.spokeTo, waitFor: BOT.waitFor, quiet: BOT.quiet };
+            const prev = { mode: BOT.mode, with: BOT.with, waitFor: BOT.waitFor, quiet: BOT.quiet };
             const settle = async (pred) => { for (let i = 0; i < 20 && !pred(); i++) await new Promise((r) => setTimeout(r, 100)); };
             Coop.peers.set(4242, { id: 4242, name: 'Enki', an: 'Enki', st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 });
             try {
-                BOT.addressed = null;
                 BOT.mode = 'wait';
                 BOT.with = 0;
                 BOT.waitFor = null;
@@ -587,17 +603,14 @@ function holdTraps(ids) {
                 await settle(() => BOT.mode === 'follow');
                 const darce = { mode: BOT.mode, with: BOT.with };
                 BOT.mode = 'follow';
-                BOT.addressed = { id: ann.id, until: Date.now() + 5000 };
                 Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'Okay, wait here' });
                 await settle(() => BOT.mode === 'wait');
                 const okay = BOT.mode;
                 BOT.mode = 'follow';
-                BOT.addressed = null;
                 Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'Claude can you wait' });
                 await settle(() => BOT.mode === 'wait');
                 const can = BOT.mode;
                 BOT.mode = 'wait';
-                BOT.addressed = null;
                 const asideAt = BOT.aside.length;
                 Coop.emit('heard', { from: ann.id, name: 'Ann', text: 'Claude is slow' });
                 await settle(() => BOT.aside.length > asideAt);
@@ -607,25 +620,21 @@ function holdTraps(ids) {
                 Coop.peers.delete(4242);
                 BOT.mode = 'follow';
                 BOT.with = ann ? ann.id : prev.with;
-                BOT.addressed = null;
-                BOT.spokeTo = 0;
                 BOT.waitFor = null;
                 BOT.quiet = prev.quiet;
                 BOT.aside.splice(0);
             }
         });
-        check('D\'arce, a comma that is not a name, and "can you" reach it; a line about it does not',
-            named.darce.mode === 'follow' && named.darce.with === named.ann && named.okay === 'wait' && named.can === 'wait'
+        check('D\'arce and "Claude can you" reach it; with two people, an unnamed "Okay, wait here" and a line about it do not',
+            named.darce.mode === 'follow' && named.darce.with === named.ann && named.okay === 'follow' && named.can === 'wait'
             && named.about.mode === 'wait' && /Claude is slow/.test(named.about.aside),
             JSON.stringify(named));
 
         const quietBrief = await bot.evaluate(() => {
             const ann = Coop.others().find((p) => !p.bot);
-            const prev = { quiet: BOT.quiet, chantSaid: BOT.chantSaid, addressed: BOT.addressed, spokeTo: BOT.spokeTo };
+            const prev = { quiet: BOT.quiet, chantSaid: BOT.chantSaid };
             BOT.quiet = true;
             BOT.chantSaid = false;
-            BOT.addressed = null;
-            BOT.spokeTo = ann ? ann.id : 1;
             const chantBrief = {
                 turn: 1, you: "D'arce", attack: { weapon: 'Sword' }, skills: [], items: [],
                 allies: [{ i: 0, name: 'Ann', how: 'unhurt', hp: 100, mhp: 100, states: [] }],
@@ -635,21 +644,18 @@ function holdTraps(ids) {
             const before = BOT.lines.length;
             const text = BOT.briefText(chantBrief);
             const said = BOT.lines.slice(before);
-            const addressed = BOT.addressed;
             BOT.quiet = prev.quiet;
             BOT.chantSaid = prev.chantSaid;
-            BOT.addressed = prev.addressed;
-            BOT.spokeTo = prev.spokeTo;
-            return { said, addressed: addressed && addressed.id, line: /The chant comes this turn/.test(text) };
+            return { said, line: /The chant comes this turn/.test(text) };
         });
-        check('building a fight brief does not speak and does not mark the partner as just addressed',
-            quietBrief.said.length === 0 && !quietBrief.addressed && quietBrief.line,
+        check('building a fight brief does not speak',
+            quietBrief.said.length === 0 && quietBrief.line,
             JSON.stringify(quietBrief));
 
         // Two players, two standing orders. The newer one is taken, and both stay visible.
         const weighed = await bot.evaluate(async () => {
             const ann = Coop.others().find((p) => !p.bot);
-            const prev = { mode: BOT.mode, with: BOT.with, waitFor: BOT.waitFor, quiet: BOT.quiet, addressed: BOT.addressed, spokeTo: BOT.spokeTo };
+            const prev = { mode: BOT.mode, with: BOT.with, waitFor: BOT.waitFor, quiet: BOT.quiet };
             const settle = async (pred) => { for (let i = 0; i < 20 && !pred(); i++) await new Promise((r) => setTimeout(r, 100)); };
             const here = { st: 'map', m: $gameMap.mapId(), x: 2, y: 2, bot: 0, hp: 100, mhp: 100 };
             if (Coop.leaveParty) Coop.leaveParty();
@@ -685,8 +691,6 @@ function holdTraps(ids) {
                 BOT.mode = 'follow';
                 BOT.with = ann ? ann.id : prev.with;
                 BOT.waitFor = null;
-                BOT.addressed = null;
-                BOT.spokeTo = 0;
                 BOT.quiet = prev.quiet;
                 if (BOT.aside) BOT.aside.splice(0);
             }
@@ -727,8 +731,6 @@ function holdTraps(ids) {
                 BOT.mode = 'follow';
                 BOT.with = ann ? ann.id : 0;
                 BOT.waitFor = null;
-                BOT.addressed = null;
-                BOT.spokeTo = 0;
             }
         });
         check('told to wait by the second player, it follows that player when the wait ends',

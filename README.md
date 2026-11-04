@@ -81,7 +81,7 @@ It joins as whichever character nobody has taken, and plays them: it walks with 
 
 ### What runs it
 
-Pick it in the game: **How it thinks** in the Together panel (F8 opens the same panel when nothing is found). Choose one, paste a key if it needs one, and the model list fills from the service itself, fastest first; the key and model are checked with one short question before anything is kept. The pick and the keys stay on this PC in `app\data\partner-mind.json`.
+Pick it in the game: **How it thinks** in the Together panel (F8 opens the same panel when nothing is found). Choose one, paste a key if it needs one, and the model list fills from the service itself, fastest first; the key and model are checked with one short question before anything is kept. **Plays as** in the same panel picks its character (D'arce, Cahara, Enki or Ragnvaldr); one somebody already plays gives way to a free one. The picks and the keys stay on this PC in `app\data\partner-mind.json`.
 
 | Choice | What it needs | Speed and cost |
 |---|---|---|
@@ -103,7 +103,7 @@ Without a pick it finds its own: Claude Code, else an Anthropic key, else a key 
 | `effort` | How hard the model thinks: `low` (default) to `high`. Higher is slower. Services that don't take it are asked without it. |
 | `url`, `key` | `key`: the service's key (a key pasted at F8 is kept apart, in `app\data\partner-mind.json`). `url`: for `openai`, another service's address. |
 | `name` | What it is called in the game. Default `Claude`. |
-| `character` | `knight`, `mercenary`, `priest` or `outlander`, if it is free. |
+| `character` | `knight`, `mercenary`, `priest` or `outlander`, if it is free. **Plays as** in the game wins over this. |
 | `follow` | The name of the player it sticks with, when there are several of you. |
 
 The same options work on the command line, which overrides the file: `node tools/bot.js --model sonnet --char priest`.

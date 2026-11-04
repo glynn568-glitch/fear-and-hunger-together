@@ -256,6 +256,44 @@ const TWINS = {
         suite: 'scroll', file: 'client/chat.js',
         find: "const text = String(msg.text || '').trim().slice(0, 200);", put: "const text = String(msg.text || '').slice(0, 200);",
     },
+    'load-fade': {
+        why: 'his 11/03: Continue from a fresh page into a run under way read the title\'s map for a shelf\'s home, the join threw, Enki stood "at the title"',
+        suite: 'loadfade', file: 'client/state.js',
+        find: 'return !!(window.$gameMap && window.$dataMap && $dataMap.events && dataMapId === $gameMap.mapId());',
+        put: 'return !!(window.$gameMap && window.$dataMap && $dataMap.events);',
+    },
+    'title-ghost': {
+        why: 'his 11/03: a join that broke kept Enki in the run for good, and pho could not load his own save',
+        suite: 'ghost', file: 'room.js',
+        find: "if (peer.live && msg.st === 'title') {", put: 'if (false) {',
+    },
+    'named-only': {
+        why: 'his 11/03 ("only answer when named"): with Enki at the title the partner counted one person and answered every line',
+        suite: 'plain', file: 'tools/bot-page.js',
+        find: 'if (humans().filter((p) => p.st).length >= 2)', put: "if (humans().filter((p) => p.st && p.st !== 'title').length >= 2)",
+    },
+    'plays-pick': {
+        why: 'his 11/03: pick who the partner plays',
+        suite: 'setup', file: 'partners.js',
+        find: 'const free = CAST.find((c) => c[0] === want && !used.has(c[1])) || CAST.find((c) => !used.has(c[1]));',
+        put: 'const free = CAST.find((c) => !used.has(c[1]));',
+    },
+    'plays-home': {
+        why: 'his 11/03 pick: a body sent home of another character came back instead of the one picked',
+        suite: 'plays', file: 'partners.js',
+        find: 'if (home && want && this.cast.get(home) && this.cast.get(home) !== want) {', put: 'if (false) {',
+    },
+    'plays-name': {
+        why: 'Grok 11/03: under a configured name, another pick took the parked body\'s name, read its park and spent it',
+        suite: 'plays', file: 'partners.js',
+        find: '            taken = new Set([...taken, home.toLowerCase()]);\n', put: '',
+    },
+    'ask-owner': {
+        why: 'Grok 11/03: its question opened the reply window for whoever spoke to it last, not the one it asked',
+        suite: 'plain', file: 'tools/bot-page.js',
+        find: 'if (to && /\\?/.test(text)) BOT.askedYou = { id: to, until: Date.now() + 15000 };',
+        put: 'if (/\\?/.test(text)) BOT.askedYou = { id: 0, until: Date.now() + 15000 };',
+    },
 };
 
 // The twin's source for `file` (repo-relative, forward slashes), or null when the twin is not for it.

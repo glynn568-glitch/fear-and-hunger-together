@@ -57,7 +57,12 @@ Coop.emit = function (type, msg) {
     const list = Coop._handlers[type];
     if (!list) return;
     for (const fn of list) {
-        try { fn(msg); } catch (e) { console.error('[coop] handler for ' + type + ' failed', e); Coop.note('script error in the ' + type + ' handler: ' + (e && (e.stack || e.message) || e)); }
+        try { fn(msg); } catch (e) {
+            console.error('[coop] handler for ' + type + ' failed', e);
+            Coop.note('script error in the ' + type + ' handler: ' + (e && (e.stack || e.message) || e));
+            // A join that broke halfway would leave this player playing alone without knowing.
+            if (type === 'world' && Coop.toast) Coop.toast('Joining failed. Go back to the title and Continue again.', 20000);
+        }
     }
 };
 

@@ -17,7 +17,7 @@ module.exports = function installBot(options) {
     const STORY = { knight: "D'arce", outlander: 'Ragnvaldr', priest: 'Enki', mercenary: 'Cahara' };
     const CALLED = STORY;
     const THINK_LIMIT = 20000; // ms a fight turn waits for the model before falling back
-    const QUIET = 45000; // ms between unprompted remarks
+    const QUIET = 180000; // ms between unprompted remarks
     const NOTE_GAP = 9000; // ms between batches of things that happened
     const SIGHT = 8; // tiles: what counts as around it, and how far a goal may pull it from the leader
     const GOAL_LEASH = 8;
@@ -25,7 +25,7 @@ module.exports = function installBot(options) {
     const BOT = window.BOT = {
         said: '', wanted: options.character || '', joinedAt: 0, lastHop: 0, stuck: 0, lastPress: 0, character: '',
         mode: 'follow', errand: null, goal: null, journal: [], beenMaps: new Set(), notes: [], aside: [], lastNoteAt: 0, lastSpokeAt: 0, thinking: 0, picks: [], lines: [],
-        with: 0, waitFor: null, fightOrder: null, orders: {}, orderFrom: 0, addressed: null, spokeTo: 0, wasDead: false, deadSilent: false, lastBrief: null,
+        with: 0, waitFor: null, fightOrder: null, orders: {}, orderFrom: 0, wasDead: false, deadSilent: false, lastBrief: null,
         language: 'English',
     };
     if (options.follow) BOT.withName = options.follow;
@@ -94,15 +94,17 @@ module.exports = function installBot(options) {
         return Promise.race([ask, late]).finally(() => { BOT.thinking--; });
     }
 
-    function speak(text, prompted) {
+    // to: the person this answers; a question in it opens their reply to it.
+    function speak(text, prompted, to) {
         text = String(text || '').trim();
         if (!text || BOT.deadSilent) return;
         // Off on its own, what it finds is worth hearing sooner.
-        const gap = BOT.mode === 'explore' ? 15000 : QUIET;
+        const gap = BOT.mode === 'explore' ? 60000 : QUIET;
         if (!prompted && (BOT.quiet || Date.now() - BOT.lastSpokeAt < gap)) return;
         BOT.lastSpokeAt = Date.now();
         BOT.lines.push(text);
-        if (/\?/.test(text)) BOT.askedYou = { id: BOT.spokeTo || 0, until: Date.now() + 5000 };
+        // A question put to someone: their answer, named or not, is for it for a while.
+        if (to && /\?/.test(text)) BOT.askedYou = { id: to, until: Date.now() + 15000 };
         console.log('[bot] says: ' + text);
         Coop.say(text);
     }
@@ -805,8 +807,6 @@ module.exports = function installBot(options) {
         }
         log('joining ' + who.name + ' as the ' + name);
         if (window.fhBrainCharacter) window.fhBrainCharacter(name);
-        note('You have just joined ' + who.name + ' in the dungeon, as the ' + name + '. Greet them in a few words.');
-        BOT.lastNoteAt = 0;
         return true;
     };
 
@@ -1049,8 +1049,8 @@ module.exports = function installBot(options) {
             const pick = fromModel && !idle ? fromModel : fallbackPick(brief);
             if (fromModel && !idle) spendFightOrder(brief, fromModel);
             BOT.picks.push({ ms: Date.now() - t0, pick, model: !!fromModel && !idle, overruled: idle });
-            // A word in a fight now and then, not every turn.
-            if (r && r.say && Date.now() - BOT.lastSpokeAt > 25000) speak(r.say, true);
+            // A word in a fight is a remark like any other: the same gap, and "quiet" holds it.
+            if (r && r.say) speak(r.say, false);
             return pick;
         });
     }
@@ -1181,8 +1181,15 @@ module.exports = function installBot(options) {
         // Same letters the names are reduced to, so "D'arce" and "darce" are one word.
         return String(text || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
     }
-    function nameAlt() {
-        return namesOfMine().map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    // Names it answers to anywhere in a line: not its role word ("the priest is dead" calls nobody),
+    // and not a name someone else here goes by (a priest partner, story name Enki, beside a player Enki).
+    function callNames() {
+        const role = normName(BOT.character);
+        const others = new Set(Coop.others().map((p) => normName(p.name)));
+        return namesOfMine().filter((n) => !(role && role.indexOf(n) === 0) && !others.has(n));
+    }
+    function nameAlt(names) {
+        return (names || namesOfMine()).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
     }
     // "Claude is slow" talks about this partner. "Claude, ..." does not.
     function aboutMe(text) {
@@ -1193,12 +1200,10 @@ module.exports = function installBot(options) {
         const t = lineWords(raw);
         return new RegExp('(?:^|\\b)(' + alt + ')(?:\\s+|\'s\\s*)(is|was|seems|seemed|looks|looked|has|had|cannot)\\b', 'i').test(t);
     }
+    // Its name anywhere in the line: "shut up claude" names it as much as "claude, shut up".
     function callsMe(text) {
-        const t = lineWords(text);
-        // 'you' with no name. Two people talking, that word is not this partner unless they just were.
-        if (/^you\b/.test(t) && !/^your\b/.test(t) && !/^you're\b/.test(t) && !/^you re\b/.test(t)) return 'you';
-        const alt = nameAlt();
-        return !!alt && new RegExp('^(?:hey |ok |yo |oi )?(' + alt + ')\\b', 'i').test(t);
+        const alt = nameAlt(callNames());
+        return !!alt && new RegExp('(?:^|\\s)(' + alt + ')\\b', 'i').test(lineWords(text));
     }
     function callsOther(text) {
         const raw = String(text || '').trim();
@@ -1214,26 +1219,14 @@ module.exports = function installBot(options) {
         const lead = Coop.partyLeader && Coop.peers.get(Coop.partyLeader);
         return !!(lead && lead.st === 'battle' && lead.br === 'g');
     }
-    function maybeOther(text) {
-        return callsMe(text) === 'you' && humans().filter((p) => p.st && p.st !== 'title').length >= 2;
-    }
-    // Meant for this partner: "you", its name or a short form of it, or the person it just spoke to.
-    function recentlyAddressed(peer) {
-        return !!(BOT.addressed && peer && BOT.addressed.id === peer.id && Date.now() < BOT.addressed.until);
-    }
+    // Meant for this partner: its name, or a short form of it. With two or more people connected
+    // (one at the title still talks), nothing else is, but an answer to a question it just put to
+    // that person. Alone with it, every line is for it.
     function forMe(text, peer) {
         if (aboutMe(text)) return false;
-        const called = callsMe(text);
-        if (called === 'you') {
-            const people = humans().filter((p) => p.st && p.st !== 'title');
-            if (people.length >= 2) return recentlyAddressed(peer);
-            return true;
-        }
-        if (called) return true;
-        if (callsOther(text)) return false;
-        if (recentlyAddressed(peer)) return true;
-        const people = humans().filter((p) => p.st && p.st !== 'title');
-        return people.length <= 1;
+        if (callsMe(text)) return true;
+        if (humans().filter((p) => p.st).length >= 2) return !!(BOT.askedYou && peer && BOT.askedYou.id === peer.id && Date.now() < BOT.askedYou.until);
+        return !callsOther(text);
     }
     function orderTaken(r) {
         if (!r) return 'no order';
@@ -1275,14 +1268,12 @@ module.exports = function installBot(options) {
             BOT.aside.push(msg.name + ': "' + String(msg.text).slice(0, 200) + '"');
             return;
         }
-        BOT.spokeTo = peer.id;
-        BOT.addressed = { id: peer.id, until: Date.now() + 5000 };
         const heardAt = Date.now();
         const tongue = tongueAsked(msg.text);
         if (tongue && tongue !== BOT.language) { BOT.language = tongue; log('speaking ' + tongue + ', told by ' + peer.name); }
         const fromWords = plainReply(msg.text);
         const pending = BOT.notes.splice(0);
-        let text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + (maybeOther(msg.text) ? ' says, perhaps to you, perhaps to someone else here (if not to you, {"say":""}): "' : ' says to you: "') + msg.text + '"';
+        let text = (pending.length ? 'Recently: ' + pending.join(' / ') + '\n' : '') + situation() + '\n' + msg.name + ' says to you: "' + msg.text + '"';
         const fight = fightContext();
         if (fight) text += '\nThe fight right now:\n' + fight;
         think('chat', text).then(function (r) {
@@ -1313,9 +1304,7 @@ module.exports = function installBot(options) {
             if (!named && r.say) r.say = addressSay(peer, r.say);
             obey(r, peer);
             if (r.goal && !r.order && !r.give && !inFight()) acceptGoal(r.goal);
-            // A reply keeps their next line, for a few seconds. Anything else said does not.
-            if (r.say) BOT.addressed = { id: peer.id, until: Date.now() + 5000 };
-            speak(r.say, true);
+            speak(r.say, true, peer.id);
         });
     });
 
@@ -2351,8 +2340,6 @@ module.exports = function installBot(options) {
         if (BOT.cameBack && scene instanceof Scene_Map && scene.isActive()) {
             BOT.cameBack = '';
             becameCharacter();
-            note('You are back with your partner in a run you have played before, as the ' + BOT.character + '. Say so in a few words.');
-            BOT.lastNoteAt = 0;
         }
         if (BOT.needStart && scene instanceof Scene_Map && scene.isActive() && !$gamePlayer.isTransferring()) {
             BOT.needStart = false;

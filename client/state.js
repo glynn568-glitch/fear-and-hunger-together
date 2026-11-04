@@ -237,6 +237,55 @@
         }
     }
 
+    // Which map $dataMap holds. A loaded save restores $gameMap at once, but
+    // its map file loads only after the fade: until then $dataMap is the
+    // title's map (72) or the last one played, and an event's home or page
+    // read from it belongs to another map. A world reply landing in that
+    // window is owed to the map until its file is in.
+    let dataMapId = 0;
+    const _loadMapData = DataManager.loadMapData;
+    DataManager.loadMapData = function (mapId) {
+        dataMapId = mapId;
+        _loadMapData.call(this, mapId);
+    };
+    function mapReady() {
+        return !!(window.$gameMap && window.$dataMap && $dataMap.events && dataMapId === $gameMap.mapId());
+    }
+    const owedEl = new Set(); // event ids on map owedMap, to place once its file is in
+    let owedMap = 0;
+    let owedStop = false;
+
+    function placeHere(eventId, pos) {
+        if (mapReady()) return placeEl(eventId, pos);
+        if (owedMap !== $gameMap.mapId()) owedEl.clear();
+        owedMap = $gameMap.mapId();
+        owedEl.add(eventId);
+        return false;
+    }
+
+    function payOwed() {
+        if (!mapReady()) return;
+        const mapId = $gameMap.mapId();
+        // A load given up before its map came in: those were another map's.
+        if (owedMap !== mapId) owedEl.clear();
+        for (const eventId of owedEl) {
+            const pos = World.el[mapId + ',' + eventId];
+            placeEl(eventId, pos || null);
+            if (!pos && $gameSystem._savedEventLocations) delete $gameSystem._savedEventLocations[[mapId, eventId]];
+        }
+        owedEl.clear();
+        if (owedStop) {
+            owedStop = false;
+            if (stopDueRunning()) $gameMap.requestRefresh();
+        }
+    }
+
+    const _keptMapLoaded = Scene_Map.prototype.onMapLoaded;
+    Scene_Map.prototype.onMapLoaded = function () {
+        _keptMapLoaded.call(this);
+        payOwed();
+    };
+
     function placeEl(eventId, pos) {
         const ev = $gameMap.event(eventId);
         if (!ev || ev._locked || ev._starting) return false;
@@ -272,7 +321,7 @@
             const had = !!World.el[key];
             delete World.el[key];
             // setDirection writes the spot back; drop that after the snap home.
-            if ($gameMap && $gameMap.mapId() === mapId) placeEl(eventId, null);
+            if ($gameMap && $gameMap.mapId() === mapId) placeHere(eventId, null);
             if ($gameSystem && $gameSystem._savedEventLocations) delete $gameSystem._savedEventLocations[[mapId, eventId]];
             return had;
         }
@@ -288,7 +337,7 @@
         }
         let moved = false;
         // The same spot again is a reconnect's full table, not a move: whatever walked it since stands.
-        if (!same && $gameMap && $dataMap && $gameMap.mapId() === mapId) moved = placeEl(eventId, [x, y, d]);
+        if (!same && $gameMap && $gameMap.mapId() === mapId) moved = placeHere(eventId, [x, y, d]);
         return moved || !same;
     }
 
@@ -332,6 +381,10 @@
     const _keptMapSetup = Game_Map.prototype.setup;
     Game_Map.prototype.setup = function (mapId) {
         if (mapId !== this._mapId) flushPending(true);
+        // Fresh events take their spots from the saved table, which already holds the owed ones,
+        // and a scene stop owed to the old map is not the new one's to judge.
+        owedEl.clear();
+        owedStop = false;
         _keptMapSetup.call(this, mapId);
     };
 
@@ -503,7 +556,7 @@
     // A latch that means "a fight just ended and a scene is due" (census.dueScenes).
     function duePage(ev) {
         // A save loading: the events stand there before their map's data does.
-        const page = ev && window.$dataMap && $dataMap.events && ev.event() ? ev.page() : null;
+        const page = ev && mapReady() && ev.event() ? ev.page() : null;
         const ids = World.census && World.census.dueScenes;
         if (!page || !ids || !ids.length) return false;
         const c = page.conditions;
@@ -526,9 +579,9 @@
     };
     // A save taken in the middle of one of these: joining must not finish it.
     function stopDueRunning() {
-        // The world reply can land while the map file is still loading. event()
-        // reads $dataMap.events, and that throw used to abort the rest of the handler.
-        if (!window.$gameMap || !$gameMap._events || !window.$dataMap || !$dataMap.events) return false;
+        // The world reply can land while the map file is still loading: the
+        // pages are judged once it is in, before the first map update runs them.
+        if (!mapReady()) { owedStop = true; return false; }
         let stopped = false;
         const halt = (interp, ev) => {
             if (!interp || !interp.isRunning() || !duePage(ev)) return;

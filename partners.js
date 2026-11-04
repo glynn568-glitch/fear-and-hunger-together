@@ -18,6 +18,7 @@ class Partners {
         this.port = port;
         this.given = String((settings.partner && settings.partner.name) || '').replace(/[^\w \-']/g, '').trim().slice(0, 16);
         this.base = this.given && this.given.toLowerCase() !== 'claude' ? this.given : 'Claude';
+        this.plays = String((settings.partner && settings.partner.character) || '').toLowerCase(); // settings.json; the panel's pick wins
         this.running = new Map(); // name -> child process
         this.leaving = new Set(); // sent home, not gone yet
         this.home = []; // sent home, newest last. The next call resumes one whose body is still parked.
@@ -56,14 +57,15 @@ class Partners {
     nextName(taken) { return this.freeName(this.base, taken); }
 
     // A character nobody here already is, including one just spawned whose switch has not been published yet.
-    castPick(initials) {
+    castPick(initials, want) {
         const used = new Set(initials || []);
         for (const [name, char] of this.cast) {
             if (!char || (!this.running.has(name) && !this.leaving.has(name))) continue;
             const row = CAST.find((c) => c[0] === char);
             if (row) used.add(row[1]);
         }
-        const free = CAST.find((c) => !used.has(c[1]));
+        // The one the host picked, if nobody here plays it; else the first free.
+        const free = CAST.find((c) => c[0] === want && !used.has(c[1])) || CAST.find((c) => !used.has(c[1]));
         return free ? free[0] : '';
     }
 
@@ -86,18 +88,25 @@ class Partners {
     // Returns why not, or ''. initials: character switches already in the room (661-664).
     start(taken, initials) {
         if (this.running.size >= MAX) return 'There is no room for another partner: four characters at most.';
-        const home = this.homeName(taken);
+        const want = require('./tools/brain').savedMind().plays || this.plays;
+        let home = this.homeName(taken);
+        // Another character picked in the panel since this one went home: that one, fresh, under
+        // another name. The body keeps its name and its park, for when its character is picked again.
+        if (home && want && this.cast.get(home) && this.cast.get(home) !== want) {
+            taken = new Set([...taken, home.toLowerCase()]);
+            home = '';
+        }
         let name = home;
         let char = home ? (this.cast.get(home) || '') : '';
         // A configured name is kept. Blank or "Claude" means the character's own name.
         if (!name && this.base === 'Claude') {
-            char = this.castPick(initials);
+            char = this.castPick(initials, want);
             const story = this.storyName(char);
             name = story ? this.freeName(story, taken) : '';
             if (!name) { name = this.nextName(taken); char = ''; }
         } else if (!name) {
             name = this.nextName(taken);
-            char = '';
+            char = want ? this.castPick(initials, want) : '';
         }
         if (!name) return 'No free name for another partner.';
         if (char) this.cast.set(name, char);
