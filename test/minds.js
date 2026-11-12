@@ -90,6 +90,15 @@ process.env.FH_HERMES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'fh-hermes-'))
         c.close();
         camel = false;
 
+        // A model that stops answering (11/11: a plan out of usage, asked every 9 s for 44 minutes in silence).
+        const told = [];
+        const dead = brain.createBrain(Object.assign({}, d, { url: 'http://127.0.0.1:9', name: 'Claude', character: 'mercenary', log: () => {}, onDown: (why) => told.push(why) }));
+        for (let i = 0; i < 3; i++) await dead.ask('chat', 'Your partner says: "hello"');
+        const before = dead.stats.asked;
+        const quiet = await dead.ask('chat', 'Your partner says: "hello"');
+        check('a model that failed three times in a row is left alone for a while, and its player is told once', told.length === 1 && quiet === null && dead.stats.asked === before, JSON.stringify({ told, asked: dead.stats.asked, before }));
+        dead.close();
+
         const thought = brain.parseReply('<think>\nThe partner wants...\n</think>\n{"say":"Fine."}');
         const bare = brain.parseReply('<think> </think> "Ann! I owe you this."');
         check('a local reasoning model\'s <think> block never reaches the screen (Qwen in LM Studio, 10/23)', thought.say === 'Fine.' && !/think/.test(bare.say), JSON.stringify([thought, bare]));

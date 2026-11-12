@@ -1013,6 +1013,11 @@ function createBrain(options) {
     const queue = []; // { kind, text, resolve }
     let busy = false;
     const stats = { asked: 0, failed: 0, ms: [] };
+    // A model that stops answering (a plan out of usage, a dead login) is left alone
+    // for a while, longer each time, and its player is told once (field 11/11: 196
+    // calls into a spent plan, one every 9 s for 44 minutes, and not a word in the chat).
+    const DOWN_AFTER = 3, DOWN_FIRST = 60000, DOWN_MOST = 600000;
+    let failsInRow = 0, downUntil = 0, toldDown = false;
 
     function pump() {
         while (queue.length && Date.now() - queue[0].at > (SHELF[queue[0].kind] || 60000)) queue.shift().resolve(null);
@@ -1027,10 +1032,19 @@ function createBrain(options) {
             const reply = parseReply(text);
             if (reply && reply.say) reply.say = tidy(reply.say);
             if (o.verbose) o.log(job.kind + ' answered in ' + (Date.now() - t0) + ' ms: ' + String(text).slice(0, 200));
+            failsInRow = 0;
+            if (toldDown) { toldDown = false; o.log('the model answers again'); if (o.onUp) o.onUp(); }
             job.resolve(reply);
         }, function (e) {
             stats.failed++;
             o.log('the model failed (' + job.kind + '): ' + e.message);
+            if (++failsInRow >= DOWN_AFTER) {
+                const rest = Math.min(DOWN_MOST, DOWN_FIRST * Math.pow(2, failsInRow - DOWN_AFTER));
+                downUntil = Date.now() + rest;
+                o.log('leaving the model alone for ' + Math.round(rest / 1000) + ' s');
+                while (queue.length) queue.shift().resolve(null);
+                if (!toldDown) { toldDown = true; if (o.onDown) o.onDown(String(e.message || e).slice(0, 120)); }
+            }
             job.resolve(null);
         }).then(function () { busy = false; pump(); });
     }
@@ -1041,7 +1055,7 @@ function createBrain(options) {
         stats,
         // Resolves with the model's answer as an object, or null.
         ask(what, text) {
-            if (!provider) return Promise.resolve(null);
+            if (!provider || Date.now() < downUntil) return Promise.resolve(null);
             return new Promise(function (resolve) {
                 if (what === 'note') {
                     // Remarks that pile up while the model is busy become one.

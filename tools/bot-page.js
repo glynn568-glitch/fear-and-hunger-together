@@ -311,8 +311,9 @@ module.exports = function installBot(options) {
     // What roams near it: the game's chasing events (they start a fight on
     // touch), named as the map names them, with how far off they are.
     function enemiesInSight() {
-        // Between maps the old events are still listed but the map's data is not loaded.
-        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];
+        // Between maps the old events are still listed while $dataMap is not loaded, or is the next map.
+        // (A timer reads this: once mid-transfer it hit an event id the next map has not got, a crash.)
+        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map) || $gamePlayer.isTransferring()) return [];
         const out = [];
         for (const ev of $gameMap.events()) {
             if (ev._erased || ev._trigger !== 2 || !ev.characterName() || ev.isTransparent()) continue;
@@ -410,7 +411,7 @@ module.exports = function installBot(options) {
     // What is in sight on this map: nearest first, a handful. The nearest unsearched
     // container and the nearest circle stay on the list, so a row of doors cannot hide them.
     function sightList() {
-        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];
+        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map) || $gamePlayer.isTransferring()) return [];
         if ($gameMap.mapId()) BOT.beenMaps.add($gameMap.mapId());
         const pool = [];
         const seen = new Set();
@@ -1512,6 +1513,32 @@ module.exports = function installBot(options) {
             BOT.calledAt = Date.now();
             return;
         }
+        // The question that sends the one in the way off: the answer that does it and touches the least.
+        const clear = clearChoice();
+        if (clear >= 0) {
+            win.select(clear);
+            if (win.isCurrentItemEnabled()) { win.processOk(); log('took "' + choices[clear] + '" so they move'); return; }
+        }
+        // On a trip through a way that asks first (the Blood pit's hole): the choice that goes there.
+        const way = wayChoice();
+        if (way >= 0) {
+            win.select(way);
+            if (win.isCurrentItemEnabled()) { win.processOk(); log('took "' + choices[way] + '" on the way'); return; }
+        }
+        const door = doorChoice();
+        if (door !== null) {
+            if (door >= 0) {
+                win.select(door);
+                if (win.isCurrentItemEnabled()) { win.processOk(); log('took "' + choices[door] + '" at a locked door'); return; }
+            }
+            // Nothing here opens it: the last answer (Leave), and the door is a wall for a while.
+            Nav.banned.set(BOT.door.key, Date.now() + 60000);
+            BOT.door = null;
+            log('a door here will not open for me');
+            win.select(choices.length - 1);
+            win.processOk();
+            return;
+        }
         // The same question again and again (a shop, a lever): the way out, the last choice.
         // Once answered, that menu is not asked again and not said again. "Leave him" was.
         // Only this thing's menu, for a few minutes: another body with the same words gets its own answer.
@@ -1560,6 +1587,108 @@ module.exports = function installBot(options) {
         });
     }
 
+    // The question open now belongs to the way this trip (or a door goal) goes through: the
+    // choice whose branch transfers straight to that map, with no fight or other question
+    // first (a corpse pile's "Search" wakes the Beheaded wizard; only escaping him moves you). -1: none.
+    function wayChoice() {
+        const here = $gameMap.mapId(), evId = $gameMap._interpreter.eventId();
+        const e = BOT.errand, g = BOT.goal;
+        const hop = e && e.plan && e.plan.hops.find((h) => h.map === here && h.ev === evId);
+        const to = hop ? hop.to : g && g.kind === 'door' && g.map === here && g.ev === evId ? g.to : 0;
+        if (!to) return -1;
+        for (const b of openQuestion() || []) {
+            for (const c of b.cmds) {
+                if (c.code === 301 || c.code === 102) break;
+                if (c.code === 201 && c.parameters[0] === 0 && c.parameters[1] === to) return b.shown;
+            }
+        }
+        return -1;
+    }
+
+    // The question the circle trip walked up to (errand clearing): of the free answers (costsNothing)
+    // that turn on a switch sending the one in the way off, the one turning the fewest switches.
+    // Nosramus: "Wait for the person to walk away" (1294 only), not "Show yourself", which also marks
+    // him met (2126) for everyone. -1: not that question.
+    function clearChoice() {
+        const c = BOT.errand && BOT.errand.kind === 'circle' && BOT.errand.clearing;
+        if (!c || c.doneAt || c.map !== $gameMap.mapId() || c.ev !== $gameMap._interpreter.eventId()) return -1;
+        const changes = (cmds) => cmds.filter((x) => x.code === 121 || x.code === 123).length;
+        const ok = (openQuestion() || []).filter((b) => b.shown >= 0 && costsNothing(b.cmds)
+            && b.cmds.some((x) => x.code === 121 && x.parameters[2] === 0 && c.sws.some((s) => s >= x.parameters[0] && s <= x.parameters[1])));
+        ok.sort((a, b) => changes(a.cmds) - changes(b.cmds));
+        return ok.length ? ok[0].shown : -1;
+    }
+
+    // The locked door this circle trip is opening (openDoorAhead pressed it): a lockpick first, then
+    // force (a door never strikes back), and only once forcing failed, a key or vial it would spend.
+    // null: not that door's question; -1: nothing offered opens it.
+    function doorChoice() {
+        const d = BOT.door;
+        if (!d || !BOT.errand || BOT.errand.kind !== 'circle' || d.key !== 'door' + $gameMap.mapId() + ':' + $gameMap._interpreter.eventId()) return null;
+        const ways = (openQuestion() || []).map((b) => ({ i: b.shown, way: doorWay(b.cmds) })).filter((o) => o.i >= 0 && o.way);
+        const pick = (w) => ways.find((o) => o.way === w);
+        const o = pick('open') || (d.forced ? pick('item') || pick('force') : pick('force') || pick('item'));
+        if (o && o.way === 'force') d.forced = true;
+        return o ? o.i : -1;
+    }
+
+    // The question open now, as the page's commands: each answer's branch and where it is on screen (-1: not shown).
+    function openQuestion() {
+        let it = $gameMap._interpreter;
+        while (it._childInterpreter && it._childInterpreter.isRunning()) it = it._childInterpreter;
+        const list = it._list || [];
+        let at = Math.min(it._index, list.length) - 1;
+        while (at >= 0 && list[at].code !== 102) at--;
+        if (at < 0) return null;
+        const shown = $gameMessage.choices();
+        return choiceBranches(list, at).map((b) => {
+            const i = shown.indexOf(b.text);
+            return Object.assign(b, { shown: i >= 0 ? i : shown.length === list[at].parameters[0].length ? b.n : -1 });
+        });
+    }
+
+    // The answers of the question at list[at]: { n, text, cmds (everything its branch runs) }.
+    function choiceBranches(list, at) {
+        const k = list[at].indent, out = [];
+        for (let j = at + 1; j < list.length && list[j].indent >= k; j++) {
+            const c = list[j];
+            if (c.indent === k) {
+                if (c.code !== 402) break;
+                out.push({ n: c.parameters[0], text: c.parameters[1], cmds: [] });
+            } else if (out.length) out[out.length - 1].cmds.push(c);
+        }
+        return out;
+    }
+
+    // What an answer at a locked door does: 'open' (a lockpick swings it open), 'item' (opens it and
+    // spends a key or a vial), 'force' (a fight with the door itself, whose enemies never act; winning
+    // opens it, losing only says "not strong enough"), or null. An answer that takes one elsewhere
+    // (the School's "Return to your dormitory!") is a scene, not a lock. What sits behind "if the
+    // party has X" counts only when it does (Map024's doors open only with the Cube of the depths).
+    function doorWay(all) {
+        if (all.some((c) => c.code === 201)) return null;
+        const cmds = [], state = []; // state[i]: the branch under the condition at indent i is taken now (false: not)
+        for (const c of all) {
+            const d = c.indent;
+            state.length = d + 1;
+            if (c.code === 411) { if (state[d] !== undefined) state[d] = !state[d]; continue; }
+            if (c.code === 412) { state[d] = undefined; continue; }
+            const taken = state.slice(0, d).every((s) => s !== false);
+            state[d] = c.code === 111 && c.parameters[0] >= 8 && c.parameters[0] <= 10
+                ? $gameParty.hasItem([$dataItems, $dataWeapons, $dataArmors][c.parameters[0] - 8][c.parameters[1]], c.parameters[0] !== 8 && !!c.parameters[2])
+                : undefined;
+            if (taken) cmds.push(c);
+        }
+        const opens = cmds.some((c) => (c.code === 205 && c.parameters[1].list.some((m) => m.code === 27)) || (c.code === 121 && c.parameters[2] === 0) || (c.code === 123 && c.parameters[1] === 0));
+        const fights = cmds.filter((c) => c.code === 301);
+        if (fights.length) {
+            const harmless = fights.every((c) => c.parameters[0] === 0 && $dataTroops[c.parameters[1]] && $dataTroops[c.parameters[1]].members.every((m) => $dataEnemies[m.enemyId] && !$dataEnemies[m.enemyId].actions.length));
+            return harmless && opens ? 'force' : null;
+        }
+        if (!opens) return null;
+        return cmds.some((c) => c.code === 126 && c.parameters[1] === 1) ? 'item' : 'open';
+    }
+
     //--- walking ----------------------------------------------------------------
 
     const Nav = BOT.nav = { maps: new Map(), banned: new Map() };
@@ -1597,18 +1726,39 @@ module.exports = function installBot(options) {
         return [v === n, v >= n, v <= n, v > n, v < n, v !== n][p[4]];
     }
 
+    // The page an event shows now: on this map the live event's (none once erased),
+    // on another map by this run's switches. null: no page.
+    function pageNow(data, ev, mapId) {
+        const live = mapId === $gameMap.mapId() && data === $dataMap && $gameMap.event(ev.id);
+        if (live) return live._erased ? null : live.page() || null;
+        for (let i = ev.pages.length - 1; i >= 0; i--) if (Game_Event.prototype.meetsConditions.call({ _mapId: mapId, _eventId: ev.id }, ev.pages[i])) return ev.pages[i];
+        return null;
+    }
+
     Nav.exits = function (data, mapId) {
         const out = [];
         if (!data || !data.events) return out;
         for (const ev of data.events) {
             if (!ev) continue;
+            const now = pageNow(data, ev, mapId);
+            // Nothing there now (the Blood pit's hole once someone has gone down: the mechanism beside it is the way).
+            if (!now || !now.list.some((c) => c.code && c.code !== 108 && c.code !== 408)) continue;
+            // Its page now goes somewhere: that is where. Else, if it can turn another page on (a door, by its own
+            // move route or a switch), any page might. A page that only talks goes nowhere.
+            const pages = now.list.some((c) => c.code === 201) ? [now] : now.list.some((c) => (c.code >= 121 && c.code <= 123) || c.code === 117 || c.code === 205) ? ev.pages : [];
             const seen = new Set();
-            for (const page of ev.pages) for (const c of reachable(page.list)) {
-                if (c.code !== 201 || c.parameters[0] !== 0 || c.parameters[1] === mapId) continue;
-                const key = c.parameters[1];
-                if (seen.has(key)) continue;
-                seen.add(key);
-                out.push({ ev: ev.id, x: ev.x, y: ev.y, to: c.parameters[1], tx: c.parameters[2], ty: c.parameters[3] });
+            for (const page of pages) {
+                // A transfer after a fight is where the fight leaves you, not a way through
+                // (a corpse pile on the Blood pit: lose to the Beheaded wizard and wake in the Inner hall).
+                let fought = false;
+                for (const c of reachable(page.list)) {
+                    if (c.code === 301) fought = true;
+                    if (fought || c.code !== 201 || c.parameters[0] !== 0 || c.parameters[1] === mapId) continue;
+                    const key = c.parameters[1];
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    out.push({ ev: ev.id, x: ev.x, y: ev.y, to: c.parameters[1], tx: c.parameters[2], ty: c.parameters[3] });
+                }
             }
         }
         return out;
@@ -1626,24 +1776,199 @@ module.exports = function installBot(options) {
         return out;
     };
 
-    // Fewest doors from here to a map that `isGoal` accepts.
-    Nav.plan = async function (isGoal) {
+    // The parts of a map one can walk between: each tile's area number (0: something stands
+    // there). Walls from the tileset; solid events that stand still on the page live now
+    // (Nosramus in the Mines corridor until his scene). Shut doors, anything that walks about
+    // and anything that starts a fight are not walls. This map as it is; others from their data
+    // and this run's switches, with slid events where they were left.
+    // With clear (circle trips), someone standing there who leaves after an answer nearby is no wall.
+    Nav.areas = function (data, mapId, clear) {
+        const w = data.width, h = data.height;
+        const live = mapId === $gameMap.mapId() && data === $dataMap;
+        const sets = clear ? choiceSwitches(data) : null;
+        const on = (s) => $gameSwitches.value(s);
+        const wall = new Uint8Array(w * h);
+        const tileEvents = new Map();
+        // Stands in the way: solid, no fight on it, and never takes a step (a custom route of turns only is still).
+        const stands = (page) => page.priorityType === 1 && !page.through && !page.list.some((c) => c.code === 301)
+            && (page.moveType === 0 || (page.moveType === 3 && !page.moveRoute.list.some((c) => c.code >= 1 && c.code <= 14)));
+        let pass;
+        if (live) {
+            pass = (x, y, d) => $gameMap.isPassable(x, y, d);
+            for (const ev of $gameMap.events()) {
+                const page = !ev._erased && ev.page();
+                if (page && stands(page) && !ev.isThrough() && !shutDoor(ev) && !(sets && stepsAside(ev.event(), page, sets, on)) && $gameMap.isValid(ev.x, ev.y)) wall[ev.y * w + ev.x] = 1;
+            }
+        } else {
+            const flags = ($dataTilesets[data.tilesetId] || {}).flags || [];
+            const saved = window.$gameSystem && $gameSystem.isSavedEventLocation ? $gameSystem : null;
+            for (const ev of data.events || []) {
+                const page = ev && pageNow(data, ev, mapId);
+                if (!page) continue;
+                const moved = saved && saved.isSavedEventLocation(mapId, ev.id);
+                const x = moved ? saved.getSavedEventX(mapId, ev.id) : ev.x, y = moved ? saved.getSavedEventY(mapId, ev.id) : ev.y;
+                if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                if (page.image.tileId > 0 && page.priorityType === 0) tileEvents.set(y * w + x, (tileEvents.get(y * w + x) || []).concat(page.image.tileId));
+                const door = /door|gate/i.test(page.image.characterName) && page.trigger === 0 && page.list.some((c) => c.code === 205) && !page.list.some((c) => c.code === 101 || c.code === 102);
+                if (stands(page) && !door && !(sets && stepsAside(ev, page, sets, on))) wall[y * w + x] = 1;
+            }
+            // Game_Map.checkPassage on this data.
+            pass = (x, y, d) => {
+                const bit = (1 << (d / 2 - 1)) & 0x0f;
+                const tiles = (tileEvents.get(y * w + x) || []).concat([3, 2, 1, 0].map((z) => data.data[(z * h + y) * w + x] || 0));
+                for (const t of tiles) {
+                    const flag = flags[t];
+                    if ((flag & 0x10) !== 0) continue;
+                    if ((flag & bit) === 0) return true;
+                    if ((flag & bit) === bit) return false;
+                }
+                return false;
+            };
+        }
+        const area = new Int32Array(w * h);
+        let n = 0;
+        for (let s = 0; s < w * h; s++) {
+            if (area[s] || wall[s]) continue;
+            area[s] = ++n;
+            const queue = [s];
+            while (queue.length) {
+                const cur = queue.pop(), x = cur % w, y = (cur / w) | 0;
+                for (const d of [2, 4, 6, 8]) {
+                    const nx = x + (d === 6) - (d === 4), ny = y + (d === 2) - (d === 8), k = ny * w + nx;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h || area[k] || wall[k]) continue;
+                    if (!pass(x, y, d) || !pass(nx, ny, 10 - d)) continue;
+                    area[k] = n;
+                    queue.push(k);
+                }
+            }
+        }
+        const at = (x, y) => (x >= 0 && y >= 0 && x < w && y < h ? area[y * w + x] : 0);
+        return {
+            // Where one stands after arriving at x,y (beside it, if something stands on it).
+            at: (x, y) => at(x, y) || at(x, y + 1) || at(x - 1, y) || at(x + 1, y) || at(x, y - 1),
+            // Can someone in area a reach the thing at x,y: stand on it, or beside it.
+            touches: (a, x, y) => a > 0 && [[x, y], [x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1]].some(([px, py]) => at(px, py) === a),
+        };
+    };
+
+    // An answer that costs nothing: it only talks, waits, moves people about, plays a sound and turns
+    // switches. Not one that hands a recruit to the Human Hydra ("Offer girl": 129, Map003 EV25,
+    // Grok g12), spends or gains anything, or runs a common event. Nor a conversation with someone
+    // named (\c[7]Name): D'arce's "Not right now." or Seril's story line can cost a recruit or a quest.
+    // What is left in the game (scan 11/08): Nosramus, pushing statues and boulders, levers, hatches.
+    const FREE = new Set([0, 101, 401, 102, 402, 403, 404, 108, 408, 121, 123, 205, 505, 230, 241, 242, 245, 246, 249, 250, 251]);
+    const costsNothing = (cmds) => cmds.every((x) => FREE.has(x.code)) && !cmds.some((x) => x.code === 401 && /\\c\[7\]/.test(x.parameters[0]));
+    const switchesOn = (cmds) => {
+        const out = [];
+        for (const x of cmds) if (x.code === 121 && x.parameters[2] === 0) for (let s = x.parameters[0]; s <= x.parameters[1]; s++) out.push(s);
+        return out;
+    };
+    // Answers on a map that turn a switch on and cost nothing.
+    function choiceSwitches(data) {
+        const out = new Set();
+        for (const ev of data.events || []) {
+            for (const page of (ev && ev.pages) || []) {
+                page.list.forEach((c, i) => {
+                    if (c.code !== 102) return;
+                    for (const b of choiceBranches(page.list, i)) if (costsNothing(b.cmds)) for (const s of switchesOn(b.cmds)) out.add(s);
+                });
+            }
+        }
+        return out;
+    }
+    const waitsOn = (p) => [p.conditions.switch1Valid && p.conditions.switch1Id, p.conditions.switch2Valid && p.conditions.switch2Id].filter(Boolean);
+    // A page that is out of the way: walked through, under or over the player, or one that walks this
+    // event off; or one that turns on the switch of a later page that is (Nosramus: 1294's page turns
+    // 1291 on, 1291's turns 1292 on, and 1292's walks him into the dark, through).
+    function leavesBy(ev, page, depth) {
+        // One that starts a fight or a common event is no way out (the Snatcher's "Interrupt the beast").
+        if (page.list.some((c) => c.code === 301 || c.code === 117)) return false;
+        if (page.through || page.priorityType !== 1) return true;
+        if (page.list.some((c) => c.code === 205 && c.parameters[0] === 0 && c.parameters[1].list.some((m) => m.code >= 1 && m.code <= 14))) return true;
+        if (depth > 4) return false;
+        const at = ev.pages.indexOf(page), on = switchesOn(page.list);
+        return ev.pages.some((p, k) => k > at && waitsOn(p).some((s) => on.indexOf(s) >= 0) && leavesBy(ev, p, depth + 1));
+    }
+    // Someone standing there who leaves once a free answer nearby turns a switch on: a later page
+    // of theirs waits on that switch (off now) and is out of the way, or leads to one that is.
+    // Nosramus in the Mines corridor: "Wait for the person to walk away" sets 1294.
+    function stepsAside(ev, page, sets, on) {
+        const at = ev.pages.indexOf(page);
+        return ev.pages.some((p, k) => k > at && waitsOn(p).some((s) => sets.has(s) && !on(s)) && leavesBy(ev, p, 0));
+    }
+
+    // On a circle trip with no path to t: someone stands in the way who leaves after an answer (with
+    // them gone, t is in reach), and the thing that asks it is in reach. { ev, x, y, sws: the switches
+    // that send them off }, or null. Not just anyone who would move: a wall torch's own "Take the
+    // Torch" moves the torch, which was never in the way (11/08, first run).
+    function clearerHere(t) {
+        const sets = choiceSwitches($dataMap);
+        const on = (s) => $gameSwitches.value(s);
+        const sws = new Set();
+        for (const ev of $gameMap.events()) {
+            const page = !ev._erased && ev.page();
+            if (!page || !ev.isNormalPriority() || ev.isThrough() || !stepsAside(ev.event(), page, sets, on)) continue;
+            ev._through = true; // as if they had gone (eventsXyNt skips through events); put back at once
+            const opens = !!Nav.path(t.x, t.y, t.ev.eventId(), t.ev.isNormalPriority(), true);
+            ev._through = false;
+            if (!opens) continue;
+            const at = ev.event().pages.indexOf(page);
+            ev.event().pages.forEach((p, k) => { if (k > at) for (const s of waitsOn(p)) if (sets.has(s) && !on(s)) sws.add(s); });
+        }
+        if (!sws.size) return null;
+        const now = Date.now();
+        let best = null;
+        for (const ev of $gameMap.events()) {
+            const page = !ev._erased && ev.page();
+            if (!page || !ev.isTriggerIn([0, 1, 2]) || (Nav.banned.get('clear' + $gameMap.mapId() + ':' + ev.eventId()) || 0) > now) continue;
+            const asks = page.list.some((c, i) => c.code === 102 && choiceBranches(page.list, i).some((b) => costsNothing(b.cmds)
+                && b.cmds.some((x) => x.code === 121 && x.parameters[2] === 0 && [...sws].some((s) => s >= x.parameters[0] && s <= x.parameters[1]))));
+            if (!asks) continue;
+            const steps = Nav.path(ev.x, ev.y, ev.eventId(), ev.isNormalPriority(), true);
+            if (steps && (!best || steps.length < best.n)) best = { ev: ev.eventId(), x: ev.x, y: ev.y, sws: [...sws], n: steps.length };
+        }
+        return best;
+    }
+
+    // Fewest doors from here to a map that `isGoal` accepts, through the parts of each map
+    // one can walk to from where the last door left off (the Blood pit's hole lands in a
+    // corner of the Caverns; the Mines circle is behind Nosramus until he walks off).
+    // isGoal(id, data, reach): reach(x, y) says whether the thing at x,y is in walking reach.
+    // opts.clear (circle trips): through someone who stands aside after an answer (Nosramus).
+    Nav.plan = async function (isGoal, opts) {
         const start = $gameMap.mapId();
-        const prev = new Map([[start, null]]);
-        let frontier = [start];
+        const maps = new Map();
+        const get = async (id) => {
+            if (!maps.has(id)) {
+                const data = id === start ? $dataMap : await Nav.load(id);
+                maps.set(id, data && data.data ? { data, areas: Nav.areas(data, id, !!(opts && opts.clear)) } : null);
+            }
+            return maps.get(id);
+        };
+        const first = await get(start);
+        if (!first) return null;
+        const a0 = first.areas.at($gamePlayer.x, $gamePlayer.y);
+        const prev = new Map([[start + ':' + a0, null]]);
+        let frontier = [{ id: start, area: a0, key: start + ':' + a0 }];
         for (let depth = 0; depth < 14 && frontier.length; depth++) {
             const next = [];
-            for (const id of frontier) {
-                const data = id === start ? $dataMap : await Nav.load(id);
-                if (isGoal(id, data)) {
+            for (const node of frontier) {
+                const m = await get(node.id);
+                const reach = m ? (x, y) => m.areas.touches(node.area, x, y) : () => false;
+                if (isGoal(node.id, m && m.data, reach)) {
                     const hops = [];
-                    for (let at = id; prev.get(at); at = prev.get(at).from) hops.unshift(prev.get(at).exit);
-                    return { goal: id, hops };
+                    for (let at = node.key; prev.get(at); at = prev.get(at).from) hops.unshift(prev.get(at).exit);
+                    return { goal: node.id, hops };
                 }
-                for (const exit of Nav.exits(data, id)) {
-                    if (prev.has(exit.to) || Nav.banned.get(id + ':' + exit.ev) > Date.now()) continue;
-                    prev.set(exit.to, { from: id, exit: Object.assign({ map: id }, exit) });
-                    next.push(exit.to);
+                if (!m) continue;
+                for (const exit of Nav.exits(m.data, node.id)) {
+                    if (Nav.banned.get(node.id + ':' + exit.ev) > Date.now() || !reach(exit.x, exit.y)) continue;
+                    const to = await get(exit.to);
+                    const area = to ? to.areas.at(exit.tx, exit.ty) : 0;
+                    const key = exit.to + ':' + area;
+                    if (prev.has(key)) continue;
+                    prev.set(key, { from: node.key, exit: Object.assign({ map: node.id }, exit) });
+                    next.push({ id: exit.to, area, key });
                 }
             }
             frontier = next;
@@ -1662,6 +1987,16 @@ module.exports = function installBot(options) {
             && !((Nav.banned.get('door' + $gameMap.mapId() + ':' + ev.eventId()) || 0) > Date.now());
     }
 
+    // A locked door with an answer that gets one through (doorWay: Lockpicking, Force the door open,
+    // a key): the Level 2 basement's door on the long way to Level 1's circle. One that would not
+    // open lately counts as a wall for a while.
+    function lockedDoor(ev) {
+        const page = ev.page();
+        return !!page && ev.isNormalPriority() && ev.isTriggerIn([0]) && /door|gate/i.test(ev.characterName())
+            && page.list.some((c, i) => c.code === 102 && choiceBranches(page.list, i).some((b) => doorWay(b.cmds)))
+            && !((Nav.banned.get('door' + $gameMap.mapId() + ':' + ev.eventId()) || 0) > Date.now());
+    }
+
     // Every tile the game's own events hurt on (Coop.hazardAt: armed traps, nail boards, arrow plates...).
     function trapAt(x, y) {
         return !!(window.$gameMap && Coop.hazardAt && Coop.hazardAt(x, y));
@@ -1677,11 +2012,17 @@ module.exports = function installBot(options) {
 
     // Anything standing there; when careful, also floor tiles that do something
     // when stepped on (doors, scenes). An armed trap is never a step, careful or not.
-    // A shut door is not in the way: it gets opened on the way through.
-    function blockedByEvent(x, y, except, careful) {
+    // A shut door is not in the way: it gets opened on the way through. With force, nor is a locked
+    // one, nor a monster (walked into, it is fought; one whose fight takes you away still is).
+    function blockedByEvent(x, y, except, careful, force) {
         if (!window.$dataMap) return true; // between maps: stand still
         if (!Nav.throughTraps && trapAt(x, y)) return true;
-        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev)) || (ev.page() && ev.isTriggerIn([1, 2]) && (careful || takesAway(ev)))));
+        return $gameMap.eventsXyNt(x, y).some((ev) => ev.eventId() !== except && ((ev.isNormalPriority() && !shutDoor(ev) && !(force && (lockedDoor(ev) || foe(ev)))) || (ev.page() && ev.isTriggerIn([1, 2]) && (careful || takesAway(ev)))));
+    }
+    // Something that starts a fight with whoever touches it.
+    function foe(ev) {
+        const page = ev.page();
+        return !!page && ev.isTriggerIn([1, 2]) && page.list.some((c) => c.code === 301);
     }
     // A tile that sends whoever steps on it to another map is never on the way.
     function takesAway(ev) {
@@ -1690,11 +2031,12 @@ module.exports = function installBot(options) {
 
     // A step was blocked: if a shut door is what stands there, face it and
     // press the action key, as a player would. True while that is under way.
-    // A door that stays shut after a few tries (locked) is left for a while.
-    function openDoorAhead(player, dir) {
+    // A door that stays shut after a few tries (locked) is left for a while. With force, a locked
+    // door is pressed too (doorChoice answers it).
+    function openDoorAhead(player, dir, force) {
         if (!dir || !window.$dataMap) return false;
         const x = $gameMap.roundXWithDirection(player.x, dir), y = $gameMap.roundYWithDirection(player.y, dir);
-        const door = $gameMap.eventsXyNt(x, y).find(shutDoor);
+        const door = $gameMap.eventsXyNt(x, y).find((ev) => shutDoor(ev) || (force && lockedDoor(ev)));
         if (!door) return false;
         const key = 'door' + $gameMap.mapId() + ':' + door.eventId();
         const now = Date.now();
@@ -1713,11 +2055,13 @@ module.exports = function installBot(options) {
     }
 
     // Tile by tile on this map, around walls and anything standing in the way.
-    // Around anything that triggers underfoot too, unless there is no other way.
-    Nav.path = function (goalX, goalY, eventId, adjacentOk) {
-        return Nav.search(goalX, goalY, eventId, adjacentOk, true) || Nav.search(goalX, goalY, eventId, adjacentOk, false);
+    // Around anything that triggers underfoot too, unless there is no other way. With force (a
+    // circle trip), through a locked door or a monster when even that finds nothing.
+    Nav.path = function (goalX, goalY, eventId, adjacentOk, force) {
+        return Nav.search(goalX, goalY, eventId, adjacentOk, true) || Nav.search(goalX, goalY, eventId, adjacentOk, false)
+            || (force ? Nav.search(goalX, goalY, eventId, adjacentOk, false, true) : null);
     };
-    Nav.search = function (goalX, goalY, eventId, adjacentOk, careful) {
+    Nav.search = function (goalX, goalY, eventId, adjacentOk, careful, force) {
         const w = $dataMap.width, h = $dataMap.height;
         const sx = $gamePlayer.x, sy = $gamePlayer.y;
         const prev = new Int32Array(w * h).fill(-1);
@@ -1740,7 +2084,7 @@ module.exports = function installBot(options) {
                 // The goal tile is allowed through blockedByEvent; a trap is not a place to stand, even as the goal.
                 if (!Nav.throughTraps && trapAt(nx, ny)) continue;
                 const isGoal = nx === goalX && ny === goalY;
-                if (!isGoal && blockedByEvent(nx, ny, eventId, careful)) continue;
+                if (!isGoal && blockedByEvent(nx, ny, eventId, careful, force)) continue;
                 if ((Nav.banned.get(nx + ',' + ny) || 0) > now) continue;
                 prev[ny * w + nx] = cur;
                 queue.push(ny * w + nx);
@@ -1803,9 +2147,9 @@ module.exports = function installBot(options) {
         if (!e) return;
         e.planning = true;
         e.steps = null;
-        const isGoal = e.kind === 'circle' ? (id, data) => Nav.liveCircles(data, id).length > 0 : (id) => id === e.goalMap;
+        const isGoal = e.kind === 'circle' ? (id, data, reach) => Nav.liveCircles(data, id).some((c) => reach(c.x, c.y)) : (id) => id === e.goalMap;
         // Going round in circles: give it up rather than burn the night on it.
-        const plan = ++e.replans > 20 ? null : await Nav.plan(isGoal);
+        const plan = ++e.replans > 20 ? null : await Nav.plan(isGoal, { clear: e.kind === 'circle' });
         if (BOT.errand !== e) return;
         e.planning = false;
         e.plan = plan;
@@ -1828,6 +2172,11 @@ module.exports = function installBot(options) {
         const e = BOT.errand;
         if (!e || !e.plan || !window.$dataMap) return null;
         const here = $gameMap.mapId();
+        // First to whatever asks the question that sends the one in the way off (clearerHere).
+        if (e.clearing && !e.clearing.doneAt && e.clearing.map === here) {
+            const ev = $gameMap.event(e.clearing.ev);
+            if (ev && ev.page()) return { x: ev.x, y: ev.y, ev, clear: true };
+        }
         if (here === e.plan.goal && e.kind !== 'circle') return { arrived: true };
         if (here === e.plan.goal) {
             const live = Nav.liveCircles($dataMap, here);
@@ -1843,6 +2192,13 @@ module.exports = function installBot(options) {
         if (!hop) return null;
         const ev = $gameMap.event(hop.ev);
         return ev ? { x: ev.x, y: ev.y, ev, hop } : null;
+    }
+
+    // The way a page wants the player to face, if it asks (the Blood pit's mechanism: left). 0: any.
+    function facingAsked(ev) {
+        const page = ev.page();
+        const c = page && page.list.find((c) => c.code === 111 && c.parameters[0] === 6 && c.parameters[1] === -1);
+        return c ? c.parameters[2] : 0;
     }
 
     function banCircle(mapId, eventId) {
@@ -1876,6 +2232,9 @@ module.exports = function installBot(options) {
             }
             if (!expected || back) { replan(); return; }
         }
+        if (e.clearing && e.clearing.map !== $gameMap.mapId()) e.clearing = null;
+        // The answer is given (by anyone): they move off. A moment for that before any "no path".
+        if (e.clearing && !e.clearing.doneAt && e.clearing.sws.some((s) => $gameSwitches.value(s))) { e.clearing.doneAt = Date.now(); e.steps = null; log('they are moving out of the way'); }
         const t = errandTarget();
         if (t && t.arrived) { BOT.errand = null; log('caught up on ' + placeName($gameMap.mapId())); return; }
         if (!t) { replan(); return; }
@@ -1883,12 +2242,14 @@ module.exports = function installBot(options) {
         const atGoal = solid ? Math.abs(t.x - player.x) + Math.abs(t.y - player.y) === 1 : t.x === player.x && t.y === player.y;
         if (atGoal) {
             if (solid) player.setDirection(dirTo(t.x, t.y));
+            else if (facingAsked(t.ev)) player.setDirection(facingAsked(t.ev));
             if (t.ev.isTriggerIn([0])) press('ok');
             else if (solid) player.executeMove(dirTo(t.x, t.y)); // bump to set off a touch door
             else { player.executeMove(10 - player.direction()); } // off and on again
             if (++e.tries > 12) {
                 // This will not open for us. Another way, for a while.
                 log('the way at ' + t.x + ',' + t.y + ' did not take me; trying another');
+                if (t.clear) { Nav.banned.set('clear' + $gameMap.mapId() + ':' + t.ev.eventId(), Date.now() + 180000); e.clearing = null; }
                 giveUpOn(t);
                 e.tries = 0;
                 replan();
@@ -1896,8 +2257,15 @@ module.exports = function installBot(options) {
             return;
         }
         if (!e.steps || !e.steps.length) {
-            e.steps = Nav.path(t.x, t.y, t.ev.eventId(), solid);
+            e.steps = Nav.path(t.x, t.y, t.ev.eventId(), solid, e.kind === 'circle');
             if (!e.steps) {
+                if (e.clearing && e.clearing.doneAt && Date.now() - e.clearing.doneAt < 20000) return; // still walking off
+                // Someone stands in the way who leaves after an answer: go and give it (circle trips only:
+                // it spends a scene for everyone, worth it to call a partner back, not to follow one).
+                const c = e.kind === 'circle' && !e.clearing && !t.clear && clearerHere(t);
+                if (c) { e.clearing = Object.assign(c, { map: $gameMap.mapId() }); log('someone stands in the way; going to ' + c.x + ',' + c.y + ' so they move'); return; }
+                if (t.clear) Nav.banned.set('clear' + $gameMap.mapId() + ':' + t.ev.eventId(), Date.now() + 180000);
+                e.clearing = null;
                 log('no path from ' + player.x + ',' + player.y + ' to ' + t.x + ',' + t.y + '; trying another way');
                 giveUpOn(t);
                 replan();
@@ -1909,7 +2277,7 @@ module.exports = function installBot(options) {
         const x = player.x, y = player.y;
         player.executeMove(dirTo(next.x, next.y));
         if (player.x === next.x && player.y === next.y) { e.steps.shift(); BOT.stuck = 0; return; }
-        if (player.x === x && player.y === y && openDoorAhead(player, dirTo(next.x, next.y))) { BOT.stuck = 0; return; }
+        if (player.x === x && player.y === y && openDoorAhead(player, dirTo(next.x, next.y), e.kind === 'circle')) { BOT.stuck = 0; return; }
         if (player.x === x && player.y === y && ++BOT.stuck > 6) {
             // Something is standing there. Around it.
             Nav.banned.set(next.x + ',' + next.y, Date.now() + 4000);

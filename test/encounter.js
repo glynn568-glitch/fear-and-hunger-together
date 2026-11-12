@@ -34,10 +34,24 @@ const { shot } = require('./lib');
         console.log('guard', JSON.stringify(spot));
         // This run uses the fallback: no direct video, stills through the relay.
         await b.evaluate(() => { Coop.stream.noVideo = true; });
+        // B is in a scene (reading, talking): alone, the game stops every event until it is over.
+        // 11/11: the owner's machine walked enemies up to a friend mid-conversation and ringed him.
+        await b.evaluate(() => $gameMap._interpreter.setup([{ code: 230, indent: 0, parameters: [1200] }, { code: 0, indent: 0, parameters: [] }], 0));
+        await waitFor(a, (id) => (Coop.peers.get(id) || {}).st === 'event', 5000, 'A hears B is in a scene', idB);
         await b.evaluate((p) => $gamePlayer.locate(p[0], p[1]), spot.near);
         await a.evaluate((p) => $gamePlayer.locate(p[0], p[1]), spot.far);
         await sleep(300);
         check('A simulates the map', await a.evaluate(() => Coop.events.amOwner()) && !(await b.evaluate(() => Coop.events.amOwner())));
+        const stood = async () => a.evaluate((id) => { const e = $gameMap.event(id); return e.x + ',' + e.y; }, spot.id);
+        // Over a slow line A hears where B now stands a moment late, and until then the
+        // guard may take a step toward A: it is the standing still from then on that counts.
+        await sleep(1200);
+        const at0 = await stood();
+        await sleep(3000);
+        const at1 = await stood();
+        const gap = Math.abs(at1.split(',')[0] - spot.near[0]) + Math.abs(at1.split(',')[1] - spot.near[1]);
+        check('while B is in a scene the guard stands still and has not walked up to them', at1 === at0 && gap > 1, at0 + ' -> ' + at1 + ', ' + gap + ' from B');
+        await b.evaluate(() => $gameMap._interpreter.clear());
 
         await waitFor(b, () => SceneManager._scene instanceof Scene_Battle, 30000, 'the guard reaches B and attacks');
         check("the guard, walked by A's machine, attacked B on B's machine", await b.evaluate(() => $gameTroop._troopId) === 1);

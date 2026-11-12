@@ -35,6 +35,21 @@ const TWINS = {
         suite: 'deck', file: 'tools/bot.js',
         find: "    ...(process.platform === 'linux' ? linuxBrowsers() : [])].find(", put: '    ].find(',
     },
+    'second-rider': {
+        why: 'field 11/11: the second of two players to ride the lift down stood hidden at the bottom for good (the switch was on already, so the arrival was never theirs)',
+        suite: 'lift', file: 'client/state.js',
+        find: "        } else if (after && byHand() && World.isShared('sw', id)) {", put: '        } else if (false) {',
+    },
+    'plate-is-no-ride': {
+        why: 'Grok g13: a second player stepping on a plate that only turns a flag on was given the scene it opens (Francois: hidden, thrown into his fight)',
+        suite: 'lift', file: 'client/state.js',
+        find: 'ev._trigger <= 2 && carriesOff(this._interpreter._list);', put: 'ev._trigger <= 2;',
+    },
+    'still-in-a-scene': {
+        why: 'field 11/11: enemies walked up to a player in a conversation and ringed him (alone, the game stops every event then)',
+        suite: 'encounter', file: 'client/events.js',
+        find: "        if (target.st === 'event') return;\n", put: '',
+    },
     'whose-scene': {
         why: 'world switches started other players\' scenes on everyone (the hound, the elevator, Trortur)',
         suite: 'scenes', file: 'client/state.js',
@@ -294,6 +309,52 @@ const TWINS = {
         find: 'if (to && /\\?/.test(text)) BOT.askedYou = { id: to, until: Date.now() + 15000 };',
         put: 'if (/\\?/.test(text)) BOT.askedYou = { id: 0, until: Date.now() + 15000 };',
     },
+    'way-choice': {
+        why: 'field 11/06: a Cahara partner on a circle trip kept pressing the Blood pit\'s hole; its Jump down was left to the model, which looked instead',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'A' },
+        find: 'const way = wayChoice();', put: 'const way = -1;',
+    },
+    'shut-corridor': {
+        why: '11/06: the Caverns landing leads to a Mines corner where Nosramus blocks the circle; the plan by maps sent the partner down the hole anyway (since 11/08 anyone standing who does not step aside; without the wall A plans through the Caverns and finds no path)',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'A' },
+        find: 'if (stands(page) && !door && !(sets && stepsAside(ev, page, sets, on))) wall[y * w + x] = 1;', put: 'if (false) wall[y * w + x] = 1;',
+    },
+    'clear-way': {
+        why: 'his call 11/08 ("what would players want"): Nosramus in the Mines corridor left the partner no way to the circle; a player waits for him to walk away',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'B' },
+        find: 'await Nav.plan(isGoal, { clear: e.kind === \'circle\' });', put: 'await Nav.plan(isGoal, { clear: false });',
+    },
+    'clear-choice': {
+        why: '11/08: walking up to Nosramus, the question that sends him off is the trip\'s to answer ("Wait", never "Show yourself"), not the model\'s',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'B' },
+        find: 'const clear = clearChoice();', put: 'const clear = -1;',
+    },
+    'locked-door-walk': {
+        why: 'his call 11/06: the long way to Level 1\'s circle stopped at the Level 2 basement\'s locked door, a wall to the partner\'s walking',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        find: '|| (force ? Nav.search(goalX, goalY, eventId, adjacentOk, false, true) : null);', put: ';',
+    },
+    'locked-door-answer': {
+        why: '11/06: at a locked door on a circle trip the question went to the model (which can say Leave)',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        find: 'const door = doorChoice();', put: 'const door = null;',
+    },
+    'fight-through': {
+        why: 'his call 11/06 "fight thru": a monster left standing in a corridor ended a circle trip for minutes',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        find: '!(force && (lockedDoor(ev) || foe(ev)))', put: '!(force && lockedDoor(ev))',
+    },
+    'sight-mid-transfer': {
+        why: '11/06: the partner\'s remark timer read its surroundings while a transfer had the next map\'s data in: an event id that map has not got, a crash that halted its game',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        find: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map) || $gamePlayer.isTransferring()) return [];",
+        put: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];",
+    },
+    'locked-door-order': {
+        why: '11/06: force first (free, the door never strikes back); a key is spent only once forcing failed',
+        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        find: "const o = pick('open') || (d.forced ? pick('item') || pick('force') : pick('force') || pick('item'));", put: "const o = pick('open') || pick('item') || pick('force');",
+    },
 };
 
 // The twin's source for `file` (repo-relative, forward slashes), or null when the twin is not for it.
@@ -348,6 +409,18 @@ function runSuite(suite, twin, log, vars) {
     });
 }
 
+// What a twin's verdict rests on: its own definition, the file it breaks and the suite that
+// has to notice. While none of the three has changed since it was last caught, the verdict
+// stands (FH_TWINS_CHANGED=1, the gate: 55 twins one at a time were 15 minutes of every run).
+const PROVEN = path.join(__dirname, 'out', 'twins-proven.json');
+function stampOf(name) {
+    const t = TWINS[name];
+    const h = require('crypto').createHash('sha1');
+    h.update(JSON.stringify(t));
+    for (const f of [t.file, 'test/' + t.suite + '.js']) h.update(fs.readFileSync(path.join(ROOT, f)));
+    return h.digest('hex');
+}
+
 const clean = {};
 async function runTwin(name) {
     const t = TWINS[name];
@@ -391,7 +464,16 @@ if (require.main === module) {
         process.exit(bad ? 1 : 0);
     }
     if (process.env.FH_TWIN) { console.error('FH_TWIN is set in this shell: unset it first.'); process.exit(2); }
-    const names = args.length ? args : Object.keys(TWINS);
+    let names = args.length ? args : Object.keys(TWINS);
+    let proven = {};
+    try { proven = JSON.parse(fs.readFileSync(PROVEN, 'utf8')); } catch (e) { /* none caught yet */ }
+    let stood = 0;
+    if (process.env.FH_TWINS_CHANGED && !args.length) {
+        const all = names.length;
+        names = names.filter((n) => proven[n] !== stampOf(n));
+        stood = all - names.length;
+        console.log(stood + ' twin(s) stand as last caught (nothing they rest on changed); ' + names.length + ' to run');
+    }
     for (const n of names) if (!TWINS[n]) { console.error('no such twin: ' + n + ' (' + Object.keys(TWINS).join(', ') + ')'); process.exit(2); }
     if (check()) process.exit(1);
     if (!require('./lock')()) { console.error('Another test run is using the ports (test/out/run.lock). Wait for it, or end it.'); process.exit(2); }
@@ -399,10 +481,13 @@ if (require.main === module) {
         const started = Date.now();
         const missed = [];
         // One at a time: each runs a whole suite with its usual ports.
-        for (const n of names) if (!(await runTwin(n))) missed.push(n);
+        for (const n of names) {
+            if (await runTwin(n)) proven[n] = stampOf(n); else { missed.push(n); delete proven[n]; }
+            fs.writeFileSync(PROVEN, JSON.stringify(proven, null, 1));
+        }
         const secs = Math.round((Date.now() - started) / 1000);
-        console.log(missed.length ? `${missed.length} twin(s) not caught (${secs}s): ${missed.join(' ')}` : `all ${names.length} passed (${secs}s): every twin was caught`);
-        if (process.env.FH_TEST_RESULT) fs.writeFileSync(process.env.FH_TEST_RESULT, JSON.stringify({ suites: names.length, broken: missed, flaky: [], secs }));
+        console.log(missed.length ? `${missed.length} twin(s) not caught (${secs}s): ${missed.join(' ')}` : names.length ? `all ${names.length} passed (${secs}s): every twin was caught` : 'no twin to run: all ' + stood + ' stand');
+        if (process.env.FH_TEST_RESULT) fs.writeFileSync(process.env.FH_TEST_RESULT, JSON.stringify({ suites: names.length, stood, broken: missed, flaky: [], secs }));
         process.exit(missed.length ? 1 : 0);
     })();
 }

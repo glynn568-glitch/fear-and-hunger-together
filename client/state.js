@@ -397,9 +397,69 @@
         const after = !!this._data[id];
         if (before !== after) {
             if (after) World.mine.add('sw' + id); else World.mine.delete('sw' + id);
+            if (after && byHand()) claim(id); else if (!after) claims.delete(id);
             queue('sw', id, after ? 1 : 0);
             if (id === START && after && !World._remote) World.enter();
+        } else if (after && byHand() && World.isShared('sw', id)) {
+            // Already on, by someone who did the same a moment ago: this player's scene
+            // is as much theirs (the lift, 11/11: pho rode down, Enki three seconds after;
+            // the arrival was "pho's", so Enki stood hidden at the bottom for good).
+            World.mine.add('sw' + id);
+            claim(id);
         }
+    };
+
+    // A flag a scene this player started by hand has just turned on stands here until
+    // that scene turns it off itself: the other rider's arrival turning it off must not
+    // take this one's arrival away. Twenty seconds at most, then the world's word counts.
+    const CLAIM = 20000;
+    const claims = new Map(); // switch id -> { at, off: an "off" from someone else is owed }
+    function byHand() { return World.live && !World._remote && World._inScene && World._sceneByHand; }
+    function claim(id) {
+        const c = { at: Date.now(), off: false };
+        claims.set(id, c);
+        setTimeout(function () {
+            if (claims.get(id) !== c) return;
+            claims.delete(id);
+            if (c.off && window.$gameSwitches && apply('sw', id, 0)) { World.mine.delete('sw' + id); $gameMap.requestRefresh(); }
+        }, CLAIM);
+    }
+    function claimed(kind, key, value) {
+        const c = kind === 'sw' && claims.get(key);
+        if (!c) return false;
+        // On again since (the first rider back at the mechanism): no off is owed any more.
+        if (value) { c.off = false; return false; }
+        if (!$gameSwitches._data[key]) return false;
+        c.off = true;
+        return true;
+    }
+    // Only a scene that hides its player or sends them somewhere: what the flag opens is then
+    // where it sets them down again, and each of them needs it. A plate that only turns a
+    // flag on does not count: stepped on by a second player while the first is in the scene it
+    // opened, it must not start that scene again for them (Francois's plate, Map125 EV323:
+    // hidden and thrown into his fight; Grok g13).
+    function carriesOff(list) {
+        return !!list && list.some((c) => c.code === 201 || (c.code === 211 && c.parameters[0] === 0));
+    }
+    const _updateInterpreter = Game_Map.prototype.updateInterpreter;
+    Game_Map.prototype.updateInterpreter = function () {
+        World._inScene = true;
+        try { _updateInterpreter.call(this); } finally { World._inScene = false; }
+    };
+    const _setupStartingEvent = Game_Map.prototype.setupStartingEvent;
+    Game_Map.prototype.setupStartingEvent = function () {
+        // An item or skill used from the menu is by hand too (it comes in as a reserved common event).
+        const reserved = $gameTemp.isCommonEventReserved() && $gameTemp.reservedCommonEvent();
+        World._sceneByHand = !!reserved && carriesOff(reserved.list);
+        return _setupStartingEvent.call(this);
+    };
+    const _setupStartingMapEvent = Game_Map.prototype.setupStartingMapEvent;
+    Game_Map.prototype.setupStartingMapEvent = function () {
+        const ev = this.events().find((e) => e.isStarting());
+        const started = _setupStartingMapEvent.call(this);
+        // Pressed, walked onto or touched: not a scene that began by itself.
+        if (started && ev) World._sceneByHand = ev._trigger <= 2 && carriesOff(this._interpreter._list);
+        return started;
     };
 
     const _vaSet = Game_Variables.prototype.setValue;
@@ -448,6 +508,7 @@
         if (!World.live || !window.$gameSwitches) return;
         let changed = false;
         for (const [kind, key, value] of msg.w) {
+            if (claimed(kind, key, value)) continue;
             // Only a write that changed it makes it theirs: both pulling the lever at once, both ride.
             if (apply(kind, key, value)) { changed = true; World.mine.delete(kind + key); }
         }
@@ -825,6 +886,8 @@
             const table = server[kind] || {};
             for (const key in table) {
                 const k = kind === 'ss' || kind === 'el' ? key : Number(key);
+                // A line that dropped mid-ride: the off held back in 'w' is held back here too.
+                if (claimed(kind, k, table[key])) continue;
                 if (apply(kind, k, table[key])) { changed = true; World.mine.delete(kind + k); }
             }
         }
@@ -836,6 +899,7 @@
                 if (server[kind] && key in server[kind]) continue;
                 if (kind === 'el' && wasRun === msg.runId) { mine.push([kind, key, value]); continue; }
                 if (kind === 'sw' && holdsRecruit(key)) { mine.push([kind, key, value]); continue; }
+                if (claimed(kind, key, 0)) continue;
                 if (apply(kind, key, 0)) { changed = true; World.mine.delete(kind + key); }
             }
             if (mine.length) Coop.send({ t: 'w', w: mine });
@@ -905,6 +969,7 @@
         World.el = {};
         World.runId = '';
         World.mine.clear();
+        claims.clear();
         World._how = 'new';
         World._swapped = false;
         _setupNewGame.call(this);
@@ -932,6 +997,7 @@
         World.runId = contents.coop ? contents.coop.runId : '';
         // An older save does not say whose flags were whose: all of them its player's, as they were then.
         World.mineGuessed = !(contents.coop && contents.coop.mine);
+        claims.clear();
         World.mine = new Set(contents.coop && contents.coop.mine ? contents.coop.mine
             : $gameSwitches._data.map((on, id) => (on ? 'sw' + id : '')).filter(Boolean).concat(Object.keys($gameSelfSwitches._data).map((k) => 'ss' + k)));
         World.loadedStamp = contents.coop ? contents.coop.stamp : 0;

@@ -38,7 +38,7 @@ For tinkerers, `app\Play.cmd` still starts it from a console with the old menu.
 1. Fear & Hunger installed through Steam (the Windows version; Steam installs it with Proton). On a Deck it may be on the SD card.
 2. Chrome (or Chromium, Edge, Brave). On a Deck: Desktop Mode, **Discover**, install **Google Chrome**.
 3. Unzip this mod anywhere, for example into Downloads.
-4. Start **play.sh**. On a Deck, to play it from Game Mode: in Steam, **Games > Add a Non-Steam Game**, Browse, pick `play.sh`. It opens full screen; closing it quits. If the buttons do nothing in the game, pick the **Gamepad** layout in its controller settings.
+4. Start **play.sh**. On a Deck, to play it from Game Mode: in Steam, **Games > Add a Non-Steam Game**, Browse, pick `play.sh`. If Steam says the file type is not supported, add any other program instead, then open that entry's **Properties** and change **Target** to the full path of `play.sh`. It opens full screen; closing it quits. If the buttons do nothing in the game, pick the **Gamepad** layout in its controller settings.
 
 The first start fetches its own copy of Node.js (about 30 MB, checked against nodejs.org's checksums). Online hosting fetches Cloudflare's tunnel program the same way.
 

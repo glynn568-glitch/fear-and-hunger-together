@@ -161,6 +161,9 @@ process.on('uncaughtException', (e) => {
         console.log('[bot] mind: ' + probe.name);
         probe.close();
     } catch (e) { console.error('[bot] ' + e.message); process.exit(1); }
+    const tell = (text) => page.evaluate((t) => { if (window.Coop && Coop.say) Coop.say(t); }, text).catch(() => {});
+    brainOptions.onDown = (why) => tell('(My AI model stopped answering: ' + why + ' I still follow, fight and take plain orders.)');
+    brainOptions.onUp = () => tell('(My AI model answers again.)');
     await page.exposeFunction('fhBrainCharacter', (character) => {
         if (brain && brain.character === character) return;
         if (brain) brain.close();

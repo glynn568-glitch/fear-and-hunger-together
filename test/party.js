@@ -349,9 +349,12 @@ async function press(page, code, ms) {
         const quiet = await b.evaluate(() => window.__rowDraws);
         await sleep(2500);
         check('nothing changed: the lineup is not redrawn', await b.evaluate(() => window.__rowDraws) === quiet);
-        await a.evaluate(() => { const m = $gameParty.leader(); for (const id of [39, 5, 17, 55, 56, 61]) m.addState(id); });
+        // Exactly five, the row's room (a sixth is cut, Tab lists them all). The old list had a sixth,
+        // Infection arm (56), removed just above: MV refuses a state its action result still lists as
+        // removed until clearResult, so it landed only when something cleared the result first (11/08 gate).
+        await a.evaluate(() => { const m = $gameParty.leader(); m.clearResult(); for (const id of [39, 5, 17, 55, 61]) m.addState(id); });
         const many = await iconsOfA();
-        check('five or more statuses all fit on the row', many.length > 4 && await drawnBecomes(many, 'many'), JSON.stringify(many));
+        check('five statuses all fit on the row', many.length === 5 && await drawnBecomes(many, 'many'), JSON.stringify(many));
         await a.evaluate(() => $gameParty.leader().clearStates());
         await drawnBecomes([], 'cleared');
         // Out of the line and back with the menu open: their state now, not the copy from before.

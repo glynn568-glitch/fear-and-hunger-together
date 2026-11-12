@@ -115,6 +115,18 @@ async function press(page, code) {
         const who = await a.evaluate(() => { const p = Coop.others().find((x) => x.bot === 1); return { name: p.name, ini: p.ini }; });
         check('the partner called in after the pick plays Ragnvaldr',
             who.name === 'Ragnvaldr' && Array.isArray(who.ini) && who.ini.indexOf(664) >= 0, JSON.stringify(who));
+
+        // A mind saved while a partner is in switches that partner (11/11: he changed minds
+        // because the first was out of usage; "from now on" left the one beside him mute).
+        const idBefore = await a.evaluate(() => Coop.others().find((x) => x.bot === 1).id);
+        await a.evaluate(() => Coop.openPartnerSetup());
+        await waitFor(a, () => document.querySelector('#coop-setup.open .minds button.on'), 15000, 'the panel a third time');
+        await a.evaluate(() => document.querySelector('#coop-setup [data-mind=none]').click());
+        await a.evaluate(() => document.querySelector('#coop-setup [data-do=save]').click());
+        await waitFor(a, () => !document.querySelector('#coop-setup.open'), 20000, 'the panel closes');
+        await waitFor(a, (id) => Coop.others().some((p) => p.bot === 1 && p.st === 'map' && p.id !== id), 90000, 'the partner comes back', idBefore);
+        const back = await a.evaluate(() => { const p = Coop.others().find((x) => x.bot === 1); return { name: p.name, bots: Coop.others().filter((x) => x.bot).length }; });
+        check('a mind saved with a partner in sends that partner out and brings the same one back', back.name === 'Ragnvaldr' && back.bots === 1, JSON.stringify(back));
         await press(a, 'F8');
         await waitFor(a, () => !Coop.others().some((p) => p.bot), 20000, 'the partner leaves');
     } catch (e) {

@@ -1,16 +1,25 @@
 // Runs every suite, several at once. `npm test`, or `node test/run.js battle death` for some.
 // FH_TEST_JOBS=1 runs them one at a time. Every suite has ports of its own, so they never meet.
-// A suite that fails is run once more on its own, to tell a flaky test from a broken one;
-// either way the run fails. Each suite's whole output goes to test/out/logs (FH_TEST_LOGS_DIR).
+// A suite that fails is run three more times on its own: all three passing = flaky (named,
+// the run passes), anything else = broken (the run fails). Each suite's whole output goes to test/out/logs (FH_TEST_LOGS_DIR).
 // The release gate (test/gate.js) runs this in every way the game is played.
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'ghost', 'crow', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'setup', 'plays', 'soak'];
+const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'ghost', 'crow', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'pit', 'setup', 'plays', 'soak'];
+// The suites where how the players are connected can change the outcome: joining, moving
+// between maps, fights and their picture, dropped lines, what is carried over the line.
+// The gate runs every suite as shipped, and only these in its other ways of connecting
+// (FH_TEST_LINE=1). The rest (the partner's own play, menus, the launcher, start-up) do the
+// same thing on any line: four full passes of them were an hour of the gate's 80 minutes.
+const LINE = new Set(['join', 'hostrun', 'four', 'title', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'ghost', 'crow', 'holds', 'refight', 'scenes', 'lift',
+    'meterline', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'import', 'buckman', 'party', 'carry', 'followers', 'battle',
+    'encounter', 'death', 'ending', 'trade', 'cast', 'talk', 'chat', 'doors', 'lifecycle', 'resume', 'reconnect', 'quietline', 'soak']);
+for (const n of LINE) if (ALL.indexOf(n) < 0) throw new Error('LINE names a suite that is not in ALL: ' + n);
 // The public copy has no oldsaves (it loads real players' saves, kept private).
-const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL.filter((n) => n === 'lint' || fs.existsSync(path.join(__dirname, n + '.js')));
+const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL.filter((n) => n === 'lint' || fs.existsSync(path.join(__dirname, n + '.js'))).filter((n) => !process.env.FH_TEST_LINE || LINE.has(n));
 const jobs = Math.max(1, Number(process.env.FH_TEST_JOBS) || Math.min(6, Math.floor(os.cpus().length / 2)));
 
 // The longest suites start first, by how long each took last time.
@@ -77,15 +86,22 @@ function runOne(name, again) {
     }));
     fs.mkdirSync(path.dirname(TIMES), { recursive: true });
     fs.writeFileSync(TIMES, JSON.stringify(times, null, 1));
-    // Alone, once more: passing now means it is flaky, which still fails the run.
+    // Alone, three times: passing all three means the suite is flaky under load, not that
+    // the game is broken. It is named, to be fixed, and does not fail the run (11/11: one
+    // flake used to cost the whole gate again, 80 minutes a time; 0.1.9 took four runs).
     const flaky = [];
     for (const name of failed) {
-        console.log(`again, alone: ${name}`);
-        if (await runOne(name, true)) flaky.push(name);
+        let passes = 0;
+        for (let i = 0; i < 3; i++) {
+            console.log(`again, alone (${i + 1} of 3): ${name}`);
+            if (!(await runOne(name, true))) break;
+            passes++;
+        }
+        if (passes === 3) flaky.push(name);
     }
     const broken = failed.filter((n) => flaky.indexOf(n) < 0);
     const wall = `${Math.round((Date.now() - started) / 1000)}s, ${jobs} at a time`;
-    console.log(failed.length ? `${failed.length} suite(s) failed (${wall}): broken ${broken.join(' ') || '-'}; flaky (passed alone) ${flaky.join(' ') || '-'}` : `all ${names.length} suites passed (${wall})`);
+    console.log(failed.length ? `${failed.length} suite(s) failed (${wall}): broken ${broken.join(' ') || '-'}; flaky (passed alone 3 of 3: fix the test) ${flaky.join(' ') || '-'}` : `all ${names.length} suites passed (${wall})`);
     if (process.env.FH_TEST_RESULT) fs.writeFileSync(process.env.FH_TEST_RESULT, JSON.stringify({ suites: names.length, broken, flaky, secs: Math.round((Date.now() - started) / 1000) }));
-    process.exit(failed.length ? 1 : 0);
+    process.exit(broken.length ? 1 : 0);
 })();

@@ -155,7 +155,11 @@ async function press(page, code, ms) {
         await sleep(1500);
 
         //--- Ann goes through a door with the bot beside her: it comes at once ---
+        // Both at the door: she leaves from its tile with the bot one step off.
         const door = await bot.evaluate(() => BOT.nav.exits($dataMap, 1).find((e) => e.to === 4));
+        await a.evaluate((d) => { $gamePlayer.locate(d.x, d.y); }, door);
+        await bot.evaluate((d) => { $gamePlayer.locate(d.x, d.y + 1); }, door);
+        await sleep(1500); // presence crosses
         const tNear = Date.now();
         await a.evaluate((d) => { $gamePlayer.reserveTransfer(4, d.tx, d.ty, 2, 0); }, door);
         await waitFor(a, () => $gameMap.mapId() === 4 && T.onMap(), 20000, 'Ann on the next map');

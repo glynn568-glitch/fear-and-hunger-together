@@ -106,6 +106,11 @@
         if (!Ev.amOwner()) return;
         const target = Ev.sharedMap() ? remoteTarget(this) : null;
         if (!target) { _updateSelfMovement.call(this); return; }
+        // The game stops every event while its player is in a scene or reading
+        // (YEP_StopMapMovement). Here the map goes on for the others, so only what is
+        // nearest to that player stands still (field 11/11: talking to someone, he was
+        // walked up to and surrounded; arriving by the lift, caught before he stood).
+        if (target.st === 'event') return;
         aimedAt(target, () => _updateSelfMovement.call(this));
         // On its way to them it may have walked into this player instead.
         if (this._trigger === 2 && !this.isMoving()) {

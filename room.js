@@ -579,20 +579,35 @@ class Room {
             if (!this.partners || !peer.host) break;
             const brain = require('./tools/brain');
             const pick = this.mindPick(msg);
-            const bad = (text) => this.send(peer, { t: 'partnermindbad', text });
+            // In the log either way: 11/11 a pick that never landed left no trace of why.
+            const bad = (text) => { console.log('partner mind ' + pick.brain + ' not kept: ' + text); this.send(peer, { t: 'partnermindbad', text }); };
             if (pick.key && !/^[\x21-\x7e]{8,300}$/.test(pick.key)) { bad('That does not look like a key.'); break; }
             if (pick.brain === 'openai' && !/^https?:\/\/\S+$/.test(pick.url)) { bad('Give the service\'s address, starting http:// or https://.'); break; }
             if (this.partners.checking) break; // Save pressed twice
             this.partners.checking = true;
+            // A check that never comes back must not leave Save dead for the rest of the session.
+            let late = false;
+            const guard = setTimeout(() => { late = true; this.partners.checking = false; bad('It did not answer in time. Try Save again.'); }, 45000);
             brain.checkMind(pick).then((why) => {
+                if (late) return;
+                clearTimeout(guard);
                 this.partners.checking = false;
                 if (why) { bad(why); return; }
                 brain.saveMind(pick);
+                console.log('partner mind kept: ' + pick.brain + (pick.model ? ' (' + pick.model + ')' : ''));
                 this.send(peer, { t: 'partnermindok' });
-                const running = this.partners.names().length;
+                const running = this.partners.names();
                 const taken = new Set([...this.peers.values()].filter((p) => p.named).map((p) => p.name.toLowerCase()));
-                this.send(peer, { t: 'partnernote', text: 'Saved. ' + (running ? 'Partners called in from now on think that way.' : (this.partners.start(taken, this.takenInitials()) || 'An AI partner is on the way.')) });
-            }, (e) => { this.partners.checking = false; bad(String(e && e.message || e).slice(0, 160)); });
+                if (running.length) {
+                    // The partner already in thinks that way from now (11/11: he switched to
+                    // another mind because the first was out, and "from now on" meant the
+                    // one beside him stayed mute): home and straight back, same body.
+                    this._recall = { names: running.slice(), runId: this.runId };
+                    for (const n of running) this.partners.stop(n);
+                    this.maybeRecall();
+                    this.send(peer, { t: 'partnernote', text: 'Saved. Your partner steps out and comes back thinking that way.' });
+                } else this.send(peer, { t: 'partnernote', text: 'Saved. ' + (this.partners.start(taken, this.takenInitials()) || 'An AI partner is on the way.') });
+            }, (e) => { if (late) return; clearTimeout(guard); this.partners.checking = false; bad(String(e && e.message || e).slice(0, 160)); });
             break;
         }
         case 'leftworld':

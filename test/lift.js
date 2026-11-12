@@ -58,6 +58,49 @@ async function press(page, code) {
         const after = { b: await b.evaluate(() => $gameMap.mapId() + ' ' + $gamePlayer.x + ',' + $gamePlayer.y), cage: await cage(b) };
         check('and leaves the partner where they are', after.b.startsWith('8 '), JSON.stringify(after));
         check('who sees it go back up', after.cage !== '20,58', JSON.stringify(after));
+
+        // Both use the mechanism a moment apart (field 11/11: pho, then Enki three
+        // seconds after). The lift's switch was already on for the second rider, so
+        // the arrival was "the first one's": the second stood hidden at the bottom
+        // for good, and what walked up fought someone nobody could see.
+        const ride = async (p) => {
+            await p.evaluate(() => { $gamePlayer.setDirection(4); $gameMap.event(101).start(); });
+            await waitFor(p, () => $gameMessage.isChoice(), 10000, p.label + ' is asked');
+            await sleep(300);
+            await p.evaluate(() => { const w = SceneManager._scene._messageWindow._choiceWindow; w.select(0); w.callOkHandler(); });
+        };
+        for (const gap of [1200, 3000]) {
+            await go(a, 5, 40, 48, 4); await go(b, 5, 40, 48, 4);
+            await settled(a, 5); await settled(b, 5);
+            await idle(a); await idle(b);
+            // 127: which Caverns this run has (1 = map 8); 117: the mechanism is in.
+            await a.evaluate(() => { $gameVariables.setValue(127, 1); $gameSwitches.setValue(117, true); $gamePlayer.setTransparent(false); });
+            await b.evaluate(() => $gamePlayer.setTransparent(false));
+            await sleep(1000);
+            await ride(a);
+            await sleep(gap);
+            await ride(b);
+            await settled(a, 8); await settled(b, 8);
+            await idle(a); await idle(b);
+            await sleep(1500);
+            const seen = async (p) => p.evaluate(() => ({ hidden: $gamePlayer.isTransparent(), on: $gameSwitches.value(116), map: $gameMap.mapId() }));
+            const ra = await seen(a), rb = await seen(b);
+            check('riding down ' + gap + ' ms apart, both stand visible at the bottom', !ra.hidden && !rb.hidden && !ra.on && !rb.on && ra.map === 8 && rb.map === 8, JSON.stringify({ a: ra, b: rb }));
+        }
+
+        // The other side of that rule (Grok g13): a plate that only turns a flag on. Francois's
+        // (Map125 EV323 turns 1815 on; EV320, autorun on it, hides its player and starts his
+        // fight). Stepped on by B while A is in the scene it opened, it is not B's scene too.
+        await go(a, 125, 54, 60); await go(b, 125, 54, 54);
+        await settled(a, 125); await settled(b, 125);
+        await sleep(1500);
+        await a.evaluate(() => $gameSwitches.setValue(1815, true));
+        await waitFor(b, () => $gameSwitches.value(1815), 5000, 'B hears the plate went down');
+        const plate = await b.evaluate(() => { const e = $gameMap.event(323); return e.x + ',' + e.y; });
+        await b.evaluate(() => { $gamePlayer.locate(54, 55); $gamePlayer.setDirection(2); $gamePlayer.moveStraight(2); });
+        await sleep(4000);
+        const stepped = await b.evaluate(() => ({ at: $gamePlayer.x + ',' + $gamePlayer.y, hidden: $gamePlayer.isTransparent(), mine: Coop.world.mine.has('sw1815'), fight: SceneManager._scene instanceof Scene_Battle || $gameParty.inBattle(), running: $gameMap.isEventRunning() }));
+        check('a plate already down, stepped on by a second player, does not start its scene for them', plate === '54,56' && stepped.at === '54,56' && !stepped.hidden && !stepped.mine && !stepped.fight, JSON.stringify({ plate, stepped }));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();
