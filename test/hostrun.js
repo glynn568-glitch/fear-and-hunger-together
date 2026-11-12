@@ -73,7 +73,9 @@ function balanceSwing() {
         let s = await pair(browser, 8498, {});
         let { a, b } = s;
         pages.push(a, b);
-        check('the friend\'s title screen says whose game sets the run', /Ann's game sets the run/.test(await hud(b)), await hud(b));
+        // With the lobby (client/lobby.js) the friend's menu has no run to choose: that is the host's.
+        const lines = await b.evaluate(() => SceneManager._scene._commandWindow._list.map((c) => c.name).join('|'));
+        check('the friend\'s title leaves the run to the host', lines === 'Together' && /Ann/.test(await hud(b)), lines + ' / ' + await hud(b));
         check('the host\'s does not', !/sets the run/.test(await hud(a)), await hud(a));
         await friendEnters(b);
         await waitFor(b, () => Coop.world.hostWait === 'Ann', 10000, 'the friend is told to wait');

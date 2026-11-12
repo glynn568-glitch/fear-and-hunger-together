@@ -94,9 +94,9 @@ async function bothToTitle(a, b) {
         await waitFor(b, () => Coop.world.on, 5000, 'B hears which run is on');
         // Saves from before slots were labelled with their moment: the label is read back from the file.
         await b.evaluate(() => { const info = DataManager.loadGlobalInfo(); for (const i of info) if (i) delete i.coopStamp; DataManager.saveGlobalInfo(info); });
-        await waitFor(b, () => /has carried on a run you share/.test(document.getElementById('coop-hud').textContent), 5000, 'the title screen says so').catch(() => {});
+        await waitFor(b, () => /Under way.*Ann in/.test(document.getElementById('coop-hud').textContent), 15000, 'the title screen says so').catch(() => {});
         const hint = await b.evaluate(() => ({ first: Scene_Load.prototype.firstSavefileIndex.call({}), hud: document.getElementById('coop-hud').textContent }));
-        check('Continue opens on the matching save', hint.first === 0 && /Ann has carried on a run you share/.test(hint.hud), JSON.stringify(hint));
+        check('Continue opens on the matching save', hint.first === 0 && /Under way.*Ann in/.test(hint.hud), JSON.stringify(hint));
         await load(b, 3);
         await waitFor(b, onMapLive, 30000, "B ends up on the first bed's save");
         const body = await b.evaluate(() => ({ dead: Coop.dead, alive: $gameParty.leader().isAlive(), hp: $gameParty.leader().hp, items: $gameParty.numItems($dataItems[2]), stamp: Coop.world.saveStamp }));

@@ -1,0 +1,6 @@
+{"event":"Init","who":"","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"Connect","who":"Ann","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"Connect","who":"Bo","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"ChooseRun","who":"Ann","run":"new","c":661,"now":{"founded":false,"run":"new","line":[],"ready":[],"ins":[]}}
+{"event":"Pick","who":"Bo","c":663,"now":{"founded":false,"run":"new","line":[],"ready":[],"ins":[]}}
+{"event":"Start","who":"Ann","now":{"founded":false,"run":"new","line":["Ann"],"ready":[],"ins":[]}}

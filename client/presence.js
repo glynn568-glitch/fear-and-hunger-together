@@ -56,7 +56,13 @@
 
     function snapshot() {
         const state = Coop.myState();
-        if (state === 'title') return Coop.isBot ? { st: 'title', m: 0, bot: 1 } : { st: 'title', m: 0 };
+        if (state === 'title') {
+            // "title" is anyone not in the shared world. up: a game is running here all the same (the
+            // opening, a save loading, playing alone), which the lobby must not take for idling at the title.
+            const scene = SceneManager._scene;
+            const up = scene && !(scene instanceof Scene_Title || scene instanceof Scene_Boot || scene instanceof Scene_Load || scene instanceof Scene_Options) ? 1 : 0;
+            return Coop.isBot ? { st: 'title', m: 0, up: up, bot: 1 } : { st: 'title', m: 0, up: up };
+        }
         const leader = $gameParty.leader();
         const light = Coop.myLight ? Coop.myLight() : { lr: 0, lc: '' };
         return {

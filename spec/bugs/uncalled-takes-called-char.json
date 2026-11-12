@@ -1,0 +1,8 @@
+{
+  "why": "11/11 (found writing this spec, in the lobby as first built): a game running uncalled (begun before the lobby came on, or its line dropped mid-load and came back) arrived as the character of someone the lobby had called; the called person was then refused at the door after sitting through their opening, and stayed 'loading' in the line for good, which also kept the partner out.",
+  "code": "room.js 'world?' twin (an uncalled arrival yields to the line's characters), test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ x \\notin line => body[x] \\notin {CharOf(y) : y \\in line}\n", "new": ""}
+  ]
+}

@@ -7,6 +7,9 @@ const crypto = require('crypto');
 const LAG = Number(process.env.FH_LAG || 0);
 const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
 const TITLE_GHOST = Number(process.env.FH_TITLE_GHOST) || 10000; // ms a player in the run may say "title" before they are taken out of it
+const LINE_TITLE = Number(process.env.FH_LINE_TITLE) || 15000; // ms someone called in may still say "title" before the call is dropped
+const LINE_HOLD = Number(process.env.FH_LINE_HOLD) || 30000; // ms the call and the character of someone whose line dropped are kept for them
+const CHARACTERS = [661, 662, 663, 664]; // the switch the opening sets for each protagonist (client/state.js STARTED_AS)
 const RATE = Number(process.env.FH_RATE || 0);
 const JITTER = Number(process.env.FH_JITTER || 0);
 const METER_LOG_MS = Number(process.env.FH_METER_LOG_MS) || 60000; // how often a player's meter goes in the log
@@ -32,6 +35,11 @@ class Room {
         this.mapOwners = new Map(); // mapId -> peer id simulating that map's events
         this.dirty = false;
         this._recall = null; // partners sent home because the last person left: { names, runId }
+        // The lobby (docs: spec/Lobby.tla). run: what the host chose for this night, until it is founded.
+        // line: names called in by Start or Join and not in yet.
+        // held: someone called whose line dropped, by name, until their page is back or LINE_HOLD is up.
+        this.lobby = { run: null, line: new Set(), held: new Map() };
+        this.trace('Init', null);
         this.relayOnly = process.env.FH_RELAY !== '0'; // private hosting (the default): no direct browser-to-browser video
         setInterval(() => this.persist(), 5000).unref();
         // A machine that went to sleep or lost its network never says
@@ -264,6 +272,225 @@ class Room {
         } catch (e) { return null; }
     }
 
+    //--- the lobby ---------------------------------------------------------------
+    // Two or more people at the title: the host says what this night is, the others say ready,
+    // and the host's Start calls everyone in at once. Only the host's game founds the run
+    // ('world?' below); an AI partner comes in after the people. The rules are spec/Lobby.tla's.
+
+    // The people here: named, and not an AI partner.
+    people() {
+        return [...this.peers.values()].filter((p) => p.named && !this.isBot(p));
+    }
+
+    // At the title screen itself. Presence says "title" for anyone not in the shared world;
+    // "up" with it means a game is running on that page (the opening, a save loading).
+    atTitle(peer) {
+        return !peer.live && (!peer.last || (peer.last.st === 'title' && !peer.last.up));
+    }
+
+    inLine(peer) {
+        return this.lobby.line.has(peer.name.toLowerCase());
+    }
+
+    // The run someone at the title would come into: the host's choice, or the one under way.
+    lobbyRun(peer) {
+        if (!this.founded) return this.lobby.run;
+        const run = this.runFor(peer);
+        return run ? { kind: 'save', runId: run.runId, stamp: run.stamp } : { kind: 'new' };
+    }
+
+    // What someone would come in as: the character they picked, else their own save of the run.
+    lobbyChar(peer) {
+        const lob = peer.lob || {};
+        const run = this.lobbyRun(peer);
+        return lob.pick || (run && run.kind === 'save' ? lob.has : 0) || 0;
+    }
+
+    // Characters taken in the run: whoever is in it, and whoever has been called.
+    lobbyBusy() {
+        const out = new Set();
+        for (const p of this.peers.values()) {
+            if (p.live && Array.isArray(p.ini)) for (const id of p.ini) out.add(id);
+            else if (p.named && this.inLine(p)) out.add(this.lobbyChar(p));
+        }
+        for (const hold of this.lobby.held.values()) out.add(hold.char);
+        out.delete(0);
+        return out;
+    }
+
+    // The night is to be chosen again. Whoever was called has a game already starting: it may not
+    // found a run on its way back to the title ('world?', calledOff).
+    lobbyReset() {
+        for (const p of this.peers.values()) if (p.named && this.inLine(p)) p.calledOff = true;
+        this.lobby.run = null;
+        this.lobby.line.clear();
+        for (const hold of this.lobby.held.values()) clearTimeout(hold.timer);
+        this.lobby.held.clear();
+        for (const p of this.peers.values()) if (p.lob) { p.lob.ready = false; p.lob.pick = 0; p.lob.has = 0; }
+    }
+
+    // Everyone is told the whole of it whenever any of it changes.
+    lobbyTell() {
+        const host = this.hostPerson();
+        const people = this.people();
+        const on = people.length >= 2 && (this.founded || !!host);
+        const rows = {};
+        for (const p of people) {
+            const lob = p.lob || {};
+            rows[p.id] = { ready: !!lob.ready, pick: lob.pick || 0, has: lob.has || 0, away: !!lob.away };
+        }
+        const line = [...this.peers.values()].filter((p) => p.named && this.inLine(p)).map((p) => p.id);
+        const held = [...this.lobby.held.values()].map((hold) => hold.char);
+        for (const p of this.peers.values()) {
+            if (!p.named) continue;
+            const msg = JSON.stringify({ t: 'lobby', on, run: this.lobbyRun(p), host: host ? host.id : 0, founded: this.founded, line, held, rows });
+            if (msg === p.lobbySent) continue;
+            p.lobbySent = msg;
+            this.deliver(p, msg, false);
+        }
+    }
+
+    // A person's word in the lobby. Each case is one action of the spec, with its guards.
+    lobbySay(peer, msg) {
+        if (!peer.named || this.isBot(peer)) return;
+        const host = this.hostPerson();
+        const lob = peer.lob || (peer.lob = {});
+        const character = (v) => (CHARACTERS.indexOf(v) >= 0 ? v : 0);
+        const others = this.people().filter((p) => p !== peer);
+        switch (msg.do) {
+        case 'run': { // ChooseRun: the host says what this night is, and nobody stays ready
+            if (peer !== host || this.founded || this.lobby.line.size || !this.atTitle(peer)) break;
+            this.lobbyReset();
+            const run = msg.run || {};
+            if (run.kind === 'new' && character(msg.pick)) {
+                this.lobby.run = { kind: 'new' };
+                lob.pick = character(msg.pick);
+            } else if (run.kind === 'save' && character(msg.has)) {
+                this.lobby.run = { kind: 'save', runId: String(run.runId || '').replace(/[^\w-]/g, '').slice(0, 40), stamp: Number(run.stamp) || 0, map: run.map | 0 };
+                lob.has = character(msg.has);
+            }
+            this.trace('ChooseRun', peer, { run: this.lobby.run ? this.lobby.run.kind : 'none', c: lob.pick || lob.has || 0 });
+            break;
+        }
+        case 'has': { // which character this person's own save of the run is
+            const has = character(msg.has);
+            if (has === (lob.has || 0) || peer.live || this.inLine(peer)) break;
+            // Carrying a save on, the host is who the save they chose is ('run' said it).
+            if (peer === host && !this.founded && this.lobby.run && this.lobby.run.kind === 'save') break;
+            // What they would load just changed: ready was for the other one.
+            if (!lob.pick) lob.ready = false;
+            lob.has = has;
+            this.trace('Has', peer, { c: has });
+            break;
+        }
+        case 'pick': { // Pick: a character nobody else here has, and nobody in the run
+            const run = this.lobbyRun(peer);
+            if (!run || !this.atTitle(peer) || this.inLine(peer) || lob.ready) break;
+            if (peer === host && run.kind !== 'new') break; // carrying a save on, the host is who that save is
+            const want = character(msg.pick);
+            if (!want && peer === host) break;
+            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) break;
+            lob.pick = want;
+            this.trace('Pick', peer, { c: want });
+            break;
+        }
+        case 'ready': { // Ready, Unready
+            if (peer === host) break;
+            if (!msg.on) {
+                if (!lob.ready || !this.atTitle(peer) || this.inLine(peer)) break;
+                lob.ready = false;
+                this.trace('Unready', peer);
+                break;
+            }
+            if (lob.ready || lob.away || this.founded || this.lobby.line.size || !this.lobby.run || !this.atTitle(peer)) break;
+            const mine = this.lobbyChar(peer);
+            // Theirs alone: not the host's, and not anyone's who is already ready.
+            if (!mine || others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) break;
+            lob.ready = true;
+            this.trace('Ready', peer);
+            break;
+        }
+        case 'away': // GoAway, Back: five minutes without a key at the title
+            if (!msg.on) { if (lob.away) { lob.away = false; this.trace('Back', peer); } break; }
+            if (peer === host || lob.away || lob.ready || !this.atTitle(peer)) break;
+            lob.away = true;
+            this.trace('GoAway', peer);
+            break;
+        case 'start': { // Start: only with every person here, at the title and not away, ready
+            if (peer !== host || this.founded || this.lobby.line.size || !this.lobby.run) break;
+            if (!this.atTitle(peer) || !this.lobbyChar(peer)) break;
+            if (others.some((p) => this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready))) break;
+            const called = [peer].concat(others.filter((p) => p.lob && p.lob.ready));
+            for (const p of called) this.lobby.line.add(p.name.toLowerCase());
+            this.trace('Start', peer);
+            for (const p of called) { this.trace('BeginLoad', p); this.send(p, { t: 'go' }); }
+            break;
+        }
+        case 'join': { // Join: into a run under way
+            if (!this.founded || !this.atTitle(peer) || this.inLine(peer) || lob.away) break;
+            const mine = this.lobbyChar(peer);
+            if (!mine || this.lobbyBusy().has(mine)) break;
+            this.lobby.line.add(peer.name.toLowerCase());
+            this.trace('Join', peer);
+            this.trace('BeginLoad', peer);
+            this.send(peer, { t: 'go' });
+            break;
+        }
+        case 'leave': // called, and not coming after all (their save is gone): as if their line had dropped
+            if (!this.inLine(peer) || peer.live) break;
+            this.lobbyGone(peer, true);
+            break;
+        default:
+        }
+        this.lobbyTell();
+    }
+
+    // Someone called in is gone (a dropped line, or back at the title without loading). The host
+    // gone before the run exists calls the start off and clears the lobby: the run is theirs to choose.
+    lobbyGone(peer, here) {
+        if (!peer.named) return;
+        const wasHost = !!peer.host && !this.isBot(peer) && (here ? peer === this.hostPerson() : !this.hostPerson());
+        const who = peer.name.toLowerCase();
+        const cancel = wasHost && !this.founded;
+        // A dropped line is not a change of mind: the page may be playing on through its opening.
+        // The call and the character stay theirs until it is back ('name', called) or LINE_HOLD is up.
+        if (!here && !cancel && this.lobby.line.has(who)) {
+            const lob = peer.lob || {};
+            const timer = setTimeout(() => { this.holdEnds(who); this.lobbyTell(); }, LINE_HOLD);
+            if (timer.unref) timer.unref();
+            this.lobby.held.set(who, { name: peer.name, token: peer.token, char: this.lobbyChar(peer), pick: lob.pick || 0, has: lob.has || 0, timer });
+        } else this.lobby.line.delete(who);
+        if (peer.lob) { peer.lob.ready = false; peer.lob.away = false; }
+        if (cancel) this.lobbyReset();
+        this.trace(here ? 'GiveUp' : 'Drop', peer);
+    }
+
+    // Nobody came back for a held call (or whoever did is not that game): it is dropped.
+    holdEnds(who) {
+        const hold = this.lobby.held.get(who);
+        if (!hold) return;
+        clearTimeout(hold.timer);
+        this.lobby.held.delete(who);
+        this.lobby.line.delete(who);
+        this.trace('HoldEnds', { name: hold.name });
+    }
+
+    // For checking real runs against the spec (spec/TraceLobby.tla): one line per action, written
+    // once the room has done it, with what the room then holds.
+    trace(event, peer, more) {
+        if (!process.env.FH_LOBBY_TRACE) return;
+        const as = (p) => (this.isBot(p) ? 'Partner' : p.name);
+        const named = [...this.peers.values()].filter((p) => p.named);
+        const now = {
+            founded: this.founded,
+            run: this.lobby.run ? this.lobby.run.kind : 'none',
+            line: named.filter((p) => this.inLine(p)).map(as).concat([...this.lobby.held.values()].map((hold) => hold.name)).sort(),
+            ready: named.filter((p) => p.lob && p.lob.ready).map(as).sort(),
+            ins: named.filter((p) => p.live).map(as).sort(),
+        };
+        try { fs.appendFileSync(process.env.FH_LOBBY_TRACE, JSON.stringify(Object.assign({ event, who: peer ? as(peer) : '' }, more || {}, { now })) + '\n'); } catch (e) { /* a test's own file */ }
+    }
+
     drop(peer, why) {
         if (!this.peers.delete(peer.id)) return;
         // Who came and went, and why: a session can be read back from the log.
@@ -275,15 +502,22 @@ class Room {
         if (peer.named && (st === 'battle' || st === 'dead')) this.markParked(peer.name, st === 'dead' ? 'dead' : (peer.last.br === 'g' ? 'guest' : 'owner'));
         this.leaveMap(peer);
         this.leaveWorld(peer);
+        this.lobbyGone(peer, false);
         this.broadcast({ t: 'leave', id: peer.id });
+        this.lobbyTell();
     }
 
     // Back to the title on purpose. The last person takes the partners
     // with them; a partner sent home that way keeps the body just parked.
     wentToTitle(peer) {
+        const was = peer.live;
         if (!this.isBot(peer)) this.endWithPartners(peer);
         if (!this.recallHolds(peer)) this.unpark(peer.name);
         this.leaveWorld(peer);
+        // In the spec's terms a partner that leaves the run by itself has dropped and come back.
+        if (was && this.isBot(peer)) { this.trace('Drop', peer); this.trace('Connect', peer); }
+        else if (was) this.trace('BackToTitle', peer);
+        this.lobbyTell();
     }
 
     leaveWorld(peer) {
@@ -291,7 +525,11 @@ class Room {
         peer.ini = null;
         if (![...this.peers.values()].some((p) => p.live)) {
             this.persist();
-            if (this.founded) this.broadcast({ t: 'runover' });
+            if (this.founded) {
+                this.broadcast({ t: 'runover' });
+                // Whoever was still on the way in has no run to come into, and the next one is chosen afresh.
+                this.lobbyReset();
+            }
             this.founded = false; // the next player in decides which run this is
         }
     }
@@ -386,11 +624,30 @@ class Room {
                 clash.ws.terminate();
                 this.drop(clash, 'its own tab came back');
             }
+            const fresh = !peer.named;
+            // A held call: the same tab back with its game still running as called takes it up again
+            // (client/net.js says so); anyone else under that name is not that game
+            // (first: a called person renamed onto it keeps their own call, below).
+            const hold = this.lobby.held.get(name.toLowerCase());
+            if (hold && fresh && msg.called && token && hold.token === token) {
+                clearTimeout(hold.timer);
+                this.lobby.held.delete(name.toLowerCase());
+                peer.lob = { pick: hold.pick, has: hold.has };
+            } else if (hold) this.holdEnds(name.toLowerCase());
+            // The same person under another name: still called in, and still someone who has been
+            // in this run (their saves of it stay from its past). Both are kept by name.
+            const was = fresh ? '' : peer.name.toLowerCase();
+            if (was && was !== name.toLowerCase()) {
+                if (this.lobby.line.delete(was)) this.lobby.line.add(name.toLowerCase());
+                if (this.entered.has(was)) this.entered.add(name.toLowerCase());
+            }
             peer.name = name;
             peer.named = true;
             peer.token = token;
             this.broadcast({ t: 'name', id: peer.id, name: peer.name });
             this.send(peer, { t: 'nameok', name, run: this.runFor(peer), decides: peer === this.hostPerson() });
+            if (fresh) this.trace('Connect', peer);
+            this.lobbyTell();
             break;
         }
         case 'map': { // { mapId, canOwn }
@@ -408,6 +665,16 @@ class Room {
             let founded = false;
             const who = peer.name.toLowerCase();
             const how = ['new', 'load', 'park', 'again'].indexOf(msg.how) >= 0 ? msg.how : 'new';
+            // An AI partner comes in after the people: while anyone called is still on the way, it
+            // waits, so whoever they turn out to be is known before it takes a character.
+            if (this.isBot(peer) && this.lobby.line.size) { this.send(peer, { t: 'worldhost', by: [...this.lobby.line][0] }); break; }
+            // It follows people into their run and never starts one: a run of its own, founded while the
+            // only person in was off the line for a moment, would refuse that person their own run when
+            // they came back (worldbusy). A test's bot that plays by itself says so (lead).
+            if (this.isBot(peer) && !this.founded && !msg.lead) { this.send(peer, { t: 'worldhost', by: 'a player' }); break; }
+            // Called in by a start that was then called off (the host's game dropped): this game goes
+            // back to the title (client/lobby.js); it does not found a run of its own on the way.
+            if (peer.calledOff && !this.founded) { this.send(peer, { t: 'worldhost', by: 'the host' }); break; }
             // Someone still reading an ending (map 86) is not holding the run open: it is over.
             // A New Game at this moment is a new run, not the finished one with its flags.
             // Only a New Game: a load or a carried-on line may be refused, or may be the ending's own player.
@@ -415,7 +682,12 @@ class Room {
             const ini = Array.isArray(msg.ini) ? msg.ini.filter((n) => Number.isInteger(n)).slice(0, 8) : [];
             // One player per protagonist: the game keeps each character's
             // body and death in flags named after the character.
-            const twin = [...this.peers.values()].find((p) => p !== peer && p.live && p.ini && p.ini.some((n) => ini.indexOf(n) >= 0));
+            // Someone the lobby has called holds their character from the call on: whoever comes in
+            // uncalled (a game begun before the lobby, a line that dropped mid-load) yields to them.
+            const called = this.inLine(peer);
+            const twin = [...this.peers.values()].find((p) => p !== peer && p.named
+                && (p.live && p.ini ? p.ini.some((n) => ini.indexOf(n) >= 0) : !called && this.inLine(p) && ini.indexOf(this.lobbyChar(p)) >= 0))
+                || (!called && [...this.lobby.held.values()].find((hold) => ini.indexOf(hold.char) >= 0));
             if (twin) { this.send(peer, { t: 'worldclash', name: twin.name }); break; }
             // Someone loading a save from another run does not get to pour
             // it into the one being played.
@@ -458,7 +730,9 @@ class Room {
                 const now = Date.now();
                 if (!peer.hostWaitSince || now - (peer.hostWaitLast || 0) > 15000) peer.hostWaitSince = now; // a fresh try starts a fresh wait
                 peer.hostWaitLast = now;
-                if (now - peer.hostWaitSince < HOST_WAIT) { this.send(peer, { t: 'worldhost', by: host.name }); break; }
+                // Called in by the host's Start, there is no going on alone: the host's game is on its
+                // way, or the start is called off (lobbyGone) and everyone is back at the title.
+                if (now - peer.hostWaitSince < HOST_WAIT || this.inLine(host)) { this.send(peer, { t: 'worldhost', by: host.name }); break; }
             }
             let mode = 'join';
             let newer = 0;
@@ -485,10 +759,18 @@ class Room {
                 founded = true;
                 if (carried && how === 'load') this.writeBase();
             }
+            this.lobby.line.delete(who);
+            // From here on the run is the one under way (lobbyRun). Founded by someone the lobby did not
+            // call (the host away, a game begun before the others came): what was said for another
+            // night, ready and picks, does not carry into this one.
+            if (founded && !called) this.lobbyReset();
+            else if (founded) this.lobby.run = null;
+            if (peer.lob) peer.lob.ready = false;
             peer.live = true;
             peer.ini = ini;
             peer.deadWait = false;
             peer.hostWaitSince = 0;
+            this.trace('Arrive', peer, { c: ini[0] || 0 });
             this.entered.add(who);
             // The host's game says whether the balance changes are in this run.
             // Told to the one entering here, and to everyone already in if it moved.
@@ -500,8 +782,12 @@ class Room {
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
             if (peer === this.hostPerson()) this.maybeRecall();
+            this.lobbyTell();
             break;
         }
+        case 'lobby':
+            this.lobbySay(peer, msg);
+            break;
         case 'balance': { // the host turns Balance changes on or off; a joiner's word is dropped
             if (peer !== this.hostPerson() || typeof msg.on !== 'boolean' || this.balance === msg.on) break;
             this.balance = msg.on;
@@ -522,6 +808,18 @@ class Room {
                     this.wentToTitle(peer);
                 }
             } else peer.titleSince = 0;
+            // Called in, and still at the title a while later: their game never started. The call
+            // is dropped, so nobody (a partner, or everyone if this is the host) waits on them for ever.
+            if (peer.named && !peer.live && msg.st === 'title' && !msg.up && this.inLine(peer)) {
+                if (!peer.lineSince) peer.lineSince = Date.now();
+                else if (Date.now() - peer.lineSince > LINE_TITLE) {
+                    peer.lineSince = 0;
+                    console.log(`player ${peer.id} (${peer.name}) was called in and stayed at the title; no longer waited for`);
+                    this.lobbyGone(peer, true);
+                    this.lobbyTell();
+                }
+            } else peer.lineSince = 0;
+            if (msg.st === 'title' && !msg.up) peer.calledOff = false;
             this.broadcast(msg, peer.id);
             break;
         case 'partner': { // { toggle } F8, or { on }: call an AI partner in, or send one home

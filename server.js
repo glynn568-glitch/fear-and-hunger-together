@@ -93,7 +93,7 @@ const COMPRESSIBLE = new Set(['.html', '.js', '.json', '.css', '.txt']);
 
 // Client scripts, in load order. They are appended to the plugin list so they
 // load after every plugin the game ships with.
-const COOP_SCRIPTS = ['net', 'pad', 'fixes', 'state', 'presence', 'events', 'battle', 'video', 'death', 'save', 'recover', 'trade', 'party', 'pointer', 'talk', 'chat', 'setup', 'together', 'sheet', 'light', 'rules', 'ui', 'meter'];
+const COOP_SCRIPTS = ['net', 'pad', 'fixes', 'state', 'presence', 'events', 'battle', 'video', 'death', 'save', 'recover', 'trade', 'party', 'pointer', 'talk', 'chat', 'setup', 'together', 'lobby', 'sheet', 'light', 'rules', 'ui', 'meter'];
 
 // A link pasted into a chat program shows as a card saying what it is. The
 // program fetches the page and the picture itself, with no cookie, so the

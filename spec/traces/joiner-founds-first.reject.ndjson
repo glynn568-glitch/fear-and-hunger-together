@@ -1,0 +1,10 @@
+{"event":"Init","who":"","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"Connect","who":"Ann","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"Connect","who":"Bo","now":{"founded":false,"run":"none","line":[],"ready":[],"ins":[]}}
+{"event":"ChooseRun","who":"Ann","run":"new","c":661,"now":{"founded":false,"run":"new","line":[],"ready":[],"ins":[]}}
+{"event":"Pick","who":"Bo","c":663,"now":{"founded":false,"run":"new","line":[],"ready":[],"ins":[]}}
+{"event":"Ready","who":"Bo","now":{"founded":false,"run":"new","line":[],"ready":["Bo"],"ins":[]}}
+{"event":"Start","who":"Ann","now":{"founded":false,"run":"new","line":["Ann","Bo"],"ready":["Bo"],"ins":[]}}
+{"event":"BeginLoad","who":"Ann","now":{"founded":false,"run":"new","line":["Ann","Bo"],"ready":["Bo"],"ins":[]}}
+{"event":"BeginLoad","who":"Bo","now":{"founded":false,"run":"new","line":["Ann","Bo"],"ready":["Bo"],"ins":[]}}
+{"event":"Arrive","who":"Bo","c":663,"now":{"founded":true,"run":"none","line":["Ann"],"ready":[],"ins":["Bo"]}}

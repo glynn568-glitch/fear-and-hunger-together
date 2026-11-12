@@ -1,0 +1,8 @@
+{
+  "why": "Before 10/19 there was no order: a friend who loaded first founded a run of their own from their save, and the host's game then could not join it; fixed by the host-first wait (here: anyone done loading may found, the host called or not).",
+  "code": "room.js 'world?' (worldhost, inLine(host)), test/hostrun.js, test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ founded \\/ x = Host \\/ Host \\notin line\n", "new": ""}
+  ]
+}

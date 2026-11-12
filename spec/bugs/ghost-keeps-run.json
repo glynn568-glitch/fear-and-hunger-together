@@ -1,0 +1,8 @@
+{
+  "why": "11/03 night: a player who went back to the title stayed live on the server, so the run stayed founded with nobody in it and the host's own save was refused (worldstale) until the launcher restarted.",
+  "code": "room.js wentToTitle, TITLE_GHOST (0.1.17), test/ghost.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "       IN /\\ founded' = ~last\n", "new": "       IN /\\ founded' = founded\n"}
+  ]
+}

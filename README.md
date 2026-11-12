@@ -19,7 +19,7 @@ Everything else comes in the box, except one thing: the first time you host onli
 
 1. Unzip anywhere (or install it with the itch app and press Launch).
 2. Double-click **Fear & Hunger Together**. The game opens in its own window. Close the window to quit.
-3. Type a name (bottom left), then New Game or Continue.
+3. Type a name (bottom left), then New Game or Continue. With friends at the title, the host picks the run instead (a new one, or a save), everyone else picks a character if it is new and presses Ready, and the host's Start takes everybody in together. A run already under way shows Join.
 
 **Together** on the title screen does the rest:
 
@@ -63,7 +63,7 @@ On a controller the game's own keys are on buttons too: **RT** lights the torch 
 - **Bags** are your own. An emptied chest is empty for everyone.
 - **Party.** Four characters between all of you. Join someone's party (Enter, facing them) and you walk in their line: through every door they take and into every fight they start, from anywhere on the map. You still run your own character and menu, and their characters show in your menu lineup, where you can look at their gear but not change it. Hold a direction to step out of line.
 - **Death.** You watch through a living partner's eyes. They can call you back at a ritual circle, which spends the circle. If everyone is dead, the run is over. Hold Esc to let your character go: what you carried passes to a partner, and you can start someone new.
-- **Saves.** Sleeping in a bed saves everyone. Another day, everyone presses Continue and lands on their save from that night. Any of you can host that other day: each player's PC keeps its own copy of their saves and of the run, so nobody waits on the first night's host.
+- **Saves.** Sleeping in a bed saves everyone. Another day, the host picks Continue and the save, and everyone else's save from that night is found for them. Any of you can host that other day: each player's PC keeps its own copy of their saves and of the run, so nobody waits on the first night's host.
 
 ## The AI partner
 

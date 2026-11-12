@@ -1,0 +1,8 @@
+{
+  "why": "11/11 (found writing this spec; in every release with a partner): a partner still loading when the only person in dropped for a moment founded a fresh run of its own; the person's page, coming back into its own run, was refused (worldbusy) until the partner gave up.",
+  "code": "room.js 'world?' (a bot founds nothing unless it leads), test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ x = Partner => founded\n", "new": ""}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "why": "11/11 (found writing this spec, in the lobby as first built): a run founded by someone the lobby had not called (the host had chosen and not started for two minutes) left the others 'ready' for the night that never started; a ready person could then not pick a character to join with (picking is closed while ready).",
+  "code": "room.js 'world?' (founded && !called -> lobbyReset), test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ LET reset == ~founded /\\ x \\notin line\n", "new": "    /\\ LET reset == FALSE\n"}
+  ]
+}

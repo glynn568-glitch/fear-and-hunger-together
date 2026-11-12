@@ -1,0 +1,8 @@
+{
+  "why": "10/31: the last person went back to the title but the AI partner stayed in the world, so the run stayed up and the next New Game silently joined that same run with the same dice.",
+  "code": "room.js endWithPartners (fix), test/partner.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ LET last == ~\\E y \\in People \\ {x} : at[y] = \"in\"\n", "new": "    /\\ LET last == ~\\E y \\in Actors \\ {x} : at[y] = \"in\"\n"}
+  ]
+}

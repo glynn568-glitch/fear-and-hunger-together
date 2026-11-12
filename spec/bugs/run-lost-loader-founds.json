@@ -1,0 +1,8 @@
+{
+  "why": "11/11 (found writing this spec, in the lobby as first built): the run ended (the only one in dropped) under someone called in by Join; only a start called off by the host marked such games, so this one could found a run of its own before its page went back to the title.",
+  "code": "room.js lobbyReset (whoever was called is called off), test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "                                           ELSE IF clear /\\ y \\in line /\\ conn[y] /\\ at[y] = \"loading\" THEN \"off\"\n", "new": "                                           ELSE IF cancel /\\ y \\in line /\\ conn[y] /\\ at[y] = \"loading\" THEN \"off\"\n"}
+  ]
+}

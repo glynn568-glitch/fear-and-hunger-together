@@ -1,0 +1,8 @@
+{
+  "why": "Two players on one protagonist: the game keeps each character's body and death in flags named after the character, so the second one was refused only after loading (worldclash); the lobby must stop it before anyone loads.",
+  "code": "room.js lobbySay 'ready' (theirs alone), 'world?' worldclash, client/state.js sameCharacterAs",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "    /\\ CharOf(x) \\notin Claimed(x)\n", "new": ""}
+  ]
+}

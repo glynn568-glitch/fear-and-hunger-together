@@ -112,7 +112,16 @@ Coop.loadName = function () {
 Coop.setName = function (name) {
     Coop.name = String(name || '').replace(/[^\w \-']/g, '').trim().slice(0, 16);
     try { localStorage.setItem('fhcoop.name', Coop.name); } catch (e) { /* storage blocked */ }
-    Coop.send({ t: 'name', name: Coop.name, token: Coop.token() });
+    Coop.send({ t: 'name', name: Coop.name, token: Coop.token(), called: Coop.called() });
+};
+
+// The lobby called this page in and its game is running as called (client/lobby.js): said with
+// the name, so a line that dropped on the way in comes back to its call and its character.
+Coop.called = function () {
+    if (!Coop.lobby || !Coop.lobby.going) return false;
+    // At the title, or on the way back to it, no game is running; leaving it, one is starting.
+    const next = SceneManager._nextScene || SceneManager._scene;
+    return !(next instanceof Scene_Title);
 };
 
 // Identifies this tab across reconnects, so it can reclaim its own name.
@@ -211,7 +220,7 @@ Coop._receive = function (msg) {
             Coop.peers.set(p.id, peer);
         }
         if (!Coop.name) Coop.name = Coop.loadName();
-        if (Coop.name) Coop.send({ t: 'name', name: Coop.name, token: Coop.token() });
+        if (Coop.name) Coop.send({ t: 'name', name: Coop.name, token: Coop.token(), called: Coop.called() });
         if (Coop._heldDrop) { Coop._notesOut.push(Coop._heldDrop); Coop._heldDrop = null; }
         Coop.note('connected as player ' + Coop.id + ', ' + Coop.peers.size + ' other(s) here');
         Coop.emit('online', msg);

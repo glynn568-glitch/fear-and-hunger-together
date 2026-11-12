@@ -8,13 +8,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'ghost', 'crow', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'pit', 'setup', 'plays', 'soak'];
+const ALL = ['lint', 'server', 'join', 'hostrun', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobbyroom', 'lobby', 'lobbysave', 'lobbysoak', 'ghost', 'crow', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'pit', 'setup', 'plays', 'soak'];
 // The suites where how the players are connected can change the outcome: joining, moving
 // between maps, fights and their picture, dropped lines, what is carried over the line.
 // The gate runs every suite as shipped, and only these in its other ways of connecting
 // (FH_TEST_LINE=1). The rest (the partner's own play, menus, the launcher, start-up) do the
 // same thing on any line: four full passes of them were an hour of the gate's 80 minutes.
-const LINE = new Set(['join', 'hostrun', 'four', 'title', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'ghost', 'crow', 'holds', 'refight', 'scenes', 'lift',
+const LINE = new Set(['join', 'hostrun', 'four', 'title', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobby', 'lobbysave', 'lobbysoak', 'ghost', 'crow', 'holds', 'refight', 'scenes', 'lift',
     'meterline', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'import', 'buckman', 'party', 'carry', 'followers', 'battle',
     'encounter', 'death', 'ending', 'trade', 'cast', 'talk', 'chat', 'doors', 'lifecycle', 'resume', 'reconnect', 'quietline', 'soak']);
 for (const n of LINE) if (ALL.indexOf(n) < 0) throw new Error('LINE names a suite that is not in ALL: ' + n);

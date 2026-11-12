@@ -752,6 +752,7 @@
             ini: STARTED_AS.filter((id) => $gameSwitches.value(id)),
             have: World._how === 'load' ? Object.keys(World.slotsOf(World.runId)).map(Number) : [],
             dead: !!Coop.deadFromSave,
+            lead: World.lead ? 1 : 0, // a test's bot playing by itself (tools/bot-page.js); a partner never founds a run
             balance: window.ConfigManager ? ConfigManager.coopBalance !== false : true,
         });
         if (!Coop.connected) { World._entering = false; World._holdDue = false; } // offline: play alone, sync on reconnect
@@ -812,7 +813,8 @@
         World.hostWait = msg.by;
         clearTimeout(World._hostTimer);
         World._hostTimer = setTimeout(function () {
-            if (World.hostWait && !World.live && Coop.connected) World.enter();
+            // (Not from the title: an answer that came in after the game was left asks for nothing.)
+            if (World.hostWait && !World.live && Coop.connected && !(SceneManager._scene instanceof Scene_Title)) World.enter();
         }, 2500);
     });
     Coop.on('run', function () { if (World.hostWait && !World.live && Coop.connected) World.enter(); });

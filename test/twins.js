@@ -350,6 +350,128 @@ const TWINS = {
         find: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map) || $gamePlayer.isTransferring()) return [];",
         put: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];",
     },
+    // The lobby's rules at the room (spec/Lobby.tla): one twin per guard a night depends on.
+    'lob-rename-line': {
+        why: 'Grok g14: a name changed while called in left the old name loading for ever (the partner never came in) and freed their character',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (this.lobby.line.delete(was)) this.lobby.line.add(name.toLowerCase());', put: '',
+    },
+    'lob-hold-call': {
+        why: 'Grok g14: a line that dropped during the opening lost the call; a third person could take the character and the first was refused at the door',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (!here && !cancel && this.lobby.line.has(who)) {', put: 'if (false) {',
+    },
+    'lob-hold-door': {
+        why: 'Grok g14: a held character is held at the door too, against a game that never asked the lobby',
+        suite: 'lobbyroom', file: 'room.js',
+        find: "                || (!called && [...this.lobby.held.values()].find((hold) => ini.indexOf(hold.char) >= 0));\n", put: ';\n',
+    },
+    'lob-hold-ends': {
+        why: 'a call held for someone who never comes back would keep the partner out for ever',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'const timer = setTimeout(() => { this.holdEnds(who); this.lobbyTell(); }, LINE_HOLD);', put: 'const timer = setTimeout(() => {}, LINE_HOLD);',
+    },
+    'lob-rename-entered': {
+        why: 'Grok g14: a name changed after leaving a run let that person\'s old save back into it (their body from the past)',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (this.entered.has(was)) this.entered.add(name.toLowerCase());', put: '',
+    },
+    'lob-all-ready': {
+        why: 'his rule 11/08: Start only when every person here is ready',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            if (others.some((p) => this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready))) break;\n', put: '',
+    },
+    'lob-away': {
+        why: 'his rule 11/08: someone idle at the title is away and does not hold Start up',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready)', put: 'this.atTitle(p) && !(p.lob && p.lob.ready)',
+    },
+    'lob-host-founds': {
+        why: 'called by the host\'s Start, a joiner done loading first went on alone after two minutes and founded the run',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (now - peer.hostWaitSince < HOST_WAIT || this.inLine(host)) {', put: 'if (now - peer.hostWaitSince < HOST_WAIT) {',
+    },
+    'lob-one-each': {
+        why: 'two saves of one character both ready: the second is refused only after loading',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (!mine || others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) break;', put: 'if (!mine) break;',
+    },
+    'lob-pick-taken': {
+        why: 'a character someone here has picked, or someone in the run plays, could be picked again',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) break;\n', put: '',
+    },
+    'lob-ready-holds': {
+        why: 'ready says what that person will load: no other pick while ready',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (!run || !this.atTitle(peer) || this.inLine(peer) || lob.ready) break;', put: 'if (!run || !this.atTitle(peer) || this.inLine(peer)) break;',
+    },
+    'lob-save-turns': {
+        why: 'a ready person whose save turned out to be another character stayed ready for the first',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            if (!lob.pick) lob.ready = false;\n', put: '',
+    },
+    'lob-run-resets': {
+        why: 'another run chosen: ready and picks given for the last one carried into it',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            this.lobbyReset();\n            const run = msg.run || {};\n', put: '            const run = msg.run || {};\n',
+    },
+    'lob-host-drop': {
+        why: '11/08 design hole: the host\'s game dropped during the start and the start went on without them',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (cancel) this.lobbyReset();', put: '',
+    },
+    'lob-called-off': {
+        why: 'a game called by a start that was then called off founded a run on its way back to the title',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (peer.calledOff && !this.founded) {', put: 'if (false) {',
+    },
+    'lob-run-lost': {
+        why: '11/11 (spec): the run ended under someone called in by Join, and their game founded a run of its own',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '        for (const p of this.peers.values()) if (p.named && this.inLine(p)) p.calledOff = true;\n', put: '',
+    },
+    'lob-line-title': {
+        why: 'called in and never started: everyone (or the partner) waited on them for ever',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'else if (Date.now() - peer.lineSince > LINE_TITLE) {', put: 'else if (false) {',
+    },
+    'lob-bot-waits': {
+        why: 'an AI partner came in before the people called, and could take the character one of them had picked',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (this.isBot(peer) && this.lobby.line.size) {', put: 'if (false) {',
+    },
+    'lob-bot-founds': {
+        why: '11/11 (spec): a partner still loading when the only person in dropped founded a run of its own, and that person\'s game was refused its own run',
+        suite: 'lobbyroom', file: 'room.js',
+        find: 'if (this.isBot(peer) && !this.founded && !msg.lead) {', put: 'if (false) {',
+    },
+    'lob-uncalled': {
+        why: '11/11 (spec): an uncalled game arrived as a called person\'s character, and the called one was refused at the door',
+        suite: 'lobbyroom', file: 'room.js',
+        find: ': !called && this.inLine(p) && ini.indexOf(this.lobbyChar(p)) >= 0))', put: ': false))',
+    },
+    'lob-other-night': {
+        why: '11/11 (spec): a run founded by someone uncalled left the others ready and picked for the night that never started',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            if (founded && !called) this.lobbyReset();\n            else if (founded) this.lobby.run = null;\n', put: '            if (founded) this.lobby.run = null;\n',
+    },
+    // ...and on the page (client/lobby.js), through the real title.
+    'lob-game-up': {
+        why: '11/10, the first browser run: presence said "title" through the opening, so the start was called off after 15 s',
+        suite: 'lobby', file: 'client/presence.js',
+        find: 'const up = scene && !(scene instanceof Scene_Title || scene instanceof Scene_Boot || scene instanceof Scene_Load || scene instanceof Scene_Options) ? 1 : 0;', put: 'const up = 0;',
+    },
+    'lob-picker': {
+        why: 'his rule 11/08: the game\'s own select screen plays, held to the character picked in the lobby',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: '            if (picking()) {\n', put: '            if (false) {\n',
+    },
+    'lob-bounce': {
+        why: 'the host\'s game dropped during the start: the friend\'s game played on into a run that would never be',
+        suite: 'lobbysave', file: 'client/lobby.js',
+        find: "{ World._bounce = true; if (Coop.toast) Coop.toast('The start was called off. Back to the title.', 6000); }", put: '{ }',
+    },
     'locked-door-order': {
         why: '11/06: force first (free, the door never strikes back); a key is spent only once forcing failed',
         suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },

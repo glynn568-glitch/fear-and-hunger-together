@@ -5,7 +5,7 @@
 //   badlink   as shipped, over a poor line: 80 ms each way and 4 Mbit/s to each player
 //   internet  two people (test/humans.js) through a real Cloudflare tunnel, and hosting on Linux
 //             (test/deckhost.js): needs the internet
-//   twins     each fix taken back out (test/twins.js): its suite has to fail
+//   twins     each fix taken back out (test/twins.js): its suite has to fail (run first)
 // Every suite runs as shipped; direct, join and badlink run the suites where the line can
 // change the outcome (run.js LINE); twins run where their code changed since last caught.
 // A suite that fails and then passes three times alone is flaky: named, not a failure.
@@ -19,13 +19,14 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(__dirname, 'out');
 const MODES = {
+    // First: a check that no longer catches its bug shows in minutes, not at the end.
+    // twins.js runs each suite as shipped before it trusts that suite's failure.
+    twins: { runner: 'twins.js', FH_TWINS_CHANGED: '1' },
     default: { FH_TEST_RELAY: '1' },
     direct: { FH_TEST_LINE: '1' },
     join: { FH_TEST_RELAY: '1', FH_TEST_JOIN: '1', FH_TEST_LINE: '1' },
     badlink: { FH_TEST_RELAY: '1', FH_LAG: '80', FH_RATE: '500000', FH_TEST_LINE: '1' },
     internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans', 'deckhost'] },
-    // Last, so every suite has just passed clean (FH_TWINS_CLEAN_RUN skips that control).
-    twins: { runner: 'twins.js', FH_TWINS_CLEAN_RUN: '1', FH_TWINS_CHANGED: '1' },
 };
 const asked = process.argv.slice(2);
 const modes = asked.length ? asked : Object.keys(MODES);
@@ -34,6 +35,19 @@ for (const m of modes) if (!MODES[m]) throw new Error('no such mode: ' + m + ' (
 const git = (argv) => execFileSync('git', argv, { cwd: ROOT, encoding: 'utf8' }).trim();
 const commit = git(['rev-parse', 'HEAD']);
 const dirty = !!git(['status', '--porcelain']);
+
+// A full run is for a release: say now what tools/release.js would refuse after half an hour.
+// FH_GATE_ANYWAY=1 runs it all the same (nothing can ship from that run's commit as it stands).
+const full = modes.length === Object.keys(MODES).length;
+if (full && !process.env.FH_GATE_ANYWAY) {
+    const version = require('../package.json').version;
+    let last = '';
+    try { last = JSON.parse(fs.readFileSync(path.join(ROOT, 'dist', 'public', 'package.json'), 'utf8')).version; } catch (e) { /* never released from here */ }
+    const why = dirty ? 'the tree has uncommitted changes: commit first'
+        : version === last ? version + ' is already released: raise the version in package.json first'
+        : !fs.existsSync(path.join(ROOT, 'docs', 'releases', version + '.md')) ? 'write docs/releases/' + version + '.md first' : '';
+    if (why) { console.log('GATE NOT STARTED: ' + why + '. (FH_GATE_ANYWAY=1 to run it all the same.)'); process.exit(2); }
+}
 
 const results = {};
 for (const mode of modes) {
@@ -53,17 +67,17 @@ for (const mode of modes) {
     try { r = JSON.parse(fs.readFileSync(result, 'utf8')); } catch (e) { /* no result: the run did not finish */ }
     if (!r || !(r.suites > 0 || r.stood > 0)) r = { suites: 0, broken: ['(the run itself did not finish: exit ' + ran.status + ')'], flaky: [] };
     results[mode] = r;
+    if (mode === 'twins' && r.broken.length) { console.log('A fix is not caught by its test: the rest is not run.'); break; }
 }
 
 console.log('\n=== gate');
 let pass = true;
 for (const mode of modes) {
-    const r = results[mode];
+    const r = results[mode] || { suites: 0, broken: ['(not run)'], flaky: [] };
     const ok = !r.broken.length;
     pass = pass && ok;
     console.log(`${ok ? 'ok  ' : 'FAIL'} ${mode.padEnd(8)} ${ok ? 'all ' + r.suites + ' suites' + (r.stood ? ' (' + r.stood + ' stand)' : '') + (r.flaky.length ? '; FLAKY, fix the test: ' + r.flaky.join(' ') : '') : 'broken: ' + (r.broken.join(' ') || '-') + '; flaky: ' + (r.flaky.join(' ') || '-')}  (logs: test/out/gate/${mode}/)`);
 }
-const full = modes.length === Object.keys(MODES).length;
 // The tree must be the same commit, unchanged, from the first suite to the last.
 const same = git(['rev-parse', 'HEAD']) === commit && !git(['status', '--porcelain']);
 if (pass && full && !dirty && same) {

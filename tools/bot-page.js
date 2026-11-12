@@ -31,6 +31,7 @@ module.exports = function installBot(options) {
     if (options.follow) BOT.withName = options.follow;
     let withMissed = 0; // when the one we follow vanished; a short drop is not a new leader
     Coop.isBot = true;
+    Coop.world.lead = !!options.lead; // only a test's host bot founds a run (room.js 'world?')
     // Shown beside its name in everyone's corner list.
     Coop.botActivity = function () {
         if (BOT.thinking > 0) return 'thinking...';

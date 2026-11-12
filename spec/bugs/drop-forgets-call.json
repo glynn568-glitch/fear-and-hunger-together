@@ -1,0 +1,11 @@
+{
+  "why": "11/11 (Grok g14, in the lobby as first built): a line that dropped during the opening lost the call and the pick with the peer; the page played on, a third person joined as that character, and the first was refused at the door after sitting through their opening.",
+  "code": "room.js lobbyGone (lobby.held), 'name' (called), test/lobbyroom.js",
+  "file": "Lobby.tla",
+  "edits": [
+    {
+      "old": "          /\\ line' = IF clear THEN {} ELSE line\n",
+      "new": "          /\\ line' = IF clear THEN {} ELSE line \\ {x}\n"
+    }
+  ]
+}

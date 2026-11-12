@@ -1,0 +1,8 @@
+{
+  "why": "11/08 design hole (TLC, before any code): the host's game dropped during the start and the start went on without them, so a joiner was left loading into a run that could never be founded (or, with the old two-minute rule, founded it alone).",
+  "code": "room.js lobbyGone (the host's drop calls the start off), test/lobbyroom.js, test/lobby.js part 4",
+  "file": "Lobby.tla",
+  "edits": [
+    {"old": "\n           cancel == x = Host /\\ ~founded\n", "new": "\n           cancel == FALSE\n"}
+  ]
+}
