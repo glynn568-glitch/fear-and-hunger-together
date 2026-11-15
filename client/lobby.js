@@ -66,7 +66,7 @@
 
     //--- the room's word ---------------------------------------------------------
     let runKey = '';
-    Coop.on('lobby', function (msg) {
+    function heard(msg) {
         L.on = !!msg.on;
         L.run = msg.run || null;
         L.host = msg.host || 0;
@@ -94,7 +94,8 @@
             if (!onTitle() || SceneManager.isSceneChanging()) { World._bounce = true; if (Coop.toast) Coop.toast('The start was called off. Back to the title.', 6000); }
         }
         if (!L.on) L.mode = 'main';
-    });
+    }
+    Coop.on('lobby', heard);
     Coop.on('offline', function () { L.on = false; L.rows = {}; L.line = []; L.held = []; runKey = ''; });
     Coop.on('entered', function () { L.going = false; });
     // Refused on the way in (another run, a taken character): no longer on the way.
@@ -219,39 +220,46 @@
         if (!L.on) return null;
         if (L.going || L.line.indexOf(Coop.id) >= 0) return [];
         const me = myRow();
+        // The cursor starts on the line marked at: this player's pick, else their own save.
         if (L.mode === 'pick') {
-            const list = CHARS.map((c) => ({ name: c.name, act: 'pick:' + c.id, enabled: !taken(c.id) }));
-            if (!isHost() && L.mine && L.mine.char && L.run && L.run.kind === 'save') list.push({ name: 'My save: ' + charName(L.mine.char), act: 'pick:0' });
+            const mine = L.pickFor !== 'run';
+            const list = CHARS.map((c) => ({ name: c.name, act: 'pick:' + c.id, enabled: !taken(c.id), at: mine && me.pick === c.id }));
+            if (mine && !isHost() && L.mine && L.mine.char && L.run && L.run.kind === 'save') list.push({ name: 'My save: ' + charName(L.mine.char), act: 'pick:0', at: !me.pick });
             list.push({ name: 'Back', act: 'back' });
             return list;
         }
-        if (L.founded) {
-            return [{ name: 'Join', act: 'join', enabled: !!charOf(me) && !clashName() },
-                { name: 'Come in as...', act: 'pickmode' }, { name: 'Together', symbol: 'together' }];
-        }
+        // Join and Ready open the character list, and the pick is the Join or the Ready (his playtest 11/14: a
+        // greyed Ready only buzzed until "Come in as..." had been used, which did the list's job a second time).
+        if (L.founded) return [{ name: 'Join', act: 'join' }, { name: 'Together', symbol: 'together' }];
         if (isHost()) {
             if (!L.run) return [{ name: 'New run', act: 'newrun' }, { name: 'Continue', act: 'chooserun', enabled: DataManager.isAnySavefileExists() }, { name: 'Together', symbol: 'together' }];
             return [{ name: 'Start', act: 'start', enabled: !!charOf(me) && everyoneReady() }, { name: 'Change run', act: 'changerun' }, { name: 'Together', symbol: 'together' }];
         }
-        if (!L.run) return [{ name: 'Together', symbol: 'together' }];
-        return [{ name: me.ready ? 'Not ready' : 'Ready', act: 'ready', enabled: me.ready || (!!charOf(me) && !clashName()) },
-            { name: 'Come in as...', act: 'pickmode', enabled: !me.ready }, { name: 'Together', symbol: 'together' }];
+        // Before the host has chosen the run, Ready shows and waits (his playtest 11/14: a lone Together was
+        // disorienting); the corner list says the host is choosing.
+        if (!L.run) return [{ name: 'Ready', act: 'ready', enabled: false }, { name: 'Together', symbol: 'together' }];
+        return [{ name: me.ready ? 'Not ready' : 'Ready', act: 'ready' }, { name: 'Together', symbol: 'together' }];
     };
 
     function act(scene, what) {
         const w = scene._commandWindow;
         if (what === 'newrun') { L.mode = 'pick'; L.pickFor = 'run'; }
-        else if (what === 'pickmode') { L.mode = 'pick'; L.pickFor = 'me'; }
         else if (what === 'back') L.mode = 'main';
         else if (what === 'chooserun') { L.choosing = true; scene.commandContinue(); return; }
         else if (what === 'changerun') say('run', { run: null });
         else if (what === 'start') say('start');
-        else if (what === 'join') say('join');
-        else if (what === 'ready') say('ready', { on: !myRow().ready });
+        else if (what === 'ready' && myRow().ready) say('ready', { on: false });
+        // The host back at the title of their run comes in as who they were (room.js refuses them a pick then).
+        else if (what === 'join' && isHost() && charOf(myRow())) say('join');
+        else if (what === 'join' || what === 'ready') { L.mode = 'pick'; L.pickFor = what; }
         else if (/^pick:/.test(what)) {
             const id = Number(what.slice(5));
             if (L.pickFor === 'run') say('run', { run: { kind: 'new' }, pick: id });
             else say('pick', { pick: id });
+            // Picked on the way to Ready or Join: that goes on too (the room takes them in this order),
+            // and only as this pick: one the room drops (taken meanwhile) takes the Ready or Join with it.
+            if (L.pickFor === 'ready') say('ready', { on: true, pick: id });
+            else if (L.pickFor === 'join') say('join', { pick: id });
             L.mode = 'main';
         }
         menuKey = '';
@@ -305,7 +313,7 @@
         w.visible = w._list.length > 0;
         if (!w._list.length) { w.deactivate(); return; }
         // The same lines, one of them now allowed or not: the cursor stays. Other lines: the top one.
-        w.select(same && !first ? Math.min(Math.max(index, 0), w._list.length - 1) : 0);
+        w.select(same && !first ? Math.min(Math.max(index, 0), w._list.length - 1) : Math.max(0, (items || []).findIndex((it) => it.at)));
         const panelOpen = Coop.together && Coop.together.isOpen();
         if (!panelOpen && w.isOpen() && !w.active) w.activate();
     }
@@ -364,7 +372,7 @@
                 const mine = p.me ? clashName() : '';
                 if (mine) { word = mine + ' is taken'; kind = 'bad'; }
                 else if (L.founded) { word = 'not in'; kind = 'dim'; }
-                else if (!L.run) word = '';
+                else if (!L.run) word = p.id === L.host && !p.me ? 'choosing' : '';
                 else if (p.id === L.host || row.ready) word = L.run.kind === 'new' || row.pick ? charName(char) : 'ready';
                 else { word = row.pick ? charName(char) : 'not ready'; kind = 'dim'; }
             }
@@ -373,4 +381,7 @@
         }
         return out;
     };
+
+    // The room's word from before this file came in (net.js keeps it).
+    if (Coop.lastLobby) heard(Coop.lastLobby);
 })();

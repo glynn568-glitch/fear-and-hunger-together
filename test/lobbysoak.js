@@ -46,10 +46,10 @@ async function step(p) {
     if (s.kind === 'opening') { const k = s.save ? 'Escape' : 'Enter'; await p.keyboard.down(k); await sleep(80); await p.keyboard.up(k); return ''; }
     if (s.kind !== 'title' || !s.active) return '';
     const has = (name) => s.lines.indexOf(name) >= 0;
-    // Someone who left a run still being played comes back as a new character (room.js worldstale):
-    // Join is greyed until they say who. In the list of characters: the first one free.
+    // Join and Ready open the list of characters: the first one free (someone who left a run still being
+    // played comes back as a new character, room.js worldstale).
     const free = s.lines.find((l) => /^(Cahara|D'arce|Enki|Ragnvaldr)$/.test(l));
-    const want = has('Back') ? (has('Join~') || has('Ready~') || !free ? 'Back' : free) : has('Join~') && has('Come in as...') ? 'Come in as...' : has('Join') ? 'Join' : has('Start') ? 'Start' : has('Ready') ? 'Ready' : has('Continue') ? 'Continue' : '';
+    const want = has('Back') ? (free || 'Back') : has('Join') ? 'Join' : has('Start') ? 'Start' : has('Ready') ? 'Ready' : has('Continue') ? 'Continue' : '';
     if (!want) return '';
     await choose(p, want).catch(() => {});
     return want;
@@ -109,6 +109,10 @@ async function step(p) {
             const until = Date.now() + (Number(process.env.FH_SOAK_ROUND) || 200000);
             let both = false;
             while (Date.now() < until) {
+                // The yard the opening leaves them in lets its hounds loose after about 42 s there (bark
+                // timer 211; since 11/14 they come for both players, test/hounds.js). A fight is not what
+                // this soak is about, so the timer is held back on every page.
+                for (const p of pages) await p.evaluate(() => { if (window.$gameVariables) $gameVariables._data[211] = -1e6; }).catch(() => {});
                 const due = plan.filter((c) => c.at <= Date.now());
                 for (const c of due) { plan.splice(plan.indexOf(c), 1); did.push(c.who.label + ' ' + c.what); await collect(); await chaos[c.what](c.who); }
                 for (const p of rnd() < 0.5 ? [a, b] : [b, a]) {

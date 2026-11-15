@@ -140,7 +140,7 @@ const MARKER = 11;
             const w = Coop.world;
             w.mineGuessed = true;
             w.mine.add('sw22');
-            Coop.emit('world', { runId: w.runId, world: { sw: { 22: 1 }, va: {}, ss: {}, el: {} }, mode: 'again', balance: true });
+            Coop.emit('world', { runId: w.runId, world: { sw: { 22: 1 }, va: {}, ss: {}, el: {} }, mode: 'again', rules: { balance: true, loot: false } });
             return { mine: w.mine.has('sw22'), left: w.mineGuessed };
         });
         check('an old save does not claim flags the run already has', !guessed.mine && !guessed.left, JSON.stringify(guessed));

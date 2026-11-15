@@ -41,28 +41,37 @@
 
     // "Partner Arrows" in the game's Options, under General: on unless turned
     // off, and kept with the game's other options on this PC.
-    // "Balance changes" is the same kind of option. It is this PC's preference
-    // for when this PC's player is the one whose game sets the run. The row is
-    // hidden otherwise (a joiner's tick must not look like it does anything).
+    // "Balance changes" and "Instanced loot" are run options: this PC's
+    // preference for when this PC's player is the one whose game sets the run
+    // (state.js). Their rows are hidden otherwise (a joiner's tick must not
+    // look like it does anything).
     ConfigManager.coopPointer = true;
-    let balanceChoice = true;
-    Object.defineProperty(ConfigManager, 'coopBalance', {
-        configurable: true,
-        get: function () { return balanceChoice; },
-        set: function (v) {
-            const on = !!v;
-            if (on === balanceChoice) return;
-            balanceChoice = on;
-            if (!(window.Coop && Coop.decides)) return;
-            if (Coop.setBalance) Coop.setBalance(on);
-            if (Coop.connected) Coop.send({ t: 'balance', on: on });
-        },
-    });
+    // What each run option does, in the help box at the top of Options.
+    const RULE_HELP = {
+        balance: 'Weapons do what their text says, and two soul stones can\ncall a partner back. Set by the host for everyone.',
+        loot: 'ON: every chest, crate, body and coin has loot for each of you.\nOFF: the first to open one takes it. Set by the host.',
+    };
+    function runOption(symbol, first) {
+        let choice = first;
+        Object.defineProperty(ConfigManager, symbol, {
+            configurable: true,
+            get: function () { return choice; },
+            set: function (v) {
+                const on = !!v;
+                if (on === choice) return;
+                choice = on;
+                if (window.Coop && Coop.sendRules) Coop.sendRules();
+            },
+        });
+    }
+    runOption('coopBalance', true);
+    runOption('coopLoot', false);
     const _makeData = ConfigManager.makeData;
     ConfigManager.makeData = function () {
         const config = _makeData.call(this);
         config.coopPointer = this.coopPointer;
         config.coopBalance = this.coopBalance;
+        config.coopLoot = this.coopLoot;
         return config;
     };
     const _applyData = ConfigManager.applyData;
@@ -70,6 +79,7 @@
         _applyData.call(this, config);
         this.coopPointer = config.coopPointer !== false;
         this.coopBalance = config.coopBalance !== false;
+        this.coopLoot = config.coopLoot === true;
     };
     // The game's options list (YEP_OptionsCore) loads after this file, so the
     // option joins it once the game boots. It copies an ON/OFF option's code.
@@ -88,17 +98,20 @@
             list.splice(at < 0 ? list.length : at, 0, Object.assign({}, like, extra));
         };
         put({ Name: 'Partner Arrows', Symbol: 'coopPointer', HelpDesc: JSON.stringify('Arrows at the edge of the screen point to partners off it.') });
+        // The help box shows two lines and cuts what runs past its edge: each line is kept short
+        // (test/hostrun.js measures them).
         put({
             Name: 'Balance changes', Symbol: 'coopBalance',
-            HelpDesc: JSON.stringify('Weapons do what their text says; two soul stones can call a partner back. Set by the host for everyone.'),
+            HelpDesc: JSON.stringify(RULE_HELP.balance),
             ShowHide: JSON.stringify('show = !!(window.Coop && Coop.decides);'),
         });
-        // nameok can have landed already. The saved choice becomes the run's then.
-        if (window.Coop && Coop.decides && Coop.setBalance && Coop.connected) {
-            const on = ConfigManager.coopBalance !== false;
-            Coop.setBalance(on);
-            Coop.send({ t: 'balance', on: on });
-        }
+        put({
+            Name: 'Instanced loot', Symbol: 'coopLoot',
+            HelpDesc: JSON.stringify(RULE_HELP.loot),
+            ShowHide: JSON.stringify('show = !!(window.Coop && Coop.decides);'),
+        });
+        // nameok can have landed already. The saved choices become the run's then.
+        if (window.Coop && Coop.sendRules) Coop.sendRules();
     };
 
     const MARGIN = 20; // game pixels from the edge of the screen

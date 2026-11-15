@@ -11,7 +11,6 @@
         _mapId: 0,
         _touch: new Set(), // puppet events that moved and may have reached the player
         _swapped: false,
-        _remote: false,
     };
 
     Coop.on('owner', function (msg) {

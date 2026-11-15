@@ -25,6 +25,11 @@
         '#coop-together .why.bad { color: #e7a07a; }',
         '#coop-together .row input[type=text] { flex: 1; width: auto; min-width: 0; }',
         '#coop-together [hidden] { display: none !important; }',
+        '#coop-together label.rule { display: block; margin-top: 6px; font-size: 1em; color: #e0d4bc; }',
+        '#coop-together label.rule span { display: block; margin-left: 1.6em; font-size: 0.85em; color: #b9ad97; }',
+        // Someone else's run: the host's ticks as the host sees them (a greyed box was too faint to read), not clickable.
+        '#coop-together label.rule.theirs { pointer-events: none; }',
+        '#coop-together h3 small { margin-left: 0.6em; font-size: 0.85em; color: #8a7f6c; }',
     ].join('\n');
     document.head.appendChild(style);
 
@@ -39,6 +44,9 @@
         + '<div class="row"><input type="text" spellcheck="false" autocomplete="off" placeholder="Paste the link your friend sent" data-field="join"></div>'
         + '<div class="row"><button class="big" data-do="join">Join</button></div></div>'
         + '<div data-part="leave" hidden><div class="row"><button data-do="leave">Leave their game</button></div></div>'
+        + '<div data-part="rules"><h3>Run options<small data-field="rulesby"></small></h3>'
+        + '<label class="rule"><input type="checkbox" data-rule="loot"> Instanced loot<span>Each of you finds your own loot in every chest, crate, body and coin.</span></label>'
+        + '<label class="rule"><input type="checkbox" data-rule="balance"> Balance changes<span>Weapons do what their text says, and two soul stones can call a partner back.</span></label></div>'
         + '<div data-part="import"><h3>Single-player saves</h3><div class="row"><button data-do="import">Bring mine in</button></div></div>'
         + '<div data-part="partner"><h3>AI partner</h3><div class="row"><button data-do="partner">Call one in</button><button data-do="home">Send one home</button><button data-do="mind">How it thinks</button></div></div>'
         + '<div class="why"></div>'
@@ -72,7 +80,32 @@
         $('[data-field=link]').value = s.link || '';
         $('[data-do=private]').checked = !!s.private;
         $('[data-do=private]').disabled = online;
+        showRules();
     }
+
+    // Run options. The host's ticks are the host's saved choices (pointer.js), which are the
+    // run's (state.js sends them); everyone else sees the run's, ticked as the host sees them.
+    const RULE_SYMBOL = { loot: 'coopLoot', balance: 'coopBalance' };
+    function showRules() {
+        const mine = !!Coop.decides;
+        for (const input of box.querySelectorAll('[data-rule]')) {
+            const name = input.getAttribute('data-rule');
+            input.checked = mine ? !!ConfigManager[RULE_SYMBOL[name]] : !!(Coop.rules && Coop.rules[name]);
+            input.tabIndex = mine ? 0 : -1;
+            input.parentNode.classList.toggle('theirs', !mine);
+        }
+        $('[data-field=rulesby]').textContent = mine ? '' : 'set by the host';
+    }
+    box.addEventListener('change', function (e) {
+        const name = e.target.getAttribute && e.target.getAttribute('data-rule');
+        if (!name) return;
+        if (Coop.decides) {
+            ConfigManager[RULE_SYMBOL[name]] = e.target.checked;
+            ConfigManager.save();
+        }
+        showRules();
+    });
+    for (const type of ['rules', 'nameok']) Coop.on(type, function () { if (box.classList.contains('open')) showRules(); });
 
     // Saves from playing alone (the game's own save folder) copied into free
     // slots here, once each. Loading one starts a co-op run from that moment.

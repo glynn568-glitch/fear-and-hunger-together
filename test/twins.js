@@ -40,6 +40,36 @@ const TWINS = {
         suite: 'lift', file: 'client/state.js',
         find: "        } else if (after && byHand() && World.isShared('sw', id)) {", put: '        } else if (false) {',
     },
+    'loot-claim': {
+        why: 'itch 11/13: two players searching one crate while the first one\'s "You find" box was up both got its loot (the crate is marked taken only after the box)',
+        suite: 'loot', file: 'client/state.js',
+        find: '            if (mark && World.isShared(mark[0], mark[1])) {', put: '            if (false) {',
+    },
+    'loot-claim-jumps': {
+        why: 'a chest\'s Open branch plays the coin flip, which jumps back to its own label: stopping at any jump left the chest open to a second player until the flip was over',
+        suite: 'loot', file: 'client/state.js',
+        find: '                    if (c.code === 119) { jumps.push(labels[c.parameters[0]]); continue; }', put: '                    if (c.code === 119) break;',
+    },
+    'loot-instanced-switch': {
+        why: 'Instanced loot covered crates marked by their own letter but not the chests, shelves and crates marked by a shared switch (chest1, bookshelf1: 268 of them)',
+        suite: 'loot', file: 'client/state.js',
+        find: 'const swShared = (id) => worldSw.has(id) && !(Coop.rules.loot && lootSw.has(id));', put: 'const swShared = (id) => worldSw.has(id);',
+    },
+    'loot-instanced': {
+        why: 'itch 11/13 ask: with the host\'s Instanced loot on, a crate one player took must still hold the other player\'s find',
+        suite: 'loot', file: 'client/state.js',
+        find: 'const ssLocal = (key) => privateSs.has(key) || (Coop.rules.loot && lootSs.has(key));', put: 'const ssLocal = (key) => privateSs.has(key);',
+    },
+    'loot-off-shares': {
+        why: 'Grok g16: the host turning Instanced loot off left each player\'s taken crates full for the others, two worlds',
+        suite: 'loot', file: 'client/state.js',
+        find: "            for (const k of lootSs) if ($gameSelfSwitches._data[k]) queue('ss', k, 1);\n", put: '',
+    },
+    'loot-rules-restart': {
+        why: 'Grok g16: a restarted server said Instanced loot was off to whoever came back before the host, whose finds then went into the shared world',
+        suite: 'loot', file: 'room.js',
+        find: '                if (saved) this.takeRules(saved.rules);\n', put: '',
+    },
     'plate-is-no-ride': {
         why: 'Grok g13: a second player stepping on a plate that only turns a flag on was given the scene it opens (Francois: hidden, thrown into his fight)',
         suite: 'lift', file: 'client/state.js',
@@ -109,6 +139,127 @@ const TWINS = {
         why: 'the word that a beaten boss\'s scene was over could reach a partner before her "dead" switch',
         suite: 'refight', file: 'client/events.js',
         find: '        Coop.world.flush();\n        Coop.send(msg);', put: '        Coop.send(msg);',
+    },
+    'rules-cut': {
+        why: 'playtest 11/14: the Options help of Balance changes and Instanced loot ran past the edge of its box, and "Set by the host" was never seen',
+        suite: 'hostrun', file: 'client/pointer.js',
+        find: 'coin has loot for each of you.\\nOFF:', put: 'coin has loot for each of you. OFF:',
+    },
+    'rules-faint': {
+        why: 'his playtest 11/14: the friend\'s greyed run option boxes were too faint to read',
+        suite: 'lobby', file: 'client/together.js',
+        find: 'input.tabIndex = mine ? 0 : -1;', put: 'input.tabIndex = mine ? 0 : -1; input.disabled = !mine;',
+    },
+    'rules-clickable': {
+        why: 'his playtest 11/14: on the friend\'s screen the run options looked like his to change, and a click did nothing',
+        suite: 'lobby', file: 'client/together.js',
+        find: "'#coop-together label.rule.theirs { pointer-events: none; }',", put: '',
+    },
+    'ready-hidden': {
+        why: 'his playtest 11/14: before the host chose the run the friend\'s menu was a lone Together, which was disorienting',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "if (!L.run) return [{ name: 'Ready', act: 'ready', enabled: false }, { name: 'Together', symbol: 'together' }];", put: "if (!L.run) return [{ name: 'Together', symbol: 'together' }];",
+    },
+    'title-click': {
+        why: 'his playtest 11/14: Together is worked with the mouse, and the title menu beneath it took no clicks',
+        suite: 'lobby', file: 'client/fixes.js',
+        find: 'if (event.button === 0 && mouseScene() && onPicture(event)) this._onLeftButtonDown(event);', put: '',
+    },
+    'title-point': {
+        why: 'his playtest 11/14: pointing at a line of the title menu did not move the cursor there',
+        suite: 'lobby', file: 'client/fixes.js',
+        find: 'if (i >= 0 && i !== w.index() && w.isCursorMovable())', put: 'if (false)',
+    },
+    'ready-buzz': {
+        why: 'his playtest 11/14: Ready with no character was greyed and only buzzed until "Come in as..." had been used',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "else if (what === 'join' || what === 'ready') { L.mode = 'pick'; L.pickFor = what; }", put: "else if (what === 'ready') say('ready', { on: true });",
+    },
+    'ready-after-pick': {
+        why: 'Ready opened the character list, and the pick left the friend still not ready',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "if (L.pickFor === 'ready') say('ready', { on: true, pick: id });", put: "if (false) say('ready', { on: true, pick: id });",
+    },
+    'lobby-heard-late': {
+        why: 'gate 11/14: on a slow PC the room\'s word on the lobby came before lobby.js, and the friend sat out the lobby',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: 'if (Coop.lastLobby) heard(Coop.lastLobby);', put: '',
+    },
+    'ready-old-pick': {
+        why: 'Grok 11/14: a pick the room dropped (taken meanwhile) was followed by a Ready that stood as the earlier pick',
+        suite: 'lobby', file: 'room.js',
+        find: 'if (!this.asPicked(lob, msg)) break;', put: '',
+    },
+    'join-old-pick': {
+        why: 'Grok 11/14: the same for Join, into the run as the earlier pick',
+        suite: 'lobby', file: 'room.js',
+        find: '|| lob.away || !this.asPicked(lob, msg)) break;', put: '|| lob.away) break;',
+    },
+    'rules-stale-host': {
+        why: 'Grok 11/14: a friend who hosted their own page and then joined by link showed their own run options, not the run\'s',
+        suite: 'app', file: 'client/net.js',
+        find: 'Coop.decides = null;', put: '',
+    },
+    'rules-untold': {
+        why: 'playtest 11/14: the host changing Instanced loot mid-run told nobody, and F1 still said an emptied chest stays empty',
+        suite: 'loot', file: 'client/state.js',
+        find: 'if (say && said.length && World.live && Coop.toast)', put: 'if (false)',
+    },
+    'witch-fights': {
+        why: 'his call 11/14: the black witch woke and fought on one machine only, invisible to the partner, and a room change sent her away on one screen and left her fighting on the other',
+        suite: 'hounds', file: 'client/census.json',
+        find: ',3450,3451,3452,', put: ',3450,3452,',
+    },
+    'witch-shows': {
+        why: 'his call 11/14: the black witch\'s first page (3454) left on one machine after a room change: she stood on one screen only',
+        suite: 'hounds', file: 'client/census.json',
+        find: ',3453,3454,3455,', put: ',3453,3455,',
+    },
+    'pit-armed': {
+        why: 'his call 11/14: the smash pit\'s guard armed himself by each machine\'s own timer and hunted one player while the partner saw him stand still',
+        suite: 'smashpit', file: 'client/census.json',
+        find: ',2932,2933,2934,', put: ',2932,2934,',
+    },
+    'pit-strikes': {
+        why: 'his call 11/14: the smash pit\'s guard went on walking on the partner\'s screen while he struck the other player',
+        suite: 'smashpit', file: 'client/census.json',
+        find: ',2933,2934,2939,', put: ',2933,2939,',
+    },
+    'pit-blows': {
+        why: 'the smash pit counted blows across both players (only ever turned on, so taken for world latches): one player\'s blow cost the other theirs',
+        suite: 'smashpit', file: 'client/census.json',
+        find: ',2933,2934,2939,', put: ',2933,2934,2937,2938,2939,',
+    },
+    'pit-death': {
+        why: 'the third blow is a game over, so the pit never stood its guard down: in co-op the run goes on, and he stood frozen for the partner',
+        suite: 'smashpit', file: 'client/death.js',
+        find: 'for (const id of [2933, 2934, 2937, 2938]) $gameSwitches.setValue(id, false);', put: '',
+    },
+    'hounds-out': {
+        why: 'report 11/13: the Fortress hounds came out on one machine only (each bark timer is its own), and invisible hounds fought the partner',
+        suite: 'hounds', file: 'client/census.json',
+        find: ',1780,1781,1783,', put: ',1780,1783,',
+    },
+    'knight-zone': {
+        why: 'the level 5 knight spectre\'s zone switch stayed on the machine whose player stepped in',
+        suite: 'hounds', file: 'client/census.json',
+        find: ',359,360,361,', put: ',359,361,',
+    },
+    'knight-roll': {
+        why: 'each player threw their own knight_random at the start, so the level 5 knight stood for one of them only',
+        suite: 'hounds', file: 'room.js',
+        find: "try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once || []; }",
+        put: "try { ONCE = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).once.filter((id) => id !== 61); }",
+    },
+    'crossed-writes': {
+        why: 'fuzz 11/13: both players set Moonless\'s body down at once, and each screen ended with it at the other one\'s feet (a partner\'s write was applied over one of ours still on the way)',
+        suite: 'crossed', file: 'client/state.js',
+        find: '            if (inFlight.has(kind + key)) continue;\n', put: '',
+    },
+    'crossed-offline': {
+        why: 'a write whose answer was lost with a broken line stayed counted on the way, so the partner\'s writes to that key were skipped for good',
+        suite: 'crossed', file: 'client/state.js',
+        find: '        inFlight.clear();\n', put: '',
     },
     'gnome-dead': {
         why: 'a cave gnome one player killed was alive for the other (its dead switch was kept on one machine)',

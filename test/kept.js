@@ -101,7 +101,7 @@ async function bothToTitle(a, b) {
     const check = checker();
     let s;
     try {
-        s = await twoPlayers(8558);
+        s = await twoPlayers(8643);
         const { a, b } = s;
         let picture = null;
 
@@ -302,7 +302,7 @@ async function bothToTitle(a, b) {
             $gameSwitches._data.forEach((on, i) => { if (on && Coop.world.isShared('sw', i)) w.sw[i] = 1; });
             $gameVariables._data.forEach((v, i) => { if (v && Coop.world.isShared('va', i)) w.va[i] = v; });
             for (const k in $gameSelfSwitches._data) if (Coop.world.isShared('ss', k)) w.ss[k] = 1;
-            Coop.emit('world', { runId: run || Coop.world.runId, world: w, mode: 'join', balance: true });
+            Coop.emit('world', { runId: run || Coop.world.runId, world: w, mode: 'join', rules: { balance: true, loot: false } });
             return { el: Object.keys(Coop.world.el).length, x: $gameMap.event(119).x };
         }, id);
         const same = await noEl('');

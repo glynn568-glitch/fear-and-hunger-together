@@ -130,8 +130,25 @@
     // The game is played on the keyboard; its own plugin turns off mouse
     // clicks, but the battle plugin still picks a target wherever the mouse
     // rests, and the keyboard cannot move off it. The mouse is off here too.
-    TouchInput._onMouseMove = function () {};
     TouchInput._onWheel = function () {};
+    // The title and its load screen take the mouse (his playtest 11/14: Together, over the title, is worked
+    // with the mouse, and the menu beneath it was not). Pointing at a line picks it, a click chooses it. Only
+    // what lands on the game's own picture counts: a click in the mod's boxes never reaches a menu beneath.
+    const mouseScene = () => SceneManager._scene instanceof Scene_Title || SceneManager._scene instanceof Scene_Load;
+    const onPicture = (event) => event.target === Graphics._canvas || event.target === Graphics._upperCanvas;
+    function activeList() {
+        const layer = SceneManager._scene && SceneManager._scene._windowLayer;
+        return layer ? layer.children.find((w) => w instanceof Window_Selectable && w.isOpenAndActive()) : null;
+    }
+    TouchInput._onMouseDown = function (event) {
+        if (event.button === 0 && mouseScene() && onPicture(event)) this._onLeftButtonDown(event);
+    };
+    TouchInput._onMouseMove = function (event) {
+        const w = mouseScene() && onPicture(event) && activeList();
+        if (!w) return;
+        const i = w.hitTest(w.canvasToLocalX(Graphics.pageToCanvasX(event.pageX)), w.canvasToLocalY(Graphics.pageToCanvasY(event.pageY)));
+        if (i >= 0 && i !== w.index() && w.isCursorMovable()) { w.select(i); SoundManager.playCursor(); }
+    };
 
     // The hut village (map 22) has doors that lead to map 41, which the game
     // does not have; stepping on one would hang on a file that never loads.

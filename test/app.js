@@ -61,6 +61,10 @@ const panel = (page) => page.evaluate(() => {
         console.log('screenshot', await shot(a, 'together-online'));
         check('hosting online gives a keyed link', new RegExp(`^http://localhost:${HOST}/\\?k=[0-9a-f]{16}$`).test(link) && /Online/.test(pa.status), link);
 
+        // The run's options differ from the friend's own. Until they join, the friend is host of their own page.
+        await a.evaluate(() => { ConfigManager.coopLoot = true; Coop.sendRules(); });
+        const ownHost = await b.evaluate(() => Coop.decides === true && Coop.rules.loot === false);
+
         // A wrong key, then the real link.
         await b.evaluate(() => Coop.together.open());
         await b.evaluate(() => { document.querySelector('#coop-together [data-field=join]').value = location.origin.replace(/\d+$/, '') + '8510/?k=0000000000000000'; Coop.together.act('join'); });
@@ -71,6 +75,10 @@ const panel = (page) => page.evaluate(() => {
         await waitFor(b, () => Coop.connected && Array.from(Coop.peers.values()).some((p) => p.name === 'Ann'), 15000, 'connected to the host');
         const pb = await panel(b);
         check('pasting the link joins the host\'s game', pb.leaveShown && !pb.joinShown && /friend/.test(pb.status), JSON.stringify(pb));
+        await sleep(800);
+        const rulesB = await b.evaluate(() => ({ decides: Coop.decides, loot: Coop.rules.loot, own: ConfigManager.coopLoot === true }));
+        check('the joined friend has the run\'s options, not those of the page they hosted (Grok 11/14)', ownHost && rulesB.decides === false && rulesB.loot === true && !rulesB.own, JSON.stringify({ ownHost, rulesB }));
+        await a.evaluate(() => { ConfigManager.coopLoot = false; Coop.sendRules(); });
         // Each side hears of the other in its own time over a slow line.
         check('the host sees the friend arrive', await waitFor(a, () => Array.from(Coop.peers.values()).some((p) => p.name === 'Bo'), 15000, 'the host sees Bo').then(() => true, () => false));
 

@@ -17,4 +17,4 @@ client/mapnames.json
 tools/node-*/
 data/game-window/
 data/partner-mind.json
-spec/fcheck-out/
+fcheck-out/

@@ -5,6 +5,13 @@ const path = require('path');
 const crypto = require('crypto');
 
 const LAG = Number(process.env.FH_LAG || 0);
+// FH_WRITES_TRACE=<file>|<kind><key> (e.g. out.ndjson|va88): one line per thing the room does with
+// that one key, to check real runs against spec/writes/Writes.tla (Room.traceWrite).
+const WRITES_TRACE = (() => {
+    const m = /^(.*)\|(sw|va|ss|el)(.+)$/.exec(process.env.FH_WRITES_TRACE || '');
+    return m && { file: m[1], kind: m[2], key: m[3] };
+})();
+const traced = (kind, key) => !!WRITES_TRACE && kind === WRITES_TRACE.kind && String(key) === WRITES_TRACE.key;
 const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
 const TITLE_GHOST = Number(process.env.FH_TITLE_GHOST) || 10000; // ms a player in the run may say "title" before they are taken out of it
 const LINE_TITLE = Number(process.env.FH_LINE_TITLE) || 15000; // ms someone called in may still say "title" before the call is dropped
@@ -25,7 +32,7 @@ class Room {
         this.freedAt = new Map(); // player id -> when its connection closed
         this.runId = '';
         this.world = { sw: {}, va: {}, ss: {}, el: {} };
-        this.balance = true; // host's "Balance changes", for the whole run; on unless they turn it off
+        this.rules = { balance: true, loot: false }; // the host's run options (Balance changes, Instanced loot), for everyone
         this.founded = false; // a run is in progress with at least one player in it
         this.entered = new Set(); // names that have been in the current run since it was founded
         this.baseStamp = 0; // the save the run was carried on from, if it was
@@ -84,7 +91,7 @@ class Room {
         const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host };
         this.peers.set(id, peer);
         console.log('player ' + id + ' connected' + (host ? ' (this PC)' : ''));
-        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, balance: this.balance });
+        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules });
         this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
             if (isBinary) { this.onBinary(peer, raw); return; }
@@ -125,6 +132,19 @@ class Room {
     // The person hosting (their own browser on this PC), not an AI partner run from here.
     hostPerson() {
         return [...this.peers.values()].find((p) => p.host && p.named && !p.deadWait && !this.isBot(p)) || null;
+    }
+
+    // The host's word on the run options: only the ones that exist, only on or off. True if one moved.
+    takeRules(rules) {
+        if (!rules || typeof rules !== 'object') return false;
+        let moved = false;
+        for (const name in this.rules) {
+            if (typeof rules[name] !== 'boolean' || rules[name] === this.rules[name]) continue;
+            this.rules[name] = rules[name];
+            moved = true;
+        }
+        if (moved) this.dirty = true;
+        return moved;
     }
 
     // An AI partner: one this server started, or any that says so itself.
@@ -199,7 +219,7 @@ class Room {
             const m = q.shift();
             if (peer.ws.readyState === 1) peer.ws.send(m.data, { binary: !!m.binary });
         }
-        if (q.length) setTimeout(() => this.drainLag(peer), q[0].due - Date.now());
+        if (q.length) setTimeout(() => this.drainLag(peer), Math.max(1, q[0].due - Date.now()));
     }
 
     send(peer, msg) {
@@ -306,6 +326,12 @@ class Room {
         return lob.pick || (run && run.kind === 'save' ? lob.has : 0) || 0;
     }
 
+    // A Ready or Join sent with the pick it follows stands only if the room took that pick: one
+    // it dropped (someone took that character first) would otherwise go in as the earlier one (Grok 11/14).
+    asPicked(lob, msg) {
+        return msg.pick === undefined || (CHARACTERS.indexOf(msg.pick) >= 0 ? msg.pick : 0) === (lob.pick || 0);
+    }
+
     // Characters taken in the run: whoever is in it, and whoever has been called.
     lobbyBusy() {
         const out = new Set();
@@ -403,6 +429,7 @@ class Room {
                 break;
             }
             if (lob.ready || lob.away || this.founded || this.lobby.line.size || !this.lobby.run || !this.atTitle(peer)) break;
+            if (!this.asPicked(lob, msg)) break;
             const mine = this.lobbyChar(peer);
             // Theirs alone: not the host's, and not anyone's who is already ready.
             if (!mine || others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) break;
@@ -427,7 +454,7 @@ class Room {
             break;
         }
         case 'join': { // Join: into a run under way
-            if (!this.founded || !this.atTitle(peer) || this.inLine(peer) || lob.away) break;
+            if (!this.founded || !this.atTitle(peer) || this.inLine(peer) || lob.away || !this.asPicked(lob, msg)) break;
             const mine = this.lobbyChar(peer);
             if (!mine || this.lobbyBusy().has(mine)) break;
             this.lobby.line.add(peer.name.toLowerCase());
@@ -475,6 +502,14 @@ class Room {
         this.trace('HoldEnds', { name: hold.name });
     }
 
+    // FH_WRITES_TRACE: what the room did with the traced key, and its value of it after.
+    traceWrite(event, peer, more) {
+        if (!WRITES_TRACE) return;
+        const table = this.world[WRITES_TRACE.kind] || {};
+        const room = WRITES_TRACE.key in table ? table[WRITES_TRACE.key] : 0;
+        try { fs.appendFileSync(WRITES_TRACE.file, JSON.stringify(Object.assign({ event, who: peer.name, room }, more || {})) + '\n'); } catch (e) { /* a test's own file */ }
+    }
+
     // For checking real runs against the spec (spec/TraceLobby.tla): one line per action, written
     // once the room has done it, with what the room then holds.
     trace(event, peer, more) {
@@ -493,6 +528,7 @@ class Room {
 
     drop(peer, why) {
         if (!this.peers.delete(peer.id)) return;
+        this.traceWrite('Breaks', peer);
         // Who came and went, and why: a session can be read back from the log.
         console.log('player ' + peer.id + ' (' + peer.name + ') left: ' + (why || 'dropped'));
         this.freedAt.set(peer.id, Date.now());
@@ -754,6 +790,11 @@ class Room {
                 this.runId = carried ? String(msg.runId) : crypto.randomBytes(6).toString('hex');
                 this.world = saved || { sw: {}, va: {}, ss: {}, el: {} };
                 for (const k of ['sw', 'va', 'ss', 'el']) this.world[k] = this.world[k] || {};
+                // The run's options travel with its world (world.json, the beds, the copies): a restarted
+                // server would otherwise say the defaults to whoever is back before the host, and with
+                // Instanced loot off their own finds would be written into the shared world (Grok g16).
+                if (saved) this.takeRules(saved.rules);
+                this.world.rules = this.rules;
                 this.founded = true;
                 this.dirty = true;
                 founded = true;
@@ -772,13 +813,11 @@ class Room {
             peer.hostWaitSince = 0;
             this.trace('Arrive', peer, { c: ini[0] || 0 });
             this.entered.add(who);
-            // The host's game says whether the balance changes are in this run.
-            // Told to the one entering here, and to everyone already in if it moved.
-            if (peer === this.hostPerson() && typeof msg.balance === 'boolean' && this.balance !== msg.balance) {
-                this.balance = msg.balance;
-                this.broadcast({ t: 'balance', on: this.balance }, peer.id);
-            }
-            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, balance: this.balance });
+            // The host's game says what the run's options are.
+            // Told to the one entering here, and to everyone already in if they moved.
+            if (peer === this.hostPerson() && this.takeRules(msg.rules)) this.broadcast({ t: 'rules', rules: this.rules }, peer.id);
+            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, rules: this.rules });
+            this.traceWrite('Asked', peer);
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
             if (peer === this.hostPerson()) this.maybeRecall();
@@ -788,12 +827,9 @@ class Room {
         case 'lobby':
             this.lobbySay(peer, msg);
             break;
-        case 'balance': { // the host turns Balance changes on or off; a joiner's word is dropped
-            if (peer !== this.hostPerson() || typeof msg.on !== 'boolean' || this.balance === msg.on) break;
-            this.balance = msg.on;
-            this.broadcast({ t: 'balance', on: this.balance });
+        case 'rules': // the host changes a run option; a joiner's word is dropped
+            if (peer === this.hostPerson() && this.takeRules(msg.rules)) this.broadcast({ t: 'rules', rules: this.rules });
             break;
-        }
         case 'p': // where a player is; kept so that someone joining later
             // learns it at once, even from a player whose tab is asleep
             peer.last = msg;
@@ -945,21 +981,28 @@ class Room {
             break;
         }
         case 'w': // world writes: [kind, key, value]
+            // Answered first, whatever becomes of it: the writer counts its writes on the way by
+            // these (client/state.js inFlight), and a first throw sent back below comes after it.
+            this.send(peer, { t: 'wk' });
             if (!peer.live || !Array.isArray(msg.w)) break;
             msg.w = msg.w.filter(validWrite);
             {
                 // Some dice are thrown once per world (which enemies stand on
                 // a floor). The first throw stands; a later one is sent back.
                 const fixed = [];
-                msg.w = msg.w.filter(([kind, key]) => {
+                msg.w = msg.w.filter(([kind, key, value]) => {
                     if (kind !== 'va' || ONCE.indexOf(key) < 0 || !(key in this.world.va)) return true;
                     fixed.push(['va', key, this.world.va[key]]);
+                    if (traced(kind, key)) this.traceWrite('Refuses', peer, { v: value });
                     return false;
                 });
                 if (fixed.length) this.send(peer, { t: 'w', w: fixed });
             }
             if (!msg.w.length) break;
-            for (const [kind, key, value] of msg.w) this.world[kind][key] = value;
+            for (const [kind, key, value] of msg.w) {
+                this.world[kind][key] = value;
+                if (traced(kind, key)) this.traceWrite('Takes', peer, { v: value });
+            }
             this.dirty = true;
             for (const p of this.peers.values()) if (p.live && p.id !== peer.id) this.send(p, msg);
             break;

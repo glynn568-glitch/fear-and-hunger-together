@@ -75,7 +75,7 @@ function balanceSwing() {
         pages.push(a, b);
         // With the lobby (client/lobby.js) the friend's menu has no run to choose: that is the host's.
         const lines = await b.evaluate(() => SceneManager._scene._commandWindow._list.map((c) => c.name).join('|'));
-        check('the friend\'s title leaves the run to the host', lines === 'Together' && /Ann/.test(await hud(b)), lines + ' / ' + await hud(b));
+        check('the friend\'s title leaves the run to the host', lines === 'Ready|Together' && /Ann/.test(await hud(b)), lines + ' / ' + await hud(b));
         check('the host\'s does not', !/sets the run/.test(await hud(a)), await hud(a));
         await friendEnters(b);
         await waitFor(b, () => Coop.world.hostWait === 'Ann', 10000, 'the friend is told to wait');
@@ -137,16 +137,25 @@ function balanceSwing() {
             const cat = window.Yanfly && Yanfly.Param && Yanfly.Param.OptionsCategories && Yanfly.Param.OptionsCategories.find((c) => c.Name === 'General');
             const opt = cat && cat.OptionsList.find((o) => o.Symbol === 'coopBalance');
             const help = opt ? JSON.parse(opt.HelpDesc) : '';
-            if (i < 0) return { listed: false, symbols: w._list.map((c) => c.symbol), help, decides: !!Coop.decides };
+            // The help box shows two lines and cuts each at its edge: every line of ours must fit.
+            const hw = s._helpWindow, cut = [];
+            for (const o of cat ? cat.OptionsList : []) {
+                if (!/^coop/.test(o.Symbol)) continue;
+                const lines = JSON.parse(o.HelpDesc).split('\n');
+                if (lines.length > 2) cut.push(o.Symbol + ': ' + lines.length + ' lines');
+                for (const line of lines) if (hw.textWidth(line) > hw.contentsWidth()) cut.push(o.Symbol + ': ' + line);
+            }
+            if (i < 0) return { listed: false, symbols: w._list.map((c) => c.symbol), help, cut, decides: !!Coop.decides };
             const was = ConfigManager.coopBalance;
             w.select(i);
             w.processOk();
-            return { listed: true, name: w.commandName(i), was, now: ConfigManager.coopBalance, saved: ConfigManager.makeData().coopBalance, help, decides: !!Coop.decides };
+            return { listed: true, name: w.commandName(i), was, now: ConfigManager.coopBalance, saved: ConfigManager.makeData().coopBalance, help, cut, decides: !!Coop.decides };
         });
         check('Options lists Balance changes under General for the host, on, and OK turns it off',
             offOpt.listed === true && offOpt.name === 'Balance changes' && offOpt.was === true && offOpt.now === false && offOpt.saved === false
-            && offOpt.help === 'Weapons do what their text says; two soul stones can call a partner back. Set by the host for everyone.',
+            && /^Weapons do what their text says/.test(offOpt.help) && /Set by the host/.test(offOpt.help),
             JSON.stringify(offOpt));
+        check('the help of every co-op option fits its box', offOpt.cut.length === 0, JSON.stringify(offOpt.cut));
         await sleep(800);
         const off = await b.evaluate(balanceSwing);
         const sawOff = !!(off && off.added === 0 && off.landed > 0 && off.hrg === -0.1 && off.auto === 0 && off.stone === null);

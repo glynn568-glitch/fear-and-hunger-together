@@ -49,10 +49,14 @@ const PORT = 8542;
         await key(a, 'Enter');
         await waitFor(a, titleReady, 20000, 'Ann back at the title').catch(() => {});
         check('choosing a save loads nothing: back at the title, with Start', await menuIs(a, ['Start~', 'Change run', 'Together']) && !(await a.evaluate(() => Coop.world.live)), JSON.stringify(await menu(a)));
-        check('the friend has their own save of that run: Ready', await menuIs(b, ['Ready', 'Come in as...', 'Together']), JSON.stringify(await menu(b)));
+        check('the friend has their own save of that run: Ready', await menuIs(b, ['Ready', 'Together']), JSON.stringify(await menu(b)));
         await sleep(400);
         check('the corner list says which run', /^Continue.* \| Ann ready \| Bo not ready/.test(await hud(b)), await hud(b));
         await choose(b, 'Ready');
+        await waitFor(b, () => Coop.lobby.mode === 'pick', 5000, 'Bo\'s list').catch(() => {});
+        const list = await menu(b);
+        check('Ready opens the list, the cursor on their own save', /^My save: /.test(list.lines[list.at] || ''), JSON.stringify(list));
+        await key(b, 'Enter');
         check('ready', await menuIs(a, ['Start', 'Change run', 'Together']) && await hudIs(a, /Bo ready/), await hud(a));
         await choose(a, 'Start');
         const live = () => SceneManager._scene instanceof Scene_Map && Coop.world.live && !$gamePlayer.isTransferring() && SceneManager._scene.isActive();
@@ -72,10 +76,10 @@ const PORT = 8542;
         await menuIs(a, ['New run', 'Continue', 'Together']);
         await choose(a, 'New run');
         await choose(a, 'Cahara');
-        check('a new run: the friend\'s save does not count, a character has to be picked', await menuIs(b, ['Ready~', 'Come in as...', 'Together']), JSON.stringify(await menu(b)));
-        await choose(b, 'Come in as...');
-        await choose(b, 'Ragnvaldr');
+        await menuIs(b, ['Ready', 'Together']);
         await choose(b, 'Ready');
+        check('a new run: the friend\'s save does not count, Ready asks for a character', await menuIs(b, ['Cahara~', "D'arce", 'Enki', 'Ragnvaldr', 'Back']), JSON.stringify(await menu(b)));
+        await choose(b, 'Ragnvaldr');
         await menuIs(a, ['Start', 'Change run', 'Together']);
         await choose(a, 'Start');
         await waitFor(b, () => SceneManager._scene instanceof Scene_Map, 20000, 'Bo\'s game to start').catch(() => {});
@@ -85,13 +89,13 @@ const PORT = 8542;
         await waitFor(a, titleReady, 90000, 'Ann at the title again');
         await a.evaluate(install);
         await a.evaluate(watch);
-        check('and the lobby starts over: the host chooses', await menuIs(a, ['New run', 'Continue', 'Together']) && await menuIs(b, ['Together']), JSON.stringify([await menu(a), await menu(b)]));
+        check('and the lobby starts over: the host chooses', await menuIs(a, ['New run', 'Continue', 'Together']) && await menuIs(b, ['Ready~', 'Together']), JSON.stringify([await menu(a), await menu(b)]));
         await errors('a start called off');
 
         //--- 3. away --------------------------------------------------------------------
         await choose(a, 'New run');
         await choose(a, 'Cahara');
-        await menuIs(b, ['Ready~', 'Come in as...', 'Together']);
+        await menuIs(b, ['Ready', 'Together']);
         check('someone here and not ready holds Start up', await menuIs(a, ['Start~', 'Change run', 'Together']), JSON.stringify(await menu(a)));
         // What Bo's page said and what it took for a key, for the day this check fails (it did once, 11/11).
         await b.evaluate(() => {

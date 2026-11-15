@@ -19,7 +19,7 @@ Everything else comes in the box, except one thing: the first time you host onli
 
 1. Unzip anywhere (or install it with the itch app and press Launch).
 2. Double-click **Fear & Hunger Together**. The game opens in its own window. Close the window to quit.
-3. Type a name (bottom left), then New Game or Continue. With friends at the title, the host picks the run instead (a new one, or a save), everyone else picks a character if it is new and presses Ready, and the host's Start takes everybody in together. A run already under way shows Join.
+3. Type a name (bottom left), then New Game or Continue. With friends at the title, the host picks the run instead (a new one, or a save), everyone else presses Ready and picks who to play (or their own save), and the host's Start takes everybody in together. A run already under way shows Join.
 
 **Together** on the title screen does the rest:
 

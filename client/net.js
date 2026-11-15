@@ -208,6 +208,9 @@ Coop._receive = function (msg) {
         break;
     case 'hello':
         Coop.relayOnly = !!msg.relayOnly;
+        // Whose game sets the run is this line's nameok to say. Not the last line's: a page that
+        // hosted its own room and then joined a friend's would still be taken for the host.
+        Coop.decides = null;
         Coop.id = msg.id;
         Coop.connected = true;
         Coop.peers.clear();
@@ -244,6 +247,12 @@ Coop._receive = function (msg) {
         // later scripts have registered, and they must not miss it.
         Coop.decides = !!msg.decides;
         Coop.emit('nameok', msg);
+        break;
+    case 'lobby':
+        // Kept for lobby.js, which loads late: the room says it once, and again only when it changes,
+        // so one heard before that file is up left a slow PC out of the lobby (gate 11/14).
+        Coop.lastLobby = msg;
+        Coop.emit('lobby', msg);
         break;
     case 'nametaken':
         // Someone here already has it; this player has to pick another.

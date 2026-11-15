@@ -1,0 +1,9 @@
+{
+  "why": "11/13 (test/samefuzz.js, Map001 EV146): both games ran the scene that sets Moonless's body down where the player stands; the room passed each spot only to the other, so each game ended on the other's spot for good. Before 'wk', a game applied every write the room passed it.",
+  "code": "room.js 'w' (no answer to the writer), client/state.js Coop.on('w') before inFlight",
+  "file": "Writes.tla",
+  "edits": [
+    {"old": "    /\\ flight[c] = 0\n", "new": ""},
+    {"old": "    /\\ flight[c] > 0\n", "new": "    /\\ FALSE\n"}
+  ]
+}

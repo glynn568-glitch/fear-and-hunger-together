@@ -9,7 +9,17 @@
     const worldSw = new Set(census.sw);
     const worldVa = new Set(census.va);
     const privateSs = new Set(census.ssPrivate);
+    const lootSs = new Set(census.ssLoot || []);
+    const lootSw = new Set(census.swLoot || []);
     const START = census.start;
+
+    // The host's run options (Options > General), the same for everyone in the run.
+    Coop.rules = { balance: true, loot: false };
+    // A self switch that stays on this machine: the census's private ones and, with the host's
+    // Instanced loot on, every crate, chest, body and coin marked taken. The same for the shared
+    // switches that mark a container taken (chest1, bookshelf1, captains_desk).
+    const ssLocal = (key) => privateSs.has(key) || (Coop.rules.loot && lootSs.has(key));
+    const swShared = (id) => worldSw.has(id) && !(Coop.rules.loot && lootSw.has(id));
 
     const World = Coop.world = {
         live: false, // true once this player is in the dungeon and synced
@@ -17,7 +27,6 @@
         runId: '',
         demoted: new Set(), // keys that turned out to flap; kept local from then on
         _out: [],
-        _remote: false,
         _flap: new Map(),
         _entering: false,
         el: {}, // 'map,event' -> [x, y, direction] of a kept event a shared scene moved
@@ -63,6 +72,8 @@
         worldSw.clear(); for (const id of c.sw) worldSw.add(id);
         worldVa.clear(); for (const id of c.va) worldVa.add(id);
         privateSs.clear(); for (const k of c.ssPrivate || []) privateSs.add(k);
+        lootSs.clear(); for (const k of c.ssLoot || []) lootSs.add(k);
+        lootSw.clear(); for (const id of c.swLoot || []) lootSw.add(id);
         // Due scenes are private and decided by this copy's maps. An older host
         // census has no list; keep the one this client booted with.
         if (!Array.isArray(c.dueScenes)) c.dueScenes = World.census.dueScenes;
@@ -76,11 +87,11 @@
 
     World.isShared = function (kind, key) {
         if (World.demoted.has(kind + key)) return false;
-        if (kind === 'sw') return worldSw.has(key);
+        if (kind === 'sw') return swShared(key);
         if (kind === 'va') return worldVa.has(key);
         if (kind === 'el') return !Coop.mapDiffers(Number(String(key).split(',')[0]));
         if (kind !== 'ss') return false;
-        return !privateSs.has(key) && !Coop.mapDiffers(Number(String(key).split(',')[0]));
+        return !ssLocal(String(key)) && !Coop.mapDiffers(Number(String(key).split(',')[0]));
     };
 
     // A world key that changes many times in a few seconds is some script's
@@ -102,7 +113,7 @@
     }
 
     function queue(kind, key, value) {
-        if (!World.live || World._remote) return;
+        if (!World.live) return;
         if (!World.isShared(kind, key)) return;
         if (kind === 'el') {
             if (!Array.isArray(value) || value.length !== 3) return;
@@ -112,11 +123,35 @@
         if (flapping(kind, key)) return;
         if (kind === 'el') World.el[key] = value.slice();
         World._out.push([kind, key, value]);
+        onTheWay(kind, key);
     }
+
+    // This machine's writes the room has not answered yet, per key: the room answers each batch
+    // with 'wk' (room.js 'w'). A partner's write to a key with one of ours still on the way reached
+    // the room before ours, and the room ends on ours; applied here, it would leave this machine on
+    // the partner's value for good. Moonless's body, set down at each player's own feet, lay at the
+    // other one's feet on each screen (test/samefuzz.js, 11/13). Model: spec/Writes.tla.
+    const inFlight = new Map(); // kind + key -> writes on the way
+    let batches = []; // the keys of each batch sent and not answered, oldest first
+    // Counted as it is made (queue), not as it is sent: a message in between is already behind it.
+    function onTheWay(kind, key) { inFlight.set(kind + key, (inFlight.get(kind + key) || 0) + 1); }
+    function sendWrites(list, counted) {
+        if (!counted) for (const [kind, key] of list) onTheWay(kind, key);
+        batches.push(list.map(([kind, key]) => kind + key));
+        Coop.send({ t: 'w', w: list });
+    }
+    Coop.on('wk', function () {
+        const batch = batches.shift();
+        if (!batch) return;
+        for (const k of batch) {
+            const n = inFlight.get(k) - 1;
+            if (n > 0) inFlight.set(k, n); else inFlight.delete(k);
+        }
+    });
 
     World.flush = function () {
         if (!World._out.length) return;
-        Coop.send({ t: 'w', w: World._out });
+        sendWrites(World._out, true);
         World._out = [];
     };
 
@@ -184,7 +219,7 @@
         if (World.demoted.has('el' + key)) return;
         const value = [x, y, d];
         // Not in a run yet: keep it so the save can contribute it on the way in.
-        if (!World.live || World._remote) {
+        if (!World.live) {
             if (!sameEl(World.el[key], value)) World.el[key] = value.slice();
             return;
         }
@@ -399,7 +434,7 @@
             if (after) World.mine.add('sw' + id); else World.mine.delete('sw' + id);
             if (after && byHand()) claim(id); else if (!after) claims.delete(id);
             queue('sw', id, after ? 1 : 0);
-            if (id === START && after && !World._remote) World.enter();
+            if (id === START && after) World.enter();
         } else if (after && byHand() && World.isShared('sw', id)) {
             // Already on, by someone who did the same a moment ago: this player's scene
             // is as much theirs (the lift, 11/11: pho rode down, Enki three seconds after;
@@ -414,7 +449,7 @@
     // take this one's arrival away. Twenty seconds at most, then the world's word counts.
     const CLAIM = 20000;
     const claims = new Map(); // switch id -> { at, off: an "off" from someone else is owed }
-    function byHand() { return World.live && !World._remote && World._inScene && World._sceneByHand; }
+    function byHand() { return World.live && World._inScene && World._sceneByHand; }
     function claim(id) {
         const c = { at: Date.now(), off: false };
         claims.set(id, c);
@@ -462,6 +497,59 @@
         return started;
     };
 
+    // Shared loot: a container's page hands out its find, shows it, and only then marks it taken,
+    // so a partner who opened it while the message was up found it full too. The mark is set as
+    // soon as the page is sure to set it: at the start for a crate, on "Open" for a chest. Sure
+    // means the mark is written further on in the same block, at the same depth, and nothing in
+    // between can leave the page or jump outside that stretch. The game already holds the page
+    // it runs, so the page turning over under it changes nothing.
+    let claimMemo = new WeakMap();
+    Coop.on('census', function () { claimMemo = new WeakMap(); });
+    // For each command of an event's page: the loot mark (['ss', key] or ['sw', id]) it is sure to set.
+    function claimPoints(list, mapId, eventId) {
+        let pts = claimMemo.get(list);
+        if (pts) return pts;
+        const markAt = list.map((c) => {
+            if (c.code === 123 && c.parameters[1] === 0) {
+                const key = [mapId, eventId, c.parameters[0]].join(',');
+                return lootSs.has(key) ? ['ss', key] : null;
+            }
+            if (c.code !== 121 || c.parameters[2] !== 0) return null;
+            for (let id = c.parameters[0]; id <= c.parameters[1]; id++) if (lootSw.has(id)) return ['sw', id];
+            return null;
+        });
+        pts = new Array(list.length).fill(null);
+        if (markAt.some(Boolean)) {
+            const labels = {};
+            list.forEach((c, i) => { if (c.code === 118) labels[c.parameters[0]] = i; });
+            for (let i = 0; i < list.length; i++) {
+                const d = list[i].indent;
+                const jumps = [];
+                for (let j = i; j < list.length; j++) {
+                    const c = list[j];
+                    if (c.indent < d || c.code === 115 || c.code === 113) break;
+                    if (c.code === 119) { jumps.push(labels[c.parameters[0]]); continue; }
+                    if (c.indent !== d || !markAt[j]) continue;
+                    if (jumps.every((t) => t !== undefined && t >= i && t < j && list[t].indent >= d)) pts[i] = markAt[j];
+                    break;
+                }
+            }
+        }
+        claimMemo.set(list, pts);
+        return pts;
+    }
+    const _executeCommand = Game_Interpreter.prototype.executeCommand;
+    Game_Interpreter.prototype.executeCommand = function () {
+        if (World.live && !Coop.rules.loot && this._depth === 0 && this._eventId > 0 && this._list && this._mapId === $gameMap.mapId()) {
+            const mark = claimPoints(this._list, this._mapId, this._eventId)[this._index];
+            if (mark && World.isShared(mark[0], mark[1])) {
+                if (mark[0] === 'ss' && !$gameSelfSwitches.value(mark[1])) $gameSelfSwitches.setValue(mark[1], true);
+                if (mark[0] === 'sw' && !$gameSwitches.value(mark[1])) $gameSwitches.setValue(mark[1], true);
+            }
+        }
+        return _executeCommand.call(this);
+    };
+
     const _vaSet = Game_Variables.prototype.setValue;
     Game_Variables.prototype.setValue = function (id, value) {
         const before = this._data[id] || 0;
@@ -485,7 +573,7 @@
 
     function apply(kind, key, value) {
         if (kind === 'sw') {
-            if (!worldSw.has(key) || World.demoted.has('sw' + key)) return false;
+            if (!swShared(key) || World.demoted.has('sw' + key)) return false;
             if (!!$gameSwitches._data[key] === !!value) return false;
             $gameSwitches._data[key] = !!value;
         } else if (kind === 'va') {
@@ -493,8 +581,8 @@
             if (($gameVariables._data[key] || 0) === value) return false;
             $gameVariables._data[key] = value;
         } else if (kind === 'ss') {
-            if (privateSs.has(key) || World.demoted.has('ss' + key)) return false;
             key = String(key);
+            if (ssLocal(key) || World.demoted.has('ss' + key)) return false;
             if (Coop.mapDiffers(Number(key.split(',')[0]))) return false;
             if (!!$gameSelfSwitches._data[key] === !!value) return false;
             if (value) $gameSelfSwitches._data[key] = true; else delete $gameSelfSwitches._data[key];
@@ -508,6 +596,8 @@
         if (!World.live || !window.$gameSwitches) return;
         let changed = false;
         for (const [kind, key, value] of msg.w) {
+            // One of ours to it is on the way: the room puts that one after this.
+            if (inFlight.has(kind + key)) continue;
             if (claimed(kind, key, value)) continue;
             // Only a write that changed it makes it theirs: both pulling the lever at once, both ride.
             if (apply(kind, key, value)) { changed = true; World.mine.delete(kind + key); }
@@ -715,16 +805,12 @@
     // The run someone else is playing right now, while this player is still at the title.
     World.on = null;
     Coop.on('online', function () { World.on = null; });
-    if (typeof Coop.decides !== 'boolean') Coop.decides = false; // set from nameok, which can beat this file
+    if (Coop.decides === undefined) Coop.decides = false; // set from nameok, which can beat this file (null: a line up, no nameok yet)
     Coop.on('nameok', function (msg) {
         World.on = msg.run || null;
         Coop.decides = !!msg.decides;
-        // Their saved Balance changes is the run's, from here on. A joiner's tick is not.
-        if (Coop.decides && window.ConfigManager && Coop.setBalance) {
-            const on = ConfigManager.coopBalance !== false;
-            Coop.setBalance(on);
-            Coop.send({ t: 'balance', on: on });
-        }
+        // Their saved run options are the run's, from here on. A joiner's ticks are not.
+        Coop.sendRules();
     });
     Coop.on('run', function (msg) { World.on = msg.run || null; });
 
@@ -753,7 +839,7 @@
             have: World._how === 'load' ? Object.keys(World.slotsOf(World.runId)).map(Number) : [],
             dead: !!Coop.deadFromSave,
             lead: World.lead ? 1 : 0, // a test's bot playing by itself (tools/bot-page.js); a partner never founds a run
-            balance: window.ConfigManager ? ConfigManager.coopBalance !== false : true,
+            rules: myRules(), // the room takes only the host's
         });
         if (!Coop.connected) { World._entering = false; World._holdDue = false; } // offline: play alone, sync on reconnect
     };
@@ -761,7 +847,7 @@
     function localShared() {
         const out = [];
         const sw = $gameSwitches._data, va = $gameVariables._data, ss = $gameSelfSwitches._data;
-        for (const id of worldSw) if (sw[id]) out.push(['sw', id, 1]);
+        for (const id of worldSw) if (sw[id] && swShared(id)) out.push(['sw', id, 1]);
         for (const id of worldVa) if (va[id]) out.push(['va', id, va[id]]);
         for (const k in ss) if (ss[k] && World.isShared('ss', k)) out.push(['ss', k, 1]);
         for (const k in World.el) if (World.isShared('el', k)) out.push(['el', k, World.el[k].slice()]);
@@ -847,17 +933,57 @@
         }
     });
 
-    // The room's word on Balance changes, except on the host's own machine: a restarted server
-    // forgets, and says "on" until told again. The host's saved choice stands and is sent back.
-    function roomBalance(on) {
-        if (typeof on !== 'boolean' || !Coop.setBalance) return;
-        if (Coop.decides && window.ConfigManager) {
-            const mine = ConfigManager.coopBalance !== false;
-            Coop.setBalance(mine);
-            if (mine !== on) Coop.send({ t: 'balance', on: mine });
-        } else Coop.setBalance(on);
+    // The run options: Balance changes and Instanced loot. The host's saved choices
+    // (pointer.js keeps them with the game's options) are the run's.
+    function myRules() {
+        const c = window.ConfigManager || {};
+        return { balance: c.coopBalance !== false, loot: c.coopLoot === true };
     }
-    Coop.on('balance', function (msg) { roomBalance(msg.on); });
+    // Said to everyone when the host changes one during the run (Options, General). Only then: the
+    // defaults a restarted server says on the way back in are no change of the host's (Grok 11/14).
+    const RULE_SAID = {
+        loot: ['Instanced loot is off: an emptied chest stays empty for everyone.', 'Instanced loot is on: from now on, each of you finds your own loot.'],
+        balance: ['Balance changes are off.', 'Balance changes are on.'],
+    };
+    function setRules(r, say) {
+        const wasOwn = Coop.rules.loot;
+        const said = [];
+        for (const name in Coop.rules) {
+            if (typeof r[name] !== 'boolean') continue;
+            if (r[name] !== Coop.rules[name]) said.push(RULE_SAID[name][+r[name]]);
+            Coop.rules[name] = r[name];
+        }
+        if (say && said.length && World.live && Coop.toast) Coop.toast(said.join(' '), 6000);
+        if (wasOwn !== Coop.rules.loot) shareMemo = new WeakMap(); // which lists write a shared flag moved
+        if (Coop.setBalance) Coop.setBalance(Coop.rules.balance);
+        // Instanced loot turned off: what this player took is taken for everyone from here on, so
+        // the shared world is the same on every machine again (Grok g16).
+        if (wasOwn && !Coop.rules.loot && World.live && window.$gameSelfSwitches) {
+            for (const k of lootSs) if ($gameSelfSwitches._data[k]) queue('ss', k, 1);
+            for (const id of lootSw) if ($gameSwitches._data[id]) queue('sw', id, 1);
+        }
+    }
+    // The host's machine: its choices become the run's, and the room is told.
+    Coop.sendRules = function () {
+        if (!Coop.decides) return;
+        setRules(myRules(), true);
+        if (Coop.connected) Coop.send({ t: 'rules', rules: myRules() });
+    };
+    // The room's word, except on the host's own machine: a restarted server forgets, and
+    // says the defaults until told again. The host's saved choices stand and are sent back.
+    // Before this line's nameok, whose they are is not known yet: kept until it comes (Grok 11/14).
+    let heldRules = null;
+    function roomRules(r, say) {
+        if (!r || typeof r !== 'object') return;
+        if (Coop.decides === null) { heldRules = r; return; }
+        if (!Coop.decides) { setRules(r, say); return; }
+        const mine = myRules();
+        setRules(mine, say);
+        if (Object.keys(mine).some((name) => r[name] !== mine[name])) Coop.send({ t: 'rules', rules: mine });
+    }
+    Coop.on('rules', function (msg) { roomRules(msg.rules, true); });
+    // Named: the room's word kept till now is a joiner's to take (the host's own were just sent).
+    Coop.on('nameok', function () { const r = heldRules; heldRules = null; if (r && !Coop.decides) setRules(r); });
 
     function holdsRecruit(id) {
         const actor = (World.census.recruits || {})[id];
@@ -866,7 +992,7 @@
     }
 
     Coop.on('world', function (msg) {
-        roomBalance(msg.balance);
+        roomRules(msg.rules); // first: Instanced loot decides which of these facts are shared
         World._entering = false;
         World._holdDue = false;
         World.otherRun = false;
@@ -904,7 +1030,7 @@
                 if (claimed(kind, key, 0)) continue;
                 if (apply(kind, key, 0)) { changed = true; World.mine.delete(kind + key); }
             }
-            if (mine.length) Coop.send({ t: 'w', w: mine });
+            if (mine.length) sendWrites(mine);
             // A carried "the scene is due" latch would autorun here and pay
             // everyone again. The founder's own, and a reconnect's, still is.
             if (stopDueRunning()) changed = true;
@@ -916,7 +1042,7 @@
             // Founding it, or back after a dropped line: what this machine
             // knows and the server does not is contributed.
             mine = localShared().filter(([kind, key]) => !(server[kind] && key in server[kind]));
-            if (mine.length) Coop.send({ t: 'w', w: mine });
+            if (mine.length) sendWrites(mine);
         }
         World.live = true;
         World.cut = false;
@@ -926,7 +1052,7 @@
     });
 
     Coop.on('online', function (msg) {
-        if (msg) roomBalance(msg.balance);
+        if (msg) roomRules(msg.rules);
         // Reconnected mid-game: resync from the server's copy.
         if (window.$gameSwitches && $gameSwitches.value(START) && !World.otherRun && !(SceneManager._scene instanceof Scene_Title)) {
             World.live = false;
@@ -945,6 +1071,10 @@
     Coop.on('offline', function () {
         World.cut = World.live || !!World.cut;
         World.live = false;
+        // That line's answers are lost with it; what the room has, the next 'world' says.
+        World._out = [];
+        inFlight.clear();
+        batches = [];
     });
 
     World.leave = function () {
@@ -1047,9 +1177,9 @@
     // shared state as this machine sees it.
     World.fingerprint = function () {
         const parts = [];
-        for (const id of worldSw) if ($gameSwitches._data[id] && !World.demoted.has('sw' + id)) parts.push('s' + id);
+        for (const id of worldSw) if ($gameSwitches._data[id] && swShared(id) && !World.demoted.has('sw' + id)) parts.push('s' + id);
         for (const id of worldVa) if ($gameVariables._data[id] && !World.demoted.has('va' + id)) parts.push('v' + id + '=' + $gameVariables._data[id]);
-        for (const k of Object.keys($gameSelfSwitches._data).sort()) if (!privateSs.has(k) && !World.demoted.has('ss' + k)) parts.push('x' + k);
+        for (const k of Object.keys($gameSelfSwitches._data).sort()) if (!ssLocal(k) && !World.demoted.has('ss' + k)) parts.push('x' + k);
         for (const k of Object.keys(World.el).sort()) {
             if (World.demoted.has('el' + k) || Coop.mapDiffers(Number(String(k).split(',')[0]))) continue;
             const p = World.el[k];

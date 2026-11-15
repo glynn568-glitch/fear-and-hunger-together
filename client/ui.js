@@ -190,16 +190,23 @@
         ['Y', 'Talk. AI partners take orders.'],
         ['F8', 'Host: call an AI partner in, or send it home.'],
         ['Fights', 'Whoever touches the enemy starts it and keeps what it drops. Anyone near joins. You command your own.'],
-        ['Bags', 'Yours alone. An emptied chest stays empty.'],
+        ['Bags', ''], // the run's loot rule, filled in as the panel opens
         ['Party', 'Four characters between you.'],
         ['Death', 'You watch. A partner can call you back at a ritual circle. Hold Esc to let the character go.'],
         ['Beds', 'Sleeping saves everyone. Another day, all press Continue.'],
         ['Crash', 'Restart and press R at the title.'],
     ];
-    help.innerHTML = '<h1>Playing together</h1><dl>' + HELP.map((row) => '<dt>' + row[0] + '</dt><dd>' + row[1] + '</dd>').join('') + '</dl>'
+    help.innerHTML = '<h1>Playing together</h1><dl>' + HELP.map((row) => '<dt>' + row[0] + '</dt><dd data-row="' + row[0] + '">' + row[1] + '</dd>').join('') + '</dl>'
         + '<footer class="pad"><b>RT</b> torch &nbsp;&middot;&nbsp; <b>L3</b> phase &nbsp;&middot;&nbsp; <b>LT</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>R3</b> follow &nbsp;&middot;&nbsp; <b>Start</b> talk &nbsp;&middot;&nbsp; <b>View</b> this &nbsp;&middot;&nbsp; <b>View+Start</b> held: unstuck</footer>'
         + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(help));
+    // The loot row follows the run's rule, an open panel too.
+    function fillBags() {
+        help.querySelector('[data-row=Bags]').textContent = Coop.rules.loot
+            ? 'Yours alone. Instanced loot is on.'
+            : 'Yours alone. An emptied chest stays empty.';
+    }
+    Coop.on('rules', function () { if (help.isConnected) fillBags(); });
     document.addEventListener('keydown', function (e) {
         if (e.code !== 'F1' || e.repeat) return;
         e.preventDefault();
@@ -210,6 +217,7 @@
         // The controller's buttons, when one is plugged in (a Steam Deck has one).
         const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
         help.querySelector('footer.pad').style.display = pads.length ? '' : 'none';
+        fillBags();
         help.style.display = help.style.display === 'none' ? '' : 'none';
     });
 

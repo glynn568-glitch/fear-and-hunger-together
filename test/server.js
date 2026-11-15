@@ -123,7 +123,7 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
         const joined = got(b, 'world')[0];
         check('good writes are kept and bad ones dropped', joined && joined.world.sw['25'] === 1 && joined.world.ss['1,5,A'] === 1 && joined.world.va['121'] === 3
             && joined.world.el && joined.world.el['3,119'] && joined.world.el['3,119'].join() === '17,31,6'
-            && Object.keys(joined.world).sort().join() === 'el,ss,sw,va' && joined.world.sw['5'] === undefined && !joined.world.el.nope, JSON.stringify(joined && joined.world));
+            && Object.keys(joined.world).sort().join() === 'el,rules,ss,sw,va' && joined.world.sw['5'] === undefined && !joined.world.el.nope, JSON.stringify(joined && joined.world));
         check('the second player joins rather than founds', joined && !joined.founded && joined.runId === founded.runId);
 
         // Someone who joins later learns at once where everyone already is,

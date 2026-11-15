@@ -65,27 +65,33 @@ async function launch() {
 }
 
 // A broken twin of a client file (test/twins.js): the page is handed that file
-// with its fix taken out, whichever server it asks.
-async function serveTwin(page) {
+// with its fix taken out, whichever server it asks. slow: { 'lobby.js': ms } holds
+// those co-op scripts back that long, as a slow PC loads them.
+async function serveTwin(page, slow) {
     const { TWINS, twinSource } = require('./twins');
     const t = TWINS[process.env.FH_TWIN];
-    if (!t || !t.file.startsWith('client/')) return;
-    const name = t.file.slice('client/'.length);
+    const twin = t && t.file.startsWith('client/') ? t.file.slice('client/'.length) : null;
+    const late = slow || {};
+    const names = [...new Set([twin, ...Object.keys(late)].filter(Boolean))];
+    if (!names.length) return;
     const cdp = await page.target().createCDPSession();
     cdp.on('Fetch.requestPaused', (e) => {
-        const body = twinSource(process.env.FH_TWIN, t.file, fs.readFileSync(path.join(ROOT, t.file), 'utf8'));
-        cdp.send('Fetch.fulfillRequest', {
-            requestId: e.requestId, responseCode: 200,
-            responseHeaders: [{ name: 'Content-Type', value: 'application/javascript; charset=utf-8' }, { name: 'Cache-Control', value: 'no-store' }],
-            body: Buffer.from(body).toString('base64'),
-        }).catch(() => { /* page gone */ });
+        const name = names.find((n) => e.request.url.includes('/coop/' + n));
+        const answer = () => (name === twin
+            ? cdp.send('Fetch.fulfillRequest', {
+                requestId: e.requestId, responseCode: 200,
+                responseHeaders: [{ name: 'Content-Type', value: 'application/javascript; charset=utf-8' }, { name: 'Cache-Control', value: 'no-store' }],
+                body: Buffer.from(twinSource(process.env.FH_TWIN, t.file, fs.readFileSync(path.join(ROOT, t.file), 'utf8'))).toString('base64'),
+            })
+            : cdp.send('Fetch.continueRequest', { requestId: e.requestId })).catch(() => { /* page gone */ });
+        setTimeout(answer, late[name] || 0);
     });
-    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/coop/' + name + '*', requestStage: 'Request' }] });
+    await cdp.send('Fetch.enable', { patterns: names.map((n) => ({ urlPattern: '*/coop/' + n + '*', requestStage: 'Request' })) });
 }
 
 // Open one player's tab. Each gets its own incognito context so local storage
 // is not shared between the two players.
-async function openPlayer(browser, url, label) {
+async function openPlayer(browser, url, label, slow) {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
     await page.setViewport({ width: 900, height: 700 });
@@ -100,7 +106,7 @@ async function openPlayer(browser, url, label) {
     page.on('requestfailed', (r) => page.logs.push(`[requestfailed] ${r.url()} ${r.failure() && r.failure().errorText}`));
     page.on('response', (r) => { if (r.status() >= 400) page.logs.push(`[http ${r.status()}] ${r.url()}`); });
     page.label = label;
-    await serveTwin(page);
+    await serveTwin(page, slow);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     return page;
 }

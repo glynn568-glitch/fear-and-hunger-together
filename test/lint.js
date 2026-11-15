@@ -52,6 +52,8 @@ for (const suite of all) {
     // Ports worked out from a constant (four.js: HOST + 1, HOST + 2). carry once took one of them.
     for (const m of text.matchAll(/\bconst (\w+) = (8[4-8]\d\d)\b/g)) {
         for (const k of text.matchAll(new RegExp('\\b' + m[1] + ' \\+ (\\d+)\\b', 'g'))) ports.add(+m[2] + +k[1]);
+        // Its joiner too (lifecycle.js: twoPlayers(port); kept took that port + 100 on 11/14).
+        if (new RegExp('\\b(?:twoPlayers|night)\\(' + m[1] + '\\b').test(text)) ports.add(+m[2] + 100);
     }
     for (const p of ports) (claimed[p] = claimed[p] || []).push(suite);
 }

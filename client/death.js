@@ -21,6 +21,7 @@
     const DISMEMBER = 240;
     // Every ending plays out on this map (its event 4 picks the page by the ending's switch).
     const ENDING_MAP = 86;
+    const SMASH_PIT = 62;
     const ENDINGS = [1889, 1890, 1891, 1892, 2249, 2647]; // D, C, B, A, S, C2; none = E
 
     Coop.dead = false;
@@ -48,6 +49,13 @@
             // Whatever they were in the middle of (the enemy that killed them) never
             // finishes here: let it go, or it stands frozen for everyone else.
             if (window.$gameMap) for (const ev of $gameMap.events()) if (ev._locked) ev.unlock();
+            // The smash pit's third blow ends in this game over, so its scene never stands the guard down
+            // (2933, 2934, shared) or forgets the blows (2937, 2938): a reload did that. Here the run goes on:
+            // he stood frozen for everyone, and this player, called back, died again when next thrown in.
+            // Running it now: an event's number stays on the interpreter after it ends (Grok 11/14).
+            if (window.$gameMap && $gameMap.mapId() === SMASH_PIT && $gameMap._interpreter.isRunning() && $gameMap._interpreter.eventId() === 1) {
+                for (const id of [2933, 2934, 2937, 2938]) $gameSwitches.setValue(id, false);
+            }
             Coop.reportPresence(true);
             _goto.call(this, Scene_CoopDead);
             return;
