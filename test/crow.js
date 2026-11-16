@@ -16,7 +16,8 @@ const { twoPlayers, checker, sleep, waitFor } = require('./common');
         await b.evaluate(() => { Math.randomInt = () => 0; $gameSwitches.setValue(786, true); });
         await waitFor(a, () => $gameSwitches.value(786), 5000, 'A hears the alert');
         await waitFor(b, () => $gameSwitches.value(779), 40000, 'B rolled him');
-        await waitFor(a, () => $gameSwitches.value(773) || $gameSwitches.value(774), 5000, 'A hears the roll').catch(() => {});
+        // The switches land first; his page follows on A's next map refresh.
+        await waitFor(a, () => ($gameSwitches.value(773) || $gameSwitches.value(774)) && $gameMap.event(197).characterName(), 5000, 'A sees him').catch(() => {});
         const pages = await Promise.all([a, b].map((p) => p.evaluate(() => {
             const ev = $gameMap.event(197);
             const page = ev.page();

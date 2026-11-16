@@ -538,13 +538,40 @@
         claimMemo.set(list, pts);
         return pts;
     }
+    // Instanced loot: the few writes the census skips (lootSkip), a search turning the enemy's own
+    // "dead" switch back off. Kept per player, the partner would meet that enemy alive again.
+    // They are tagged on the map's own commands: the game's large-choices plugin runs a copy of
+    // the page from its first choice on, and the copy keeps the tag. Tagged on every load of the
+    // map's file: back from a battle or the menu, the game loads it again without a map setup.
+    function tagSkips() {
+        if (!window.$dataMap || !Array.isArray($dataMap.events)) return;
+        for (const ev of $dataMap.events) for (const page of (ev && ev.pages) || []) for (const c of page.list) delete c.coopSkip;
+        for (const [key, at] of Object.entries(World.census.lootSkip || {})) {
+            const [m, e, pi] = key.split(',').map(Number);
+            const ev = m === dataMapId && $dataMap.events[e];
+            const list = ev && ev.pages[pi] && ev.pages[pi].list;
+            // A host's census for other game files may point anywhere: only a switch turned off.
+            for (const i of at) if (list && list[i] && list[i].code === 121 && list[i].parameters[2] === 1) list[i].coopSkip = true;
+        }
+    }
+    const _onLoad = DataManager.onLoad;
+    DataManager.onLoad = function (object) {
+        _onLoad.apply(this, arguments);
+        if (object === window.$dataMap) tagSkips();
+    };
+    Coop.on('census', tagSkips);
     const _executeCommand = Game_Interpreter.prototype.executeCommand;
     Game_Interpreter.prototype.executeCommand = function () {
-        if (World.live && !Coop.rules.loot && this._depth === 0 && this._eventId > 0 && this._list && this._mapId === $gameMap.mapId()) {
-            const mark = claimPoints(this._list, this._mapId, this._eventId)[this._index];
-            if (mark && World.isShared(mark[0], mark[1])) {
-                if (mark[0] === 'ss' && !$gameSelfSwitches.value(mark[1])) $gameSelfSwitches.setValue(mark[1], true);
-                if (mark[0] === 'sw' && !$gameSwitches.value(mark[1])) $gameSwitches.setValue(mark[1], true);
+        if (World.live && this._depth === 0 && this._eventId > 0 && this._list && this._mapId === $gameMap.mapId()) {
+            if (Coop.rules.loot) {
+                const c = this._list[this._index];
+                if (c && c.coopSkip) { this._index++; return true; }
+            } else {
+                const mark = claimPoints(this._list, this._mapId, this._eventId)[this._index];
+                if (mark && World.isShared(mark[0], mark[1])) {
+                    if (mark[0] === 'ss' && !$gameSelfSwitches.value(mark[1])) $gameSelfSwitches.setValue(mark[1], true);
+                    if (mark[0] === 'sw' && !$gameSwitches.value(mark[1])) $gameSwitches.setValue(mark[1], true);
+                }
             }
         }
         return _executeCommand.call(this);

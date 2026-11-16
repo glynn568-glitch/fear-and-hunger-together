@@ -205,72 +205,21 @@ function writesShared(list, seen, key) {
 const JUST_FORMS = new Set([8, 9, 11, 12]); // the demon baby and the fused forms: nobody's recruit
 
 // loot: the self switches and shared switches that only say "this crate, chest, shelf, body or
-// coin is taken". With the host's Instanced loot on they stay on each player's machine, so
-// everyone finds their own. A page counts when it hands something out (itself or through a
-// common event), turns on its mark, and does nothing else to the world: no other shared switch
-// or variable, no transfer, fight, party change, game over or moved event. A mark that any other
-// kind of page also turns on, or that opens a page which starts by itself or changes the world,
-// is not loot. Most named containers (chest1, bookshelf1, captains_desk: two tiles, and the same
-// container on each version of a floor) are marked with a shared switch; crates with a letter.
-const LOOT_WORLDLY = new Set([201, 203, 129, 301, 353]);
-const LOOT_WORLDLY_SCRIPT = /reserveTransfer|Scene_Gameover|addActor|removeActor|BattleManager|\$gameSwitches|\$gameVariables|\$gameSelfSwitches/;
-function lootOf(list, seen, acc) {
-    if (seen.has(list)) return acc;
-    seen.add(list);
-    for (const c of list) {
-        const p = c.parameters;
-        if ((c.code === 126 || c.code === 127 || c.code === 128) && p[1] === 0) acc.gives = true;
-        else if (c.code === 125 && p[0] === 0) acc.gives = true;
-        else if (LOOT_WORLDLY.has(c.code)) acc.worldly = true;
-        else if (c.code === 121) { for (let id = p[0]; id <= p[1]; id++) if (sw[id]) { if (p[2] === 0) acc.sw.add(id); else acc.worldly = true; } }
-        else if (c.code === 111 && p[0] === 0) acc.reads.add(p[1]);
-        else if (c.code === 122) { for (let id = p[0]; id <= p[1]; id++) if (va[id]) acc.worldly = true; }
-        else if (c.code === 355 || c.code === 655) {
-            if (/gainItem|gainGold/.test(p[0])) acc.gives = true;
-            if (LOOT_WORLDLY_SCRIPT.test(p[0])) acc.worldly = true;
-        } else if (c.code === 117 && commonEvents[p[0]]) lootOf(commonEvents[p[0]].list, seen, acc);
-    }
-    return acc;
-}
-const lootYes = new Set();
-const lootNo = new Set();
-const lootAcc = () => ({ gives: false, worldly: false, sw: new Set(), reads: new Set() });
-const swWriters = {}; // switch -> events whose pages turn it on
-const swReaders = {}; // switch -> events whose pages are conditioned on it or branch on it
-const swNo = new Set();
-const add = (o, k, v) => (o[k] = o[k] || new Set()).add(v);
+// coin is taken" (tools/lootmarks.js says how they are told apart). With the host's Instanced loot
+// on they stay on each player's machine, so everyone finds their own. Most named containers
+// (chest1, bookshelf1, captains_desk: two tiles, and the same container on each version of a
+// floor) are marked with a shared switch; crates and bodies with a letter or a switch.
+const loot = require('./lootmarks').make({ ces: commonEvents, census: { sw: keys(sw).map(Number), va: keys(va).map(Number), ssPrivate: keys(ssPrivate) }, usage });
 for (const file of fs.readdirSync(DATA)) {
     if (!/^Map\d+\.json$/.test(file)) continue;
     const map = readGameJson(path.join(DATA, file));
     if (!map || !Array.isArray(map.events)) continue;
     const mapId = Number(file.slice(3, 6));
     const mapKept = /<save event locations?>/i.test(map.note || '');
+    loot.addMap(mapId, map);
     for (const ev of map.events) {
         if (!ev) continue;
         for (const page of ev.pages) {
-            const letters = new Set(page.list.filter((c) => c.code === 123 && c.parameters[1] === 0).map((c) => c.parameters[0]));
-            const what = lootOf(page.list, new Set(), lootAcc());
-            const evKey = mapId + ',' + ev.id;
-            if (letters.size) {
-                const into = page.trigger <= 2 && what.gives && !what.worldly && !what.sw.size ? lootYes : lootNo;
-                for (const ch of letters) into.add(evKey + ',' + ch);
-            }
-            // A container's shared mark: the only shared thing its page writes.
-            for (const id of what.sw) {
-                add(swWriters, id, evKey);
-                if (page.trigger > 2 || !what.gives || what.worldly || what.sw.size > 1) swNo.add(id);
-            }
-            const cond = page.conditions;
-            for (const id of [cond.switch1Valid && cond.switch1Id, cond.switch2Valid && cond.switch2Id]) {
-                if (!id) continue;
-                add(swReaders, id, evKey);
-                if (page.trigger > 2 || what.worldly || what.sw.size) swNo.add(id);
-            }
-            for (const id of what.reads) add(swReaders, id, evKey);
-            // What a letter opens counts too: a page it starts by itself, or one that changes the world.
-            // The merchant's B (Map131/Map074 EV47) starts his farewell, which sends him away for everyone:
-            // kept on each machine, both players bought his one potion (Grok g16).
-            if (cond.selfSwitchValid && (page.trigger > 2 || what.worldly || what.sw.size)) lootNo.add(evKey + ',' + cond.selfSwitchCh);
             const shares = writesShared(page.list, new Set(), mapId + ',' + ev.id);
             page.list.forEach((c, i) => {
                 if (c.code === 129 && c.parameters[1] === 0 && !JUST_FORMS.has(c.parameters[0]) && mapId !== 160 && mapId !== 185) {
@@ -289,16 +238,7 @@ for (const file of fs.readdirSync(DATA)) {
     }
 }
 
-// A shared mark counts as loot when the scan saw it written only on, only by pages a player
-// starts, read only by those pages, and every event that reads it also writes it.
-const BY_HAND_W = /^map:(action|touch|evtouch)$/;
-const BY_HAND_R = /^map:(action|touch|evtouch):(page|if)$/;
-const swLoot = keys(swWriters).map(Number).filter((id) => {
-    const u = usage.sw[id];
-    if (swNo.has(id) || !sw[id] || !u) return false;
-    if (keys(u.wVals).some((k) => k !== 'on') || keys(u.w).some((k) => !BY_HAND_W.test(k)) || keys(u.r).some((k) => !BY_HAND_R.test(k))) return false;
-    return [...(swReaders[id] || [])].every((e) => swWriters[id].has(e));
-});
+const { ssLoot, swLoot, lootSkip } = loot.judge();
 
 const census = {
     kept,
@@ -307,8 +247,9 @@ const census = {
     sw: keys(sw).map(Number),
     va: keys(va).map(Number),
     ssPrivate: keys(ssPrivate),
-    ssLoot: [...lootYes].filter((k) => !lootNo.has(k) && !ssPrivate[k]),
+    ssLoot,
     swLoot,
+    lootSkip,
     identity: [242, 243, 244, 245, 246],
     start: 79,
     // Private latches that only mean "a fight just ended and a scene is due".

@@ -23,7 +23,7 @@ const FILES = [
     'server.js', 'room.js', 'partners.js', 'package.json', 'package-lock.json', 'README.md', 'LICENSE', 'start.ps1', 'play.sh',
     'Play.cmd', 'start-local.cmd', 'start-online.cmd', 'start-online-private.cmd', 'start-with-ai-partner.cmd', 'bot.cmd',
     'tools/bot.js', 'tools/bot-page.js', 'tools/brain.js', 'tools/voices.js', 'tools/find-game.js',
-    'tools/version.js', 'tools/scan.js', 'tools/census.js', // the census is rebuilt for a different build of the game
+    'tools/version.js', 'tools/scan.js', 'tools/census.js', 'tools/lootmarks.js', // the census is rebuilt for a different build of the game
     'tools/tunnel.js',
 ];
 

@@ -121,6 +121,8 @@ async function press(page, code) {
         await a.evaluate(() => { $gameParty.gainItem($dataItems[115], 2); $gameMap.events().forEach((e) => { if (e.page() && (e._trigger === 1 || e._trigger === 2)) e.erase(); }); });
         await a.evaluate(() => { const send = Coop.sendTo; window._sendTo = send; Coop.sendTo = (id, type, msg) => type === 'revive' ? null : send(id, type, msg); });
         await callWithStones();
+        // The OK press is handled on A's next frames, not by the time the key is up (gate 11/15: read 2).
+        await waitFor(a, () => $gameParty.numItems($dataItems[115]) === 0, 3000, 'the stones leave with the call').catch(() => {});
         const unanswered = { during: await a.evaluate(() => $gameParty.numItems($dataItems[115])) };
         await sleep(7000);
         unanswered.after = await a.evaluate(() => { Coop.sendTo = window._sendTo; return $gameParty.numItems($dataItems[115]); });

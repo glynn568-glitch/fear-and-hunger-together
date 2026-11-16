@@ -103,8 +103,11 @@ const onMap = (id) => $gameMap.mapId() === id && SceneManager._scene instanceof 
         await b.evaluate(() => { $gameMap.event(40).start(); });
         await waitFor(b, () => $gameMap.mapId() === 111 && !$gamePlayer.isTransferring() && !$gameMap.isEventRunning(), 30000, 'B through the city door');
         await waitFor(a, () => document.getElementById('coop-follow').style.display !== 'none', 8000, 'A offered the city door');
-        await a.keyboard.down('KeyF'); await sleep(120); await a.keyboard.up('KeyF');
+        // B's last word can be from before its door changed the tileset (gate 11/15: A got 28). A is
+        // handed that one, F pressed in the same moment, and must still end up with B's walls.
+        await a.evaluate(() => { Coop.others()[0].ts = 28; document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyF', key: 'f' })); });
         await waitFor(a, onMap, 30000, 'A after B into the city', 111);
+        await waitFor(a, () => $gameMap.tilesetId() === 30, 5000, 'A has the city walls').catch(() => {});
         const ts = { a: await a.evaluate(() => $gameMap.tilesetId()), b: await b.evaluate(() => $gameMap.tilesetId()) };
         check('followed through a door that changes the tileset, A has the same walls as B', ts.b === 30 && ts.a === ts.b, JSON.stringify(ts));
     } catch (e) { console.error(e); check('test ran to the end', false); }

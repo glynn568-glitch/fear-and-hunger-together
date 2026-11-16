@@ -1,11 +1,13 @@
-// Loot, shared and instanced. Shared (the default): a crate is marked taken for
-// everyone the moment someone starts searching it, not when their "You find"
-// box closes, so a partner pressing it meanwhile finds it searched. With the
-// host's Instanced loot on, every crate holds its find for each player: the
-// mark stays on the machine of whoever took it. A joiner's own tick changes
-// nothing. Turned off, what anyone took is taken for all. The option is kept
-// with the run's world, so a restarted server knows it before the host is
-// back. Host 8513, joiner 8613; the restarted server 8514.
+// Loot, shared and instanced. Shared (the default): a crate, chest or body is
+// marked taken for everyone the moment someone starts searching it, not when
+// their "You find" box closes, so a partner pressing it meanwhile finds it
+// searched. With the host's Instanced loot on, each holds its find for each
+// player: the mark stays on the machine of whoever took it. That goes for a
+// guard's body (on the Entrance layout whose search also turns his "dead"
+// switch back off), a coin-flip chest and the lockpick chest. A joiner's own
+// tick changes nothing. Turned off, what anyone took is taken for all. The
+// option is kept with the run's world, so a restarted server knows it before
+// the host is back. Host 8513, joiner 8613; the restarted server 8514.
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -25,6 +27,13 @@ const LATE = 122; // at 13,40
 const CHEST = [12, 68], CHEST_SW = 33; // chest1 at 7,54 and 6,54
 const CRATE = [44, 119], CRATE_SW = 459; // crate4_1 at 26,40 and 25,40
 const LATE_CRATE = 103, LATE_SW = 460; // crate5 at 12,42
+// guard1's body: there once his "dead" switch is on; Search him rolls the guard table and marks
+// it searched. Map001 has him at 49,54; on Map029 (another Entrance layout, 61,60) the search
+// also turns DEAD_SW off, which Instanced loot skips.
+const BODY = 9, BODY_SW = 45, DEAD_SW = 23;
+// A coin-flip chest that asks Open or Leave (Map019, there when var 69 is 2 or more) and the
+// chest that needs Lockpicking (Map022, the lid is event 59).
+const COIN_CHEST = 110, COIN_SW = 458, PICK_CHEST = 58, PICK_SW = 690;
 
 function savedWorld(saves) {
     const dir = path.join(saves, 'runs');
@@ -64,8 +73,9 @@ function friendBack(port, runId) {
 }
 
 // In the page: search crate `id` with the dice fixed on its first find, and press through
-// its messages, or stop at the first message or choice matching `hold`.
-function search(id, hold) {
+// its messages, or stop at the first message or choice matching `hold`. A choice matching
+// `pick` is taken by name; any other gets the first option.
+function search(id, hold, pick) {
     const keep = Math.randomInt;
     Math.randomInt = () => 0;
     const before = $gameParty.allItems().reduce((n, it) => n + $gameParty.numItems(it), 0);
@@ -74,6 +84,13 @@ function search(id, hold) {
     const t = setInterval(() => {
         if ($gameMessage.isBusy()) {
             if (hold && new RegExp(hold).test($gameMessage.allText() + '|' + $gameMessage.choices().join('|'))) { Input._currentState.ok = false; return; }
+            const at = pick ? $gameMessage.choices().findIndex((c) => new RegExp(pick).test(c)) : -1;
+            if (at >= 0) {
+                Input._currentState.ok = false;
+                const w = SceneManager._scene._messageWindow && SceneManager._scene._messageWindow._choiceWindow;
+                if (w && w.active) { w.select(at); w.deactivate(); w.callOkHandler(); }
+                return;
+            }
             Input._currentState.ok = !Input._currentState.ok;
             return;
         }
@@ -88,6 +105,8 @@ function search(id, hold) {
 
 const state = (id, sw) => ({
     mark: sw ? $gameSwitches.value(sw) : !!$gameSelfSwitches.value([1, id, 'A']),
+    page: $gameMap.event(id) ? $gameMap.event(id).findProperPageIndex() : -2,
+    dead: $gameSwitches.value(23),
     choices: $gameMessage.isBusy() ? $gameMessage.choices().join('|') : '',
     carried: $gameParty.allItems().reduce((n, it) => n + $gameParty.numItems(it), 0),
     busy: $gameMessage.isBusy(),
@@ -95,6 +114,24 @@ const state = (id, sw) => ({
     text: $gameMessage.isBusy() ? $gameMessage.allText() : '',
     loot: Coop.rules.loot,
 });
+
+// Search `id` to the end, taking the choice matching `pick`.
+async function take(page, id, pick, label) {
+    await page.evaluate(search, id, false, pick);
+    await waitFor(page, () => window.__loot && window.__loot.done, 20000, label);
+}
+
+// One player onto map `m`. With `keep`, every other event there that could start by itself or
+// touch them is put away, on this machine only.
+async function go(page, m, x, y, keep) {
+    await page.evaluate((m, x, y) => { $gamePlayer.setThrough(true); $gamePlayer.reserveTransfer(m, x, y, 8, 0); }, m, x, y);
+    await waitFor(page, (m) => T.onMap() && $gameMap.mapId() === m, 30000, 'on map ' + m, m);
+    await page.evaluate((keep) => {
+        T.settle();
+        if (keep) for (const ev of $gameMap.events()) if (ev._trigger >= 2 && !keep.includes(ev._eventId)) { ev._erased = true; ev.refresh(); }
+        $gamePlayer.setThrough(false);
+    }, keep);
+}
 
 // What the page is saying in its notice line, and the loot row of the F1 panel.
 const toastNow = () => { const t = document.getElementById('coop-toast'); return t && t.style.display !== 'none' ? t.textContent : ''; };
@@ -134,9 +171,10 @@ function bagsRow() {
 
         //--- shared: the host searches and leaves the "You find" box up
         const census = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'client', 'census.json'), 'utf8'));
-        check('the census counts crates as loot, and not the merchant\'s potion (its letter starts his farewell)',
+        check('the census counts crates, a guard\'s body and both chests as loot, and not the merchant\'s potion (its letter starts his farewell) or the guard\'s "dead" switch',
             census.ssLoot.includes('1,' + SHARED + ',A') && census.ssLoot.includes('1,' + LATE + ',A') && !census.ssLoot.includes('131,47,B') && !census.ssLoot.includes('74,47,B')
-            && census.swLoot.includes(CHEST_SW) && census.swLoot.includes(CRATE_SW) && census.swLoot.includes(LATE_SW),
+            && census.swLoot.includes(CHEST_SW) && census.swLoot.includes(CRATE_SW) && census.swLoot.includes(LATE_SW)
+            && [BODY_SW, COIN_SW, PICK_SW].every((sw) => census.swLoot.includes(sw)) && !census.swLoot.includes(DEAD_SW),
             census.ssLoot.length + ' loot letters, ' + census.swLoot.length + ' loot switches');
         const rules = [await a.evaluate(() => Coop.rules.loot), await b.evaluate(() => Coop.rules.loot)];
         check('loot is shared unless the host says otherwise', rules[0] === false && rules[1] === false, JSON.stringify(rules));
@@ -170,6 +208,28 @@ function bagsRow() {
         await waitFor(a, () => window.__loot && window.__loot.done, 20000, 'the host\'s chest ends');
         const chestEnd = { b: await b.evaluate(state, CHEST[1], CHEST_SW), bBefore: await b.evaluate(() => window.__loot.before) };
         check('the partner opening its other half meanwhile finds the chest empty', chestEnd.b.carried === chestEnd.bBefore && chestEnd.b.mark, JSON.stringify(chestEnd));
+
+        //--- shared, a guard's body: searched for everyone once the host picks Search him
+        for (const p of [a, b]) await p.evaluate(() => { $gameSwitches.setValue(766, false); $gameSwitches.setValue(491, false); }); // no Devour, no Demon seed
+        await a.evaluate((sw) => $gameSwitches.setValue(sw, true), DEAD_SW);
+        await waitFor(b, (id) => $gameMap.event(id).findProperPageIndex() === 7, 5000, 'guard1 lies dead for the partner', BODY);
+        await a.evaluate(search, BODY, 'You find', 'Search him');
+        await waitFor(a, () => $gameMessage.isBusy() && /Meat cleaver/.test($gameMessage.allText()), 10000, 'the host\'s find on the body is on screen');
+        await sleep(1200);
+        const bodyMid = { a: await a.evaluate(state, BODY, BODY_SW), b: await b.evaluate(state, BODY, BODY_SW) };
+        check('a guard\'s body is marked searched for the partner while the host\'s find is still on screen',
+            bodyMid.a.busy && bodyMid.a.mark && bodyMid.b.mark, JSON.stringify(bodyMid));
+        await take(b, BODY, 'Search him', 'the partner\'s look at the body ends');
+        await a.evaluate(() => window.__lootStop());
+        await waitFor(a, () => window.__loot && window.__loot.done, 15000, 'the host\'s search of the body ends');
+        const bodyEnd = { a: await a.evaluate(state, BODY, BODY_SW), b: await b.evaluate(state, BODY, BODY_SW), aBefore: await a.evaluate(() => window.__loot.before), bBefore: await b.evaluate(() => window.__loot.before) };
+        check('the host got the guard\'s cleaver and loincloth, the partner nothing',
+            bodyEnd.a.carried === bodyEnd.aBefore + 2 && bodyEnd.b.carried === bodyEnd.bBefore, JSON.stringify(bodyEnd));
+        // Unsearched again for the instanced round, on both machines: a switch a player turned on by
+        // hand holds against someone else's "off" for 20 s (the lift's rule).
+        for (const p of [a, b]) await p.evaluate((sw) => $gameSwitches.setValue(sw, false), BODY_SW);
+        await sleep(800);
+        for (const p of [a, b]) await waitFor(p, (sw) => !$gameSwitches.value(sw), 5000, 'the body unsearched', BODY_SW);
 
         //--- the host turns Instanced loot on in Options
         await a.evaluate(() => SceneManager.push(Scene_Options));
@@ -220,6 +280,49 @@ function bagsRow() {
         const crateTwo = { b: await b.evaluate(state, CRATE[1], CRATE_SW), bBefore: await b.evaluate(() => window.__loot.before) };
         check('a crate marked by a shared switch holds the partner\'s own find too',
             crateOne.a.mark && !crateOne.b.mark && crateTwo.b.mark && crateTwo.b.carried > crateTwo.bBefore, JSON.stringify({ crateOne, crateTwo }));
+
+        //--- instanced, off the gate map: guard1's body on the Entrance layout whose search turns his
+        //    "dead" switch off, a coin-flip chest, the lockpick chest. Each player finds their own.
+        const each = async (what, id, sw, pick, more) => {
+            const pageBefore = await b.evaluate((id) => $gameMap.event(id).findProperPageIndex(), id);
+            await take(a, id, pick, 'the host\'s ' + what + ' ends');
+            await sleep(1200);
+            const one = { a: await a.evaluate(state, id, sw), b: await b.evaluate(state, id, sw), aBefore: await a.evaluate(() => window.__loot.before), pageBefore };
+            const partnerCan = !one.b.mark && pageBefore >= 0 && one.b.page === pageBefore;
+            check('the host\'s ' + what + ' stays on the host\'s machine' + (more ? ', ' + more.say : ''),
+                one.a.mark && one.a.carried > one.aBefore && !one.b.mark && (!more || more.ok(one)), JSON.stringify(one));
+            if (!partnerCan) { check('the partner can still search the ' + what, false, JSON.stringify(one)); return; }
+            await take(b, id, pick, 'the partner\'s ' + what + ' ends');
+            const two = { b: await b.evaluate(state, id, sw), bBefore: await b.evaluate(() => window.__loot.before) };
+            check('the partner finds their own in the ' + what, two.b.mark && two.b.carried > two.bBefore, JSON.stringify(two));
+        };
+        await a.evaluate((sw) => $gameSwitches.setValue(sw, true), DEAD_SW);
+        await waitFor(b, (sw) => $gameSwitches.value(sw), 5000, 'guard1 dead for the partner', DEAD_SW);
+        await go(a, 29, 61, 62, [BODY]);
+        await go(b, 29, 62, 62, [BODY]);
+        // The body is searched after his fight: back from a battle or the menu, the game loads the
+        // map's file again without setting the map up, and the search runs from that fresh copy.
+        for (const p of [a, b]) {
+            await p.evaluate(() => SceneManager.push(Scene_Menu));
+            await waitFor(p, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene.isActive(), 10000, 'the menu opens');
+            await p.evaluate(() => SceneManager.pop());
+            await waitFor(p, () => SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive(), 10000, 'back on the map');
+        }
+        await each('guard\'s body', BODY, BODY_SW, 'Search him', { say: 'and the guard stays dead for the partner', ok: (o) => o.b.dead && o.b.page === 7 && o.a.dead });
+        await sleep(1200);
+        const deadAfter = [await a.evaluate(() => $gameSwitches.value(23)), await b.evaluate(() => $gameSwitches.value(23))];
+        check('the guard stays dead for both after the partner\'s search too', deadAfter[0] && deadAfter[1], JSON.stringify(deadAfter));
+        await a.evaluate(() => $gameVariables.setValue(69, 2));
+        await waitFor(b, () => $gameVariables.value(69) === 2, 5000, 'the coin-flip chest stands for the partner');
+        await go(a, 19, 12, 30, [COIN_CHEST]);
+        await go(b, 19, 13, 30, [COIN_CHEST]);
+        await each('coin-flip chest', COIN_CHEST, COIN_SW, 'Open');
+        await go(a, 22, 17, 54, [PICK_CHEST, 59]);
+        await go(b, 22, 18, 54, [PICK_CHEST, 59]);
+        for (const p of [a, b]) await p.evaluate(() => $gameSwitches.setValue(729, true)); // Lockpicking learnt
+        await each('lockpick chest', PICK_CHEST, PICK_SW, 'Lockpicking');
+        await go(a, 1, 14, 45);
+        await go(b, 1, 13, 45);
 
         //--- a joiner's own tick changes nothing
         const flip = await b.evaluate(() => { ConfigManager.coopLoot = false; return { choice: ConfigManager.coopLoot, run: Coop.rules.loot }; });

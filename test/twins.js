@@ -65,6 +65,27 @@ const TWINS = {
         suite: 'loot', file: 'client/state.js',
         find: "            for (const k of lootSs) if ($gameSelfSwitches._data[k]) queue('ss', k, 1);\n", put: '',
     },
+    'follow-late-tileset': {
+        why: 'gate 11/15: following through the Ancient city door before the partner\'s next word gave the follower the map\'s old walls',
+        suite: 'follow', file: 'client/presence.js',
+        find: "            && !$gamePlayer.isTransferring() && peer.ts && $gameMap.tilesetId() !== peer.ts) $gameMap.changeTileset(peer.ts);", put: '            && false) $gameMap.changeTileset(peer.ts);',
+    },
+    'loot-body': {
+        why: 'his 11/15: guard and priest bodies still went to whoever searched first, with Instanced loot on or off (the census judged the whole page, soul stone and seed arms included)',
+        suite: 'loot', file: 'client/census.json',
+        find: '"swLoot":[1061,45,', put: '"swLoot":[1061,',
+    },
+    'loot-skip': {
+        why: 'guard1 on three Entrance layouts: his search also turns his "dead" switch off, so with Instanced loot on the partner met him alive again',
+        suite: 'loot', file: 'client/state.js',
+        find: '                if (c && c.coopSkip) { this._index++; return true; }\n', put: '',
+    },
+    'loot-skip-reload': {
+        why: 'advisor 11/16, before 0.1.21 shipped: the skips were tagged at map setup only, and back from the guard\'s fight (or the menu) the game loads the map\'s file again without one, so the search after his fight turned him alive for the partner',
+        suite: 'loot', file: 'client/state.js',
+        find: '        if (object === window.$dataMap) tagSkips();\n    };\n',
+        put: '    };\n    const _setupTwin = Game_Map.prototype.setup;\n    Game_Map.prototype.setup = function (mapId) { _setupTwin.call(this, mapId); tagSkips(); };\n',
+    },
     'loot-rules-restart': {
         why: 'Grok g16: a restarted server said Instanced loot was off to whoever came back before the host, whose finds then went into the shared world',
         suite: 'loot', file: 'room.js',

@@ -248,6 +248,9 @@
         const wasTaken = String(peer.ini) + peer.st;
         Object.assign(peer, msg);
         forgetHere();
+        const late = lateTileset;
+        if (late && late.id === msg.from && Date.now() < late.until && window.$gameMap && peer.m === late.m && $gameMap.mapId() === late.m
+            && !$gamePlayer.isTransferring() && peer.ts && $gameMap.tilesetId() !== peer.ts) $gameMap.changeTileset(peer.ts);
         if (wasTaken !== String(peer.ini) + peer.st && window.$gameMap && Coop.world.live) {
             $gameMap.requestRefresh();
             if (msg.ini && msg.ini.length && $gameSwitches && msg.ini.some((id) => $gameSwitches.value(id)) && !peer._sameWarned) {
@@ -312,6 +315,9 @@
     // To where another player stands, with the tileset they have there: a door can change it after its
     // transfer (Ancient city 114 -> 111 sets 30, the map's own is 28), and arriving any other way skips that.
     let arriveTileset = null;
+    // The door changes it just after its move, so the partner's word on it can come a moment after
+    // the follow: for a few seconds after arriving, their next word on it counts too.
+    let lateTileset = null;
     // The Passages of Ma'habre keep where their reader goes back to (variables 102-104), and maps 26 and
     // 164 send anyone on them back there when their time runs out. Whoever came along without reading
     // them had nowhere: "map 0", a black screen for good. Their way back is where they came from.
@@ -327,7 +333,8 @@
         keepWayBack(peer.m);
         if (TIMED_VISIT.includes(peer.m) && peer.nt !== undefined) $gameSwitches.setValue(798, !!peer.nt);
         $gamePlayer.reserveTransfer(peer.m, peer.x, peer.y, d || peer.d || 2, 0);
-        arriveTileset = peer.ts ? { m: peer.m, ts: peer.ts } : null;
+        arriveTileset = { id: peer.id, m: peer.m, ts: peer.ts };
+        lateTileset = null;
     };
     // A way back that was never kept (a save from before this, a walk onto those maps): to a partner if
     // there is one, else nowhere. Never to a map that does not exist.
@@ -344,7 +351,12 @@
         const t = this.isTransferring() ? arriveTileset : null;
         if (this.isTransferring()) arriveTileset = null;
         _performTransfer.apply(this, arguments);
-        if (t && $gameMap.mapId() === t.m && $gameMap.tilesetId() !== t.ts) $gameMap.changeTileset(t.ts);
+        if (!t) return;
+        // Their latest word: it can come in while this map loads.
+        const peer = Coop.peers.get(t.id);
+        const ts = (peer && peer.m === t.m && peer.ts) || t.ts;
+        if (ts && $gameMap.mapId() === t.m && $gameMap.tilesetId() !== ts) $gameMap.changeTileset(ts);
+        lateTileset = { id: t.id, m: t.m, until: Date.now() + 5000 };
     };
 
     Coop.follow = function () {
