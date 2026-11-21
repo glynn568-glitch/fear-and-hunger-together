@@ -11,6 +11,9 @@
     const privateSs = new Set(census.ssPrivate);
     const lootSs = new Set(census.ssLoot || []);
     const lootSw = new Set(census.swLoot || []);
+    // Switches the same on everyone's game only on one floor at a time: the black witch's, which wake
+    // her on the Ancient city's inside (114) and on the Grand library (116) both. Shared per floor.
+    const floorSw = new Set(census.swFloor || []);
     const START = census.start;
 
     // The host's run options (Options > General), the same for everyone in the run.
@@ -30,6 +33,7 @@
         _flap: new Map(),
         _entering: false,
         el: {}, // 'map,event' -> [x, y, direction] of a kept event a shared scene moved
+        fs: {}, // 'map,switch' -> 1: the floor switches that are on, on each floor (this game's switch shows its floor's)
         census,
     };
     let shareMemo = new WeakMap();
@@ -74,6 +78,7 @@
         privateSs.clear(); for (const k of c.ssPrivate || []) privateSs.add(k);
         lootSs.clear(); for (const k of c.ssLoot || []) lootSs.add(k);
         lootSw.clear(); for (const id of c.swLoot || []) lootSw.add(id);
+        floorSw.clear(); for (const id of c.swFloor || []) floorSw.add(id);
         // Due scenes are private and decided by this copy's maps. An older host
         // census has no list; keep the one this client booted with.
         if (!Array.isArray(c.dueScenes)) c.dueScenes = World.census.dueScenes;
@@ -87,7 +92,9 @@
 
     World.isShared = function (kind, key) {
         if (World.demoted.has(kind + key)) return false;
-        if (kind === 'sw') return swShared(key);
+        // A floor switch counts as shared for what a page writes and whose scene it is; its value travels per floor.
+        if (kind === 'sw') return swShared(key) || floorSw.has(key);
+        if (kind === 'fs') return floorSw.has(floorOf(key)[1]) && !Coop.mapDiffers(floorOf(key)[0]);
         if (kind === 'va') return worldVa.has(key);
         if (kind === 'el') return !Coop.mapDiffers(Number(String(key).split(',')[0]));
         if (kind !== 'ss') return false;
@@ -111,6 +118,11 @@
     function sameEl(a, b) {
         return !!(a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]);
     }
+
+    // A floor switch's key, 'map,switch', as [map, switch].
+    function floorOf(key) { return String(key).split(',').map(Number); }
+    // Whose a flag is (World.mine) goes by the switch the pages read, on whichever floor.
+    function mineKey(kind, key) { return kind === 'fs' ? 'sw' + floorOf(key)[1] : kind + key; }
 
     function queue(kind, key, value) {
         if (!World.live) return;
@@ -420,8 +432,26 @@
         // and a scene stop owed to the old map is not the new one's to judge.
         owedEl.clear();
         owedStop = false;
+        // Before the events pick their pages: the new floor's switches as the run has them.
+        if (World.live) showFloor(mapId);
         _keptMapSetup.call(this, mapId);
     };
+
+    // This game's floor switches set to the run's value on the floor it stands on: on arriving there, and when
+    // the room's table comes in. A wake on another floor never shows here, and one on this floor shows to
+    // whoever arrives while she is out. Alone (out of the world) the game keeps its own, as it always did.
+    function showFloor(mapId) {
+        if (!mapId || !window.$gameSwitches) return false;
+        let changed = false;
+        for (const id of floorSw) {
+            const on = !!World.fs[mapId + ',' + id];
+            if (!!$gameSwitches._data[id] === on) continue;
+            $gameSwitches._data[id] = on;
+            World.mine.delete('sw' + id);
+            changed = true;
+        }
+        return changed;
+    }
 
     //--- outgoing: watch every write ----------------------------------------
 
@@ -433,7 +463,7 @@
         if (before !== after) {
             if (after) World.mine.add('sw' + id); else World.mine.delete('sw' + id);
             if (after && byHand()) claim(id); else if (!after) claims.delete(id);
-            queue('sw', id, after ? 1 : 0);
+            if (floorSw.has(id)) writeFloor(id, after); else queue('sw', id, after ? 1 : 0);
             if (id === START && after) World.enter();
         } else if (after && byHand() && World.isShared('sw', id)) {
             // Already on, by someone who did the same a moment ago: this player's scene
@@ -441,8 +471,24 @@
             // the arrival was "pho's", so Enki stood hidden at the bottom for good).
             World.mine.add('sw' + id);
             claim(id);
+        } else if (after && !claims.has(id) && World.isShared('sw', id) && ownChain()) {
+            // The same from a step of this player's own scene (11/11: Enki pulled the Blue Sin without the
+            // book; its rumbling page turns on 3142, which pho's cave-in had turned on minutes before, so the
+            // mine never came down on him and the page rumbled every two seconds for good).
+            World.mine.add('sw' + id);
+            claim(id);
         }
     };
+
+    // A floor switch is written for the floor this player stands on (the door's own room change runs before
+    // the door moves them, so it is the floor being left).
+    function writeFloor(id, on) {
+        const mapId = $gameMap && $gameMap.mapId();
+        if (!mapId) return;
+        const key = mapId + ',' + id;
+        if (on) World.fs[key] = 1; else delete World.fs[key];
+        queue('fs', key, on ? 1 : 0);
+    }
 
     // A flag a scene this player started by hand has just turned on stands here until
     // that scene turns it off itself: the other rider's arrival turning it off must not
@@ -538,6 +584,63 @@
         claimMemo.set(list, pts);
         return pts;
     }
+    // A recruit joins one player. The flag that closes the recruit's event (a shared switch or letter a page of
+    // the event reads, set in the same block as the Add Actor: before it for the Girl's cage, after it for a
+    // skeleton's body) already on and not this game's: a partner raised the skeleton or took the person in
+    // while this game's page was still on its way there.
+    function recruitClose(list, i, mapId, eventId) {
+        const ev = window.$dataMap && $dataMap.events[eventId];
+        if (!ev) return null;
+        const reads = new Set();
+        for (const p of ev.pages) {
+            const k = p.conditions;
+            if (k.switch1Valid) reads.add('sw' + k.switch1Id);
+            if (k.switch2Valid) reads.add('sw' + k.switch2Id);
+            if (k.selfSwitchValid) reads.add('ss' + [mapId, eventId, k.selfSwitchCh].join(','));
+        }
+        const closes = (c, d) => {
+            if (c.indent !== d) return null;
+            if (c.code === 121 && c.parameters[2] === 0) {
+                for (let id = c.parameters[0]; id <= c.parameters[1]; id++) if (reads.has('sw' + id) && World.isShared('sw', id)) return 'sw' + id;
+            }
+            if (c.code === 123 && c.parameters[1] === 0) {
+                const key = [mapId, eventId, c.parameters[0]].join(',');
+                if (reads.has('ss' + key) && World.isShared('ss', key)) return 'ss' + key;
+            }
+            return null;
+        };
+        const scan = (list, i) => {
+            const d = list[i].indent;
+            for (let j = i - 1; j >= 0 && list[j].indent >= d; j--) { const f = closes(list[j], d); if (f) return f; }
+            for (let j = i + 1; j < list.length; j++) {
+                const c = list[j];
+                if (c.indent < d || c.code === 115 || c.code === 113 || c.code === 119) return null;
+                const f = closes(c, d);
+                if (f) return f;
+            }
+            return null;
+        };
+        const close = scan(list, i);
+        const actor = list[i].parameters[0];
+        const add = (c, who) => c.code === 129 && c.parameters[1] === 0 && (who === undefined ? c.parameters[0] !== actor : c.parameters[0] === who);
+        if (!close || !list.some((c, j) => j !== i && add(c) && scan(list, j) === close)) return close;
+        // Two taken in at once close on one flag (the Void's third page, 2 and 7, on 2611). The other's own
+        // flag is the one their page alone closes (7's is 2612): one partner taking 2 a moment before leaves 7.
+        for (const p of ev.pages) {
+            for (let j = 0; j < p.list.length; j++) {
+                if (!add(p.list[j], actor)) continue;
+                const own = scan(p.list, j);
+                if (own && own !== close) return own;
+            }
+        }
+        return close;
+    }
+    function joinedElsewhere(list, i, mapId, eventId) {
+        const close = recruitClose(list, i, mapId, eventId);
+        if (!close || World.mine.has(close)) return false;
+        return close.startsWith('sw') ? $gameSwitches.value(Number(close.slice(2))) : $gameSelfSwitches.value(close.slice(2));
+    }
+
     // Instanced loot: the few writes the census skips (lootSkip), a search turning the enemy's own
     // "dead" switch back off. Kept per player, the partner would meet that enemy alive again.
     // They are tagged on the map's own commands: the game's large-choices plugin runs a copy of
@@ -563,6 +666,12 @@
     const _executeCommand = Game_Interpreter.prototype.executeCommand;
     Game_Interpreter.prototype.executeCommand = function () {
         if (World.live && this._depth === 0 && this._eventId > 0 && this._list && this._mapId === $gameMap.mapId()) {
+            const add = this._list[this._index];
+            if (add && add.code === 129 && add.parameters[1] === 0 && joinedElsewhere(this._list, this._index, this._mapId, this._eventId)) {
+                if (Coop.toast) Coop.toast('That one has already joined a partner.', 6000);
+                this._index++;
+                return true;
+            }
             if (Coop.rules.loot) {
                 const c = this._list[this._index];
                 if (c && c.coopSkip) { this._index++; return true; }
@@ -615,6 +724,14 @@
             if (value) $gameSelfSwitches._data[key] = true; else delete $gameSelfSwitches._data[key];
         } else if (kind === 'el') {
             return applyEl(key, value);
+        } else if (kind === 'fs') {
+            // Kept for its floor; this game's switch only when that is where it stands.
+            key = String(key);
+            const [mapId, id] = floorOf(key);
+            if (!World.isShared('fs', key)) return false;
+            if (value) World.fs[key] = 1; else delete World.fs[key];
+            if (!$gameMap || $gameMap.mapId() !== mapId || !!$gameSwitches._data[id] === !!value) return false;
+            $gameSwitches._data[id] = !!value;
         } else return false;
         return true;
     }
@@ -627,7 +744,7 @@
             if (inFlight.has(kind + key)) continue;
             if (claimed(kind, key, value)) continue;
             // Only a write that changed it makes it theirs: both pulling the lever at once, both ride.
-            if (apply(kind, key, value)) { changed = true; World.mine.delete(kind + key); }
+            if (apply(kind, key, value)) { changed = true; World.mine.delete(mineKey(kind, key)); }
         }
         if (changed) $gameMap.requestRefresh();
     });
@@ -716,21 +833,53 @@
     // chair is shut for good), the Void's arrival sets its visitor down, and the god's fight at the pit must
     // still be there when the one who started it fell or left.
     const WHOEVER_IS_THERE = new Set(['140,4', '140,18', '142,24', '142,26', '142,70', '125,320', '146,320', '160,483', '160,485', '185,483', '185,485']);
+    // The shared flags a page stands on say whose scene it is (a private one is only this machine's state).
+    function sharedFlags(mapId, eventId, page) {
+        const c = page.conditions;
+        const flags = [];
+        if (c.switch1Valid) flags.push(['sw', c.switch1Id]);
+        if (c.switch2Valid) flags.push(['sw', c.switch2Id]);
+        if (c.selfSwitchValid) flags.push(['ss', [mapId, eventId, c.selfSwitchCh].join(',')]);
+        return flags.filter(([kind, key]) => World.isShared(kind, key));
+    }
     // Not only while in the world: a save being loaded is out of it until it is back in.
     World.othersScene = function (ev) {
         const page = ev.page();
         if (!page || (page.trigger !== 3 && page.trigger !== 4)) return false;
         if (WHOEVER_IS_THERE.has(ev._mapId + ',' + ev._eventId) && !Coop.peersHere().length) return false;
-        const c = page.conditions;
-        const flags = [];
-        if (c.switch1Valid) flags.push(['sw', c.switch1Id]);
-        if (c.switch2Valid) flags.push(['sw', c.switch2Id]);
-        if (c.selfSwitchValid) flags.push(['ss', [ev._mapId, ev._eventId, c.selfSwitchCh].join(',')]);
-        // The shared flags say whose scene it is (a private one is only this machine's state).
-        const shared = flags.filter(([kind, key]) => World.isShared(kind, key));
+        const shared = sharedFlags(ev._mapId, ev._eventId, page);
         if (!shared.length || shared.some(([kind, key]) => World.mine.has(kind + key))) return false;
         return leadsToActing(page, ev._mapId, ev._eventId, new Set());
     };
+    // The page an event's interpreter was started on. The event can turn to another page while that one still
+    // runs (its own write flips it), and Show Choices swaps the running list for a copy (HIME_LargeChoices),
+    // so the page is noted when the interpreter is set up. Its number, not the page: a running parallel
+    // page's interpreter goes into the save, and the page would take its whole list along.
+    const _interpSetup = Game_Interpreter.prototype.setup;
+    Game_Interpreter.prototype.setup = function (list, eventId) {
+        _interpSetup.call(this, list, eventId);
+        const data = this._depth === 0 && this._eventId > 0 && window.$dataMap && $dataMap.events && $dataMap.events[this._eventId];
+        this._coopPage = data ? data.pages.findIndex((p) => p.list === list) : -1;
+    };
+    // The outermost interpreter running now (a called common event runs inside its caller's).
+    const _interpUpdate = Game_Interpreter.prototype.update;
+    Game_Interpreter.prototype.update = function () {
+        if (this._depth > 0) return _interpUpdate.call(this);
+        const was = World._running;
+        World._running = this;
+        try { return _interpUpdate.call(this); } finally { World._running = was; }
+    };
+    // A step of this player's own scene: a page that started by itself (autorun or parallel) and stands on a
+    // shared flag of this player's, with none of anyone else's. A page on private flags alone (an arrow in
+    // flight, a bed) says nothing about whose scene it is.
+    function ownChain() {
+        const it = World._running;
+        const data = it && it._coopPage >= 0 && it._mapId === $gameMap.mapId() && $dataMap.events[it._eventId];
+        const page = data && data.pages[it._coopPage];
+        if (!World.live || !page || (page.trigger !== 3 && page.trigger !== 4)) return false;
+        const shared = sharedFlags(it._mapId, it._eventId, page);
+        return shared.length > 0 && shared.every(([kind, key]) => World.mine.has(kind + key));
+    }
     // A latch that means "a fight just ended and a scene is due" (census.dueScenes).
     function duePage(ev) {
         // A save loading: the events stand there before their map's data does.
@@ -839,6 +988,16 @@
         // Their saved run options are the run's, from here on. A joiner's ticks are not.
         Coop.sendRules();
     });
+    // The host person moved (two on the host's PC, the first gone). The run's options stay as they are: their
+    // Options show them, theirs to change from here on. Their own saved ones may be from before the first changed
+    // one, so they are not sent (nameok's, the run's first word, are). Taken before deciding: no send.
+    Coop.on('decides', function (msg) {
+        if (msg.on && !Coop.decides && window.ConfigManager) {
+            ConfigManager.coopBalance = Coop.rules.balance;
+            ConfigManager.coopLoot = Coop.rules.loot;
+        }
+        Coop.decides = !!msg.on;
+    });
     Coop.on('run', function (msg) { World.on = msg.run || null; });
 
     World.enter = function () {
@@ -878,6 +1037,7 @@
         for (const id of worldVa) if (va[id]) out.push(['va', id, va[id]]);
         for (const k in ss) if (ss[k] && World.isShared('ss', k)) out.push(['ss', k, 1]);
         for (const k in World.el) if (World.isShared('el', k)) out.push(['el', k, World.el[k].slice()]);
+        for (const k in World.fs) if (World.isShared('fs', k)) out.push(['fs', k, 1]);
         return out;
     }
 
@@ -1035,15 +1195,15 @@
         const server = msg.world;
         let changed = false;
         // Whose flags they were was only a guess; what the run already has is the run's.
-        if (World.mineGuessed && !msg.founded) for (const kind of ['sw', 'ss']) for (const key in server[kind] || {}) World.mine.delete(kind + key);
+        if (World.mineGuessed && !msg.founded) for (const kind of ['sw', 'ss', 'fs']) for (const key in server[kind] || {}) World.mine.delete(mineKey(kind, key));
         World.mineGuessed = false;
-        for (const kind of ['sw', 'va', 'ss', 'el']) {
+        for (const kind of ['sw', 'va', 'ss', 'el', 'fs']) {
             const table = server[kind] || {};
             for (const key in table) {
-                const k = kind === 'ss' || kind === 'el' ? key : Number(key);
+                const k = kind === 'ss' || kind === 'el' || kind === 'fs' ? key : Number(key);
                 // A line that dropped mid-ride: the off held back in 'w' is held back here too.
                 if (claimed(kind, k, table[key])) continue;
-                if (apply(kind, k, table[key])) { changed = true; World.mine.delete(kind + k); }
+                if (apply(kind, k, table[key])) { changed = true; World.mine.delete(mineKey(kind, k)); }
             }
         }
         let mine = [];
@@ -1055,7 +1215,7 @@
                 if (kind === 'el' && wasRun === msg.runId) { mine.push([kind, key, value]); continue; }
                 if (kind === 'sw' && holdsRecruit(key)) { mine.push([kind, key, value]); continue; }
                 if (claimed(kind, key, 0)) continue;
-                if (apply(kind, key, 0)) { changed = true; World.mine.delete(kind + key); }
+                if (apply(kind, key, 0)) { changed = true; World.mine.delete(mineKey(kind, key)); }
             }
             if (mine.length) sendWrites(mine);
             // A carried "the scene is due" latch would autorun here and pay
@@ -1071,6 +1231,8 @@
             mine = localShared().filter(([kind, key]) => !(server[kind] && key in server[kind]));
             if (mine.length) sendWrites(mine);
         }
+        // Out of the world it kept its own across doors: from here on, the floor it stands on as the run has it.
+        if (window.$gameMap && showFloor($gameMap.mapId())) changed = true;
         World.live = true;
         World.cut = false;
         if (changed && window.$gameMap) $gameMap.requestRefresh();
@@ -1126,6 +1288,7 @@
         World.mineGuessed = false;
         World.leave();
         World.el = {};
+        World.fs = {};
         World.runId = '';
         World.mine.clear();
         claims.clear();
@@ -1142,7 +1305,7 @@
             const p = World.el[k];
             if (Array.isArray(p) && p.length === 3) el[k] = [p[0], p[1], p[2]];
         }
-        contents.coop = { runId: World.runId, stamp: World.saveStamp || 0, name: Coop.name, dead: !!Coop.dead, mine: Array.from(World.mine), el: el };
+        contents.coop = { runId: World.runId, stamp: World.saveStamp || 0, name: Coop.name, dead: !!Coop.dead, mine: Array.from(World.mine), el: el, fs: Object.keys(World.fs) };
         return contents;
     };
 
@@ -1175,6 +1338,18 @@
                 const p = saved[k];
                 if (p && (p[0] !== home[k][0] || p[1] !== home[k][1])) World.el[k] = [p[0], p[1], p[2]];
             }
+        }
+        // Every floor's switches as the save kept them (a run carried on from saves alone still has her out on
+        // the floor nobody saved on, Grok 11/17). Its own switches are no word on its floor: a game that took a
+        // door while its line was down still shows the floor it left (Grok, round 2); the way back in sets them.
+        World.fs = {};
+        const floors = contents.coop && contents.coop.fs;
+        if (Array.isArray(floors)) {
+            for (const k of floors) if (/^\d+,\d+$/.test(k)) World.fs[k] = 1;
+        } else {
+            // From before floors were kept: the floor the save stands on, as its switches show.
+            const here = $gameMap.mapId();
+            if (here) for (const id of floorSw) if ($gameSwitches._data[id]) World.fs[here + ',' + id] = 1;
         }
         if ($gameSwitches.value(START)) World.enter();
         else World._holdDue = false;
@@ -1212,6 +1387,7 @@
             const p = World.el[k];
             if (p) parts.push('e' + k + '=' + p[0] + ':' + p[1] + ':' + p[2]);
         }
+        for (const k of Object.keys(World.fs).sort()) if (World.isShared('fs', k)) parts.push('f' + k);
         return parts.join(';');
     };
 })();

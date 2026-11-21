@@ -80,6 +80,15 @@ async function night(hostPort, hostSaves, joinSaves) {
         await waitFor(a, () => Coop.peersHere().length === 1, 10000, 'Ann sees Bo');
         check('Ann joins him on her own save from that night, in the same world', await a.evaluate((s) => $gameSwitches.value(s) && $gameParty.leader().actorId() === 1, SWITCH));
 
+        // Bo wakes the black witch on her floor (114) and comes back by a transfer that is no door: she stays out
+        // there, and both saves of the next bed stand on map 1, where nobody saved her switch.
+        const home = await b.evaluate(() => [$gameMap.mapId(), $gamePlayer.x, $gamePlayer.y]);
+        await b.evaluate(() => $gamePlayer.reserveTransfer(114, 1, 1, 2, 0));
+        await waitFor(b, () => T.onMap() && $gameMap.mapId() === 114 && !$gamePlayer.isTransferring(), 30000, 'Bo on her floor');
+        await b.evaluate(() => $gameSwitches.setValue(3451, true));
+        await b.evaluate((m, x, y) => $gamePlayer.reserveTransfer(m, x, y, 2, 0), ...home);
+        await waitFor(b, (m) => T.onMap() && $gameMap.mapId() === m && !$gamePlayer.isTransferring(), 30000, 'Bo back', home[0]);
+        await waitFor(a, () => Coop.world.fs['114,3451'] === 1, 8000, 'Ann knows she is out there');
         // Another bed, Bo hosting: Ann's save stays on her PC.
         await save(b, 2);
         await waitFor(a, () => StorageManager.exists(2), 8000, 'Ann saved alongside');
@@ -87,6 +96,25 @@ async function night(hostPort, hostSaves, joinSaves) {
         check("Ann's new save is on her own PC only", fs.existsSync(path.join(SA, 'players', 'ann', 'file2.rpgsave')) && !fs.existsSync(path.join(SB, 'players', 'ann')));
         const stamp2 = await b.evaluate(() => DataManager.loadGlobalInfo()[2].coopStamp);
         check("and Ann's PC keeps that night's world, ready for her to host", fs.existsSync(path.join(SA, 'runs', String(run), `world@${stamp2}.json`)));
+        // Ann's line drops and she walks onto the witch's floor: her switches still show map 1's (out of the world
+        // a game keeps its own), and the run has her out there. A save made there keeps her out there.
+        await a.evaluate(() => { Coop._realConnect = Coop._realConnect || Coop.connect; Coop.connect = function () {}; Coop._ws.close(); });
+        await waitFor(a, () => !Coop.connected && !Coop.world.live, 5000, 'Ann\'s line down');
+        await a.evaluate(() => $gamePlayer.reserveTransfer(114, 1, 1, 2, 0));
+        await waitFor(a, () => T.onMap() && $gameMap.mapId() === 114 && !$gamePlayer.isTransferring(), 30000, 'Ann on her floor');
+        await save(a, 3);
+        await load(a, 3);
+        const there = await a.evaluate(() => Object.keys(Coop.world.fs).join());
+        check('a save made on her floor after walking there with the line down keeps her out there', there === '114,3451', there);
+        // Then she wakes there and leaves by a transfer that is no door: her switch stays on, on map 1. Its save
+        // must not wake map 1's copy.
+        await a.evaluate(() => $gameSwitches.setValue(3451, true));
+        await a.evaluate((m, x, y) => $gamePlayer.reserveTransfer(m, x, y, 2, 0), ...home);
+        await waitFor(a, (m) => T.onMap() && $gameMap.mapId() === m && !$gamePlayer.isTransferring(), 30000, 'Ann back', home[0]);
+        await save(a, 3);
+        await load(a, 3);
+        const left = await a.evaluate(() => Object.keys(Coop.world.fs).join());
+        check('and one made after leaving by a transfer that is no door wakes no other floor', left === '114,3451', left);
         for (const p of pages) check(p.label + ' has no script errors', !p.errors.some((e) => !/physical_attack_animation|VideoFrame was garbage collected/.test(e)), p.errors.slice(0, 2).join(' || ').slice(0, 400));
         await n.close();
 
@@ -105,6 +133,9 @@ async function night(hostPort, hostSaves, joinSaves) {
         await load(b, 2);
         await waitFor(b, onMapLive, 30000, 'Bo carries on from the second bed');
         check("and Bo's save of that bed joins it", await b.evaluate((r) => Coop.world.runId === r && Coop.peersHere().length === 1, run));
+        await waitFor(b, () => Coop.world.fs['114,3451'] === 1, 8000, 'Bo hears she is out').catch(() => {});
+        const floors = [await a.evaluate(() => Object.keys(Coop.world.fs).join()), await b.evaluate(() => Object.keys(Coop.world.fs).join())];
+        check('the witch Bo left out on her floor is still out there for both, though both saves stand elsewhere', floors.every((f) => f === '114,3451'), JSON.stringify(floors));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(pages);
     if (n) await n.close();

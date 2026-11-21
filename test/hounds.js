@@ -2,65 +2,130 @@
 // machine's own bark timer turns on; kept per player, the hounds came out on one screen only, and the
 // partner saw "invisible wolves" start a fight (report 11/13). The level 5 knight is the same: his
 // zone switch (360) and the start-of-run die that decides whether he stands there at all (61). So is the
-// black witch: her tile wakes her for the player who steps on it, and a room change sends her away (3451,
-// 3453, 3454, 3457). Here A runs her tile's parallel page too (3453 is shared), so "out on A's screen" holds
-// even with 3451 kept per player; "gone from both" is the check that needs 3451 and 3454 shared (twins).
+// black witch, per floor: the Ancient city's inside (114) and the Grand library (116) each have her, woken
+// by the same four switches (3451, 3453, 3454, 3457), and a room change (common event 271, on the floor
+// the door is on) sends her away. Everyone on her floor sees her; a partner on the other floor sees
+// nothing, and gets her as soon as they walk onto her floor (client/state.js World.fs, spec/floors).
+// The room writes what it does with 3451 to TRACE (room.js traceWrite), and the test adds where each game
+// stands and what it shows at each quiet moment: spec/floors/TraceFloors.tla checks the run.
+const fs = require('fs');
+const path = require('path');
 const { twoPlayers, checker, sleep, waitFor } = require('./common');
 
 const HOUNDS = [102, 113, 114]; // Map074 Fortress: hound1, hound2, hound3
 const COMING = 1781, TIMER = 211;
-const WITCH = 209, WITCH_MAP = 114, ARMS = [3451, 3453, 3454, 3457]; // black_witch1 in Ancient_inside2
+const ARMS = [3451, 3453, 3454, 3457];
+// Each floor's copy of her (black_witch1), where she sleeps, and where her tiles bring her.
+const HALLS = { map: 114, ev: 209, spots: [[99, 44], [24, 43]] }; // Ancient city - Inside
+const LIBRARY = { map: 116, ev: 309, spots: [[42, 21], [28, 83]] }; // Grand library
+const TRACE = path.join(__dirname, 'out', 'floors-trace.live.ndjson');
 
 (async () => {
     const check = checker();
     let s;
     try {
-        s = await twoPlayers(8516);
+        fs.mkdirSync(path.dirname(TRACE), { recursive: true });
+        fs.writeFileSync(TRACE, '');
+        s = await twoPlayers(8516, { env: { FH_WRITES_TRACE: TRACE + '|fs3451' } });
         const { a, b } = s;
         const go = (p, map, x, y) => p.evaluate((map, x, y) => $gamePlayer.reserveTransfer(map, x, y, 2, 0), map, x, y);
-
-        //--- The black witch. A tile (EV210) wakes her: its touch turns 3453 on, whose parallel page brings her
-        // to 99,44 and turns her on to fight (3451). Every room change (common event 271) turns all four off.
-        // She walks toward the player, so both stand far from where she sleeps and where she wakes.
-        await go(a, WITCH_MAP, 1, 1);
-        await waitFor(a, (m) => T.onMap() && $gameMap.mapId() === m, 30000, 'A in the witch\'s halls', WITCH_MAP);
-        const far = await a.evaluate((id) => {
-            const w = $gameMap.event(id);
-            const open = (x, y) => $gameMap.isValid(x, y) && !$gameMap.eventsXy(x, y).length && [2, 4, 6, 8].every((d) => $gameMap.isPassable(x, y, d));
-            let best = null;
-            for (let y = 0; y < $gameMap.height(); y++) for (let x = 0; x < $gameMap.width(); x++) {
-                const d = Math.min(Math.abs(x - w.x) + Math.abs(y - w.y), Math.abs(x - 99) + Math.abs(y - 44));
-                if (d >= 30 && (!best || d < best[2]) && open(x, y) && open(x + 1, y)) best = [x, y, d];
-            }
-            return best;
-        }, WITCH);
-        check('found open floor far from the witch', !!far, JSON.stringify(far));
-        await a.evaluate((x, y) => { $gamePlayer.locate(x, y); }, far[0], far[1]);
-        await go(b, WITCH_MAP, far[0] + 1, far[1]);
-        await waitFor(b, (m) => T.onMap() && $gameMap.mapId() === m, 30000, 'B in the witch\'s halls', WITCH_MAP);
-        await sleep(1500);
-        const witch = (p) => p.evaluate((id) => { const ev = $gameMap.event(id); return { x: ev.x, y: ev.y, image: ev.characterName(), trigger: ev.page() ? ev._trigger : null }; }, WITCH);
-        const asleep = await Promise.all([witch(a), witch(b)]);
-        check('no witch before anyone wakes her', asleep.every((w) => !w.image), JSON.stringify(asleep));
-        await b.evaluate(() => { $gameSwitches.setValue(3453, true); }); // B steps on her tile
-        await waitFor(b, () => $gameSwitches.value(3451), 20000, 'the witch awake on B');
-        await waitFor(a, () => $gameSwitches.value(3451), 5000, 'and on A').catch(() => {});
-        await sleep(500);
-        const awake = await Promise.all([witch(a), witch(b)]);
-        check('B wakes the witch: she is out on A\'s screen too, ready to fight, where B sees her',
-            awake.every((w) => /black_angel2/.test(w.image) && w.trigger === 2) && Math.abs(awake[0].x - awake[1].x) + Math.abs(awake[0].y - awake[1].y) <= 2,
-            JSON.stringify(awake));
-        // B changes rooms: the game's room-change event, run to its end.
-        const ran = await b.evaluate(() => {
+        const on = (p, map, who) => waitFor(p, (m) => T.onMap() && $gameMap.mapId() === m && !$gamePlayer.isTransferring(), 30000, who + ' on map ' + map, map);
+        const roomChange = (p) => p.evaluate(() => {
             const i = new Game_Interpreter();
             i.setup($dataCommonEvents[271].list, 0);
             for (let k = 0; k < 3000 && i.isRunning(); k++) i.update();
             return !i.isRunning();
         });
+        const witch = (p, floor) => p.evaluate((id) => { const ev = $gameMap.event(id); return { x: ev.x, y: ev.y, image: ev.characterName(), trigger: ev.page() ? ev._trigger : null, on: $gameSwitches.value(3451) }; }, floor.ev);
+        const isOut = (w) => /black_angel2/.test(w.image) && w.trigger === 2;
+        const where = (p) => p.evaluate(() => ({ at: String($gameMap.mapId()), sw: $gameSwitches.value(3451) ? 1 : 0 }));
+        const settled = async () => {
+            await sleep(800);
+            const [wa, wb] = [await where(a), await where(b)];
+            fs.appendFileSync(TRACE, JSON.stringify({ event: 'Settled', at: { Ann: wa.at, Bo: wb.at }, sw: { Ann: wa.sw, Bo: wb.sw } }) + '\n');
+        };
+        // Open floor as far as can be from where she sleeps and where she wakes (she walks toward the nearest player).
+        const farSpot = (p, floor) => p.evaluate((id, spots) => {
+            const w = $gameMap.event(id);
+            const open = (x, y) => $gameMap.isValid(x, y) && !$gameMap.eventsXy(x, y).length && [2, 4, 6, 8].every((d) => $gameMap.isPassable(x, y, d));
+            let best = null;
+            for (let y = 0; y < $gameMap.height(); y++) for (let x = 0; x < $gameMap.width(); x++) {
+                const d = Math.min(...[[w.x, w.y]].concat(spots).map(([sx, sy]) => Math.abs(x - sx) + Math.abs(y - sy)));
+                if ((!best || d > best[2]) && open(x, y) && open(x + 1, y)) best = [x, y, d];
+            }
+            return best;
+        }, floor.ev, floor.spots);
+        fs.writeFileSync(TRACE, JSON.stringify({ event: 'Init', at: { Ann: String(await a.evaluate(() => $gameMap.mapId())), Bo: String(await b.evaluate(() => $gameMap.mapId())) } }) + '\n');
+
+        //--- Split across her two floors: B in the Ancient city, A in the library.
+        await go(b, HALLS.map, 1, 1);
+        await on(b, HALLS.map, 'B');
+        const hallSpot = await farSpot(b, HALLS);
+        await b.evaluate((x, y) => { $gamePlayer.locate(x, y); }, hallSpot[0], hallSpot[1]);
+        await go(a, LIBRARY.map, 1, 1);
+        await on(a, LIBRARY.map, 'A');
+        const libSpot = await farSpot(a, LIBRARY);
+        check('found open floor far from her on both floors', hallSpot[2] >= 30 && libSpot[2] >= 30, JSON.stringify([hallSpot, libSpot]));
+        await a.evaluate((x, y) => { $gamePlayer.locate(x, y); }, libSpot[0], libSpot[1]);
+        await settled();
+        const asleep = [await witch(a, LIBRARY), await witch(b, HALLS)];
+        check('no witch on either floor before anyone wakes her', asleep.every((w) => !w.image && !w.on), JSON.stringify(asleep));
+
+        // B steps on her tile in the Ancient city.
+        await b.evaluate(() => { $gameSwitches.setValue(3453, true); });
+        await waitFor(b, () => $gameSwitches.value(3451), 20000, 'the witch awake on B');
+        await sleep(1500); // the library's own tile page would have run on A by now
+        const split = { a: await witch(a, LIBRARY), aArms: await a.evaluate((ids) => ids.filter((id) => $gameSwitches.value(id)), ARMS), b: await witch(b, HALLS) };
+        check('B wakes her in the Ancient city: out there on B\'s screen', isOut(split.b), JSON.stringify(split.b));
+        check('and the library\'s copy stays asleep on A\'s, nobody having stepped on its tile', !split.a.image && !split.aArms.length, JSON.stringify(split));
+        await settled();
+
+        // A goes through a door in the library: she is not sent away from B's floor.
+        check('A\'s room change in the library runs', await roomChange(a));
+        await sleep(1000);
+        const stays = await witch(b, HALLS);
+        check('a door on the other floor leaves her out for B', isOut(stays) && stays.on, JSON.stringify(stays));
+        await settled();
+
+        // A walks onto her floor while she is out (a transfer with no room change of its own): A sees her too.
+        await go(a, HALLS.map, hallSpot[0] + 1, hallSpot[1]);
+        await on(a, HALLS.map, 'A');
+        await sleep(1200);
+        const both = [await witch(a, HALLS), await witch(b, HALLS)];
+        check('A, arriving on her floor while she is out, sees her where B does',
+            both.every(isOut) && Math.abs(both[0].x - both[1].x) + Math.abs(both[0].y - both[1].y) <= 2, JSON.stringify(both));
+        await settled();
+
+        // B goes through a door there: she is sent away for everyone on her floor.
+        check('B\'s room change runs', await roomChange(b));
         await waitFor(a, (ids) => ids.every((id) => !$gameSwitches.value(id)), 5000, 'A hears her sent away', ARMS).catch(() => {});
         await sleep(300);
-        const gone = await Promise.all([witch(a), witch(b)]);
-        check('B changes rooms: she is gone from both screens', ran && gone.every((w) => !w.image), JSON.stringify(gone));
+        const gone = [await witch(a, HALLS), await witch(b, HALLS)];
+        check('B changes rooms on her floor: she is gone from both screens', gone.every((w) => !w.image), JSON.stringify(gone));
+        await settled();
+
+        // Woken again; A's line drops, A takes the stairs to the library while it is down, and comes back.
+        await b.evaluate(() => { $gameSwitches.setValue(3453, true); });
+        await waitFor(b, () => $gameSwitches.value(3451), 20000, 'the witch awake on B again');
+        await waitFor(a, () => $gameSwitches.value(3451), 5000, 'and on A').catch(() => {});
+        await settled();
+        await a.evaluate(() => { Coop._realConnect = Coop._realConnect || Coop.connect; Coop.connect = function () {}; Coop._ws.close(); });
+        await waitFor(a, () => !Coop.connected && !Coop.world.live, 5000, 'A\'s line down');
+        await go(a, LIBRARY.map, libSpot[0], libSpot[1]);
+        await on(a, LIBRARY.map, 'A');
+        await a.evaluate(() => { Coop.connect = Coop._realConnect; Coop.connect(); });
+        await waitFor(a, () => Coop.connected && Coop.world.live, 20000, 'A back in the world');
+        await sleep(1200);
+        const back = { a: await witch(a, LIBRARY), b: await witch(b, HALLS) };
+        check('A, back in the world in the library, shows no witch there', !back.a.image && !back.a.on, JSON.stringify(back.a));
+        check('and she is still out for B in the Ancient city', isOut(back.b), JSON.stringify(back.b));
+        const prints = [await a.evaluate(() => Coop.world.fingerprint()), await b.evaluate(() => Coop.world.fingerprint())];
+        check('both keep the same world, her floor included', prints[0] === prints[1] && /f114,3451/.test(prints[0]), prints.map((f) => (f.match(/f\d+,\d+/g) || []).join(' ')).join(' | '));
+        await settled();
+        check('B\'s last room change runs', await roomChange(b));
+        await settled();
+        // A twin's run (a fix taken out) is no trace of the mod: the live file is left for a reject trace.
+        if (!process.env.FH_TWIN) fs.writeFileSync(path.join(__dirname, 'out', 'floors-trace.ndjson'), fs.readFileSync(TRACE, 'utf8'));
 
         // Open floor in the Fortress, well away from the hounds' kennel (14..27, 18..25) and the exits.
         await go(a, 74, 20, 12);

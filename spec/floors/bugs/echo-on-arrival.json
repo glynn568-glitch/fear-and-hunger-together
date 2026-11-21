@@ -1,0 +1,9 @@
+{
+  "why": "Grok 11/17, round 2 (a mutant that survived every property then): showFloor on a map change made through setValue would writeFloor the value this game already holds for the floor it walks onto; a partner's door still on its way is then skipped as crossed, and the room ends on the stale wake for everyone.",
+  "code": "client/state.js showFloor (it writes $gameSwitches._data, never setValue)",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "    /\\ sw' = IF live[c] THEN [sw EXCEPT ![c] = fs[c][m]] ELSE sw", "new": "    /\\ sw' = IF live[c] THEN [sw EXCEPT ![c] = fs[c][m]] ELSE sw\n    /\\ flight' = IF live[c] /\\ fs[c][m] # sw[c] THEN [flight EXCEPT ![c][m] = @ + 1] ELSE flight\n    /\\ toRoom' = IF live[c] /\\ line[c] = \"up\" /\\ fs[c][m] # sw[c] THEN [toRoom EXCEPT ![c] = Append(@, W(m, fs[c][m]))] ELSE toRoom"},
+    {"old": "    /\\ UNCHANGED <<fs, flight, live, line, toRoom, toCli, room, inRoom, writes, drops, woke>>", "new": "    /\\ UNCHANGED <<fs, live, line, toCli, room, inRoom, writes, drops, woke>>"}
+  ]
+}

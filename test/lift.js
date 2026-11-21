@@ -101,6 +101,53 @@ async function press(page, code) {
         await sleep(4000);
         const stepped = await b.evaluate(() => ({ at: $gamePlayer.x + ',' + $gamePlayer.y, hidden: $gamePlayer.isTransparent(), mine: Coop.world.mine.has('sw1815'), fight: SceneManager._scene instanceof Scene_Battle || $gameParty.inBattle(), running: $gameMap.isEventRunning() }));
         check('a plate already down, stepped on by a second player, does not start its scene for them', plate === '54,56' && stepped.at === '54,56' && !stepped.hidden && !stepped.mine && !stepped.fight, JSON.stringify({ plate, stepped }));
+
+        // The rule below for the steps of a scene that start by themselves: the Beacon of the Depths (Map080
+        // EV512), the city's way down. B uses the cube; A's write of the beacon's next step (2347) lands while
+        // B's own step is still waiting to write it. The event has turned to that next step, A's by the flag,
+        // but the step B's beacon runs is B's: it must carry B down to the Ancient city.
+        await go(b, 80, 27, 9, 8); await settled(b, 80); await idle(b);
+        await b.evaluate(() => {
+            const second = $dataMap.events[512].pages[1].list;
+            const setup = Game_Interpreter.prototype.setup;
+            Game_Interpreter.prototype.setup = function (list) {
+                setup.apply(this, arguments);
+                if (list === second) { this._waitCount = 120; window.SECOND = true; }
+            };
+            $gameSwitches.setValue(2345, true);
+            $gameParty.gainItem($dataItems[119], 1);
+            window.ANSWER = setInterval(() => {
+                const w = SceneManager._scene._messageWindow && SceneManager._scene._messageWindow._choiceWindow;
+                if ($gameMessage.isChoice() && w && w.active) { w.select(0); w.processOk(); } else if ($gameMessage.isBusy()) Input._currentState.ok = !Input._currentState.ok;
+            }, 60);
+            $gameMap.event(512).start();
+        });
+        await waitFor(b, () => window.SECOND, 15000, 'B\'s beacon on its second step');
+        await a.evaluate(() => $gameSwitches.setValue(2347, true));
+        await waitFor(b, () => $gameSwitches.value(2347), 5000, 'A\'s write of the next step reaches B first');
+        await waitFor(b, () => $gameMap.mapId() === 110, 30000, 'the beacon carries B down').catch(() => {});
+        const beacon = await b.evaluate(() => { clearInterval(window.ANSWER); return { map: $gameMap.mapId(), running: $gameMap.isEventRunning(), mine: Coop.world.mine.has('sw2347') }; });
+        check('the beacon B used carries B down to the Ancient city though A\'s write of its next step landed first', beacon.map === 110, JSON.stringify(beacon));
+        await idle(b);
+
+        // The lift's rule from a parallel page of the player's own (field 11/11, the mines): pho's cave-in had
+        // turned 3142 on; Enki pulled the Blue Sin (Map020 EV266) without the book, whose parallel page turns
+        // 3142 on again, and the mine never came down on him. The page rumbled every two seconds for good.
+        // A is in Francois's scene from the plate: B pulls the sword after A's cave-in.
+        await a.evaluate(() => $gameSwitches.setValue(3142, true));
+        await waitFor(b, () => $gameSwitches.value(3142), 5000, 'B hears the mine came down on A');
+        await go(b, 20, 104, 10, 8); await settled(b, 20); await idle(b);
+        await b.evaluate(() => {
+            $gameSwitches.setValue(3173, true); // pulled once already: this pull takes it
+            window.ANSWER = setInterval(() => {
+                const w = SceneManager._scene._messageWindow && SceneManager._scene._messageWindow._choiceWindow;
+                if ($gameMessage.isChoice() && w && w.active) { w.select(0); w.processOk(); } else if ($gameMessage.isBusy()) Input._currentState.ok = !Input._currentState.ok;
+            }, 60);
+            $gameMap.event(266).start();
+        });
+        await waitFor(b, () => $gameMap.mapId() !== 20, 20000, 'the mine comes down on B').catch(() => {});
+        const sin = { b: await b.evaluate(() => { clearInterval(window.ANSWER); return { map: $gameMap.mapId(), sword: $gameParty.hasItem($dataWeapons[49]) }; }), a: await a.evaluate(() => $gameMap.mapId()) };
+        check('the Blue Sin pulled without the book after a partner\'s cave-in brings the mine down on the one who pulled it, not the partner', sin.b.sword && sin.b.map === 186 && sin.a === 125, JSON.stringify(sin));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();

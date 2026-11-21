@@ -1,0 +1,9 @@
+{
+  "why": "11/13 (test/samefuzz.js, Map001 EV146), the bug spec/writes/Writes.tla was made for, on a floor key: both games on her floor write it at once, and a game that applies the partner's write while its own is on the way ends on the partner's value for good, though the room ends on its own.",
+  "code": "client/state.js Coop.on('w') before inFlight (8cc7871)",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "    /\\ flight[c][Head(toCli[c]).m] = 0\n", "new": ""},
+    {"old": "    /\\ flight[c][Head(toCli[c]).m] > 0\n", "new": "    /\\ FALSE\n"}
+  ]
+}

@@ -63,6 +63,23 @@
         _goto.call(this, sceneClass);
     };
 
+    // A blow whose player is gone (their line dropped, or they reloaded or left mid-blow) never ends: the blow
+    // is that player's scene alone, so 2934 stayed on and he stood there for everyone for the rest of the run.
+    // Once nobody in the pit has been in a scene for three seconds, whoever is there stands him down, as the
+    // blow's own end does (the count is the struck player's own).
+    let blowAlone = 0;
+    const _pitMapUpdate = Game_Map.prototype.update;
+    Game_Map.prototype.update = function (sceneActive) {
+        _pitMapUpdate.call(this, sceneActive);
+        if (this._mapId !== SMASH_PIT || !Coop.world.live || !$gameSwitches.value(2934)
+            || this.isEventRunning() || Coop.peersHere().some((p) => p.st === 'event')) { blowAlone = 0; return; }
+        if (!blowAlone) { blowAlone = Date.now(); return; }
+        if (Date.now() - blowAlone < 3000) return;
+        blowAlone = 0;
+        $gameSwitches.setValue(2933, false);
+        $gameSwitches.setValue(2934, false);
+    };
+
     // Dead when the game was saved: loading it brings them back dead, to
     // wait for whoever loads the same save alive.
     Coop.returnDead = function () {

@@ -2,7 +2,8 @@
 // The member walks in their line, goes through their doors, is in their
 // fights from anywhere on the map, and sees them in the menu lineup (look only, on the Equip screen).
 const { twoPlayers, checker, sleep, waitFor } = require('./common');
-const { shot } = require('./lib');
+const { shot, openPlayer } = require('./lib');
+const install = require('./helpers');
 
 const onMap = (id) => $gameMap.mapId() === id && SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive() && !$gamePlayer.isTransferring();
 const pos = (p) => p.evaluate(() => [$gamePlayer.x, $gamePlayer.y]);
@@ -403,6 +404,45 @@ async function press(page, code, ms) {
             try { return Coop.ownMembers().map((m) => m.actorId()); } finally { Coop.battle = real; $gameParty._actors = actors; }
         });
         check('a fight\'s owner reports only their own characters to the lineup', owned.join() === '1', owned.join());
+
+        // B is a guest in Cy's fight (Cy's game holds B's D'arce as it fights; the fight itself is set up by hand,
+        // the messages are real). A's lineup must show D'arce as the fight has him, not as he was before it.
+        const c = await openPlayer(s.browser, 'http://localhost:8480/?name=Cy', 'C');
+        await waitFor(c, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'Cy at the title');
+        await c.evaluate(install);
+        await c.evaluate(() => T.quickStart(4, 27, 66));
+        await waitFor(c, () => T.onMap(), 60000, 'Cy on the map');
+        await c.evaluate(() => { T.settle(); T.begin(); });
+        await waitFor(c, () => Coop.world.live, 10000, 'Cy live');
+        const idC = await c.evaluate(() => Coop.id);
+        await c.evaluate((idB) => {
+            $gameParty.addActor(3);
+            $gameActors.actor(3).setHp(7);
+            Coop.battle = { role: 'owner', guests: new Map([[idB, { actors: [3] }]]) };
+        }, idB);
+        await b.evaluate((idC) => { Coop.battle = { role: 'guest', owner: idC }; }, idC);
+        await a.evaluate(() => {
+            window.__hp = {};
+            const hp = Window_Base.prototype.drawActorHp;
+            Window_Base.prototype.drawActorHp = function (actor) {
+                if (this instanceof Window_MenuStatus) window.__hp[actor.actorId()] = actor.hp;
+                return hp.apply(this, arguments);
+            };
+            SceneManager.push(Scene_Menu);
+        });
+        await waitFor(a, () => SceneManager._scene instanceof Scene_Menu && SceneManager._scene._statusWindow && SceneManager._scene._statusWindow.maxItems() === 2, 8000, 'B in A\'s lineup');
+        let row = null;
+        for (let i = 0; i < 16; i++) {
+            row = await a.evaluate(() => window.__hp[3]);
+            if (row === 7) break;
+            await sleep(250);
+        }
+        check('a party mate who is a guest in a fight shows in the lineup as the fight has them', row === 7, 'D\'arce drawn with ' + row + ' HP');
+        await b.evaluate(() => { Coop.battle = null; });
+        await c.evaluate(() => { Coop.battle = null; $gameParty.removeActor(3); });
+        await a.evaluate(() => SceneManager.goto(Scene_Map));
+        await waitFor(a, () => T.onMap(), 10000, 'A back on the map, lineup');
+        await c.close();
 
         // Holding a direction steps out of line, even while the line is walking.
         const walking = a.evaluate(async () => { for (let i = 0; i < 5; i++) { T.step(8); await new Promise((r) => setTimeout(r, 280)); } });

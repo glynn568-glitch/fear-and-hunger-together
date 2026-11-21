@@ -1,0 +1,17 @@
+{"event":"Init","at":{"Ann":"1","Bo":"1"}}
+{"event":"Settled","at":{"Ann":"116","Bo":"114"},"sw":{"Ann":0,"Bo":0}}
+{"event":"Takes","who":"Bo","room":{"114":1},"m":"114","v":1}
+{"event":"Settled","at":{"Ann":"116","Bo":"114"},"sw":{"Ann":1,"Bo":1}}
+{"event":"Takes","who":"Ann","room":{"114":1,"116":0},"m":"116","v":0}
+{"event":"Settled","at":{"Ann":"116","Bo":"114"},"sw":{"Ann":0,"Bo":0}}
+{"event":"Settled","at":{"Ann":"114","Bo":"114"},"sw":{"Ann":1,"Bo":0}}
+{"event":"Settled","at":{"Ann":"114","Bo":"114"},"sw":{"Ann":1,"Bo":0}}
+{"event":"Takes","who":"Bo","room":{"114":1,"116":0},"m":"114","v":1}
+{"event":"Settled","at":{"Ann":"114","Bo":"114"},"sw":{"Ann":1,"Bo":1}}
+{"event":"Breaks","who":"Ann","room":{"114":1,"116":0}}
+{"event":"Asked","who":"Ann","room":{"114":1,"116":0},"mode":"again"}
+{"event":"Settled","at":{"Ann":"116","Bo":"114"},"sw":{"Ann":0,"Bo":1}}
+{"event":"Takes","who":"Bo","room":{"114":0,"116":0},"m":"114","v":0}
+{"event":"Settled","at":{"Ann":"116","Bo":"114"},"sw":{"Ann":0,"Bo":0}}
+{"event":"Breaks","who":"Bo","room":{"114":0,"116":0}}
+{"event":"Breaks","who":"Ann","room":{"114":0,"116":0}}

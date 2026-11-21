@@ -1,0 +1,8 @@
+{
+  "why": "The fix weighed on 11/14 and not built (TASKS.md known issue): keep the switches at home while the players stand on different floors. A wake kept home never reaches a partner who walks onto her floor while she is out: she hunts them unseen.",
+  "code": "TASKS.md 11/14 'Fix considered and not done'; client/state.js Game_Map.setup without showFloor",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "    /\\ sw' = IF live[c] THEN [sw EXCEPT ![c] = fs[c][m]] ELSE sw\n", "new": "    /\\ sw' = sw\n"}
+  ]
+}

@@ -6,12 +6,14 @@ const crypto = require('crypto');
 
 const LAG = Number(process.env.FH_LAG || 0);
 // FH_WRITES_TRACE=<file>|<kind><key> (e.g. out.ndjson|va88): one line per thing the room does with
-// that one key, to check real runs against spec/writes/Writes.tla (Room.traceWrite).
+// that one key, to check real runs against spec/writes/Writes.tla (Room.traceWrite). A floor switch
+// (fs3451) is traced on every floor at once, against spec/floors/Floors.tla.
 const WRITES_TRACE = (() => {
-    const m = /^(.*)\|(sw|va|ss|el)(.+)$/.exec(process.env.FH_WRITES_TRACE || '');
+    const m = /^(.*)\|(sw|va|ss|el|fs)(.+)$/.exec(process.env.FH_WRITES_TRACE || '');
     return m && { file: m[1], kind: m[2], key: m[3] };
 })();
-const traced = (kind, key) => !!WRITES_TRACE && kind === WRITES_TRACE.kind && String(key) === WRITES_TRACE.key;
+const traced = (kind, key) => !!WRITES_TRACE && kind === WRITES_TRACE.kind
+    && (kind === 'fs' ? String(key).split(',')[1] : String(key)) === WRITES_TRACE.key;
 const HOST_WAIT = Number(process.env.FH_HOST_WAIT) || 120000; // how long someone in first waits for the host to start or continue
 const TITLE_GHOST = Number(process.env.FH_TITLE_GHOST) || 10000; // ms a player in the run may say "title" before they are taken out of it
 const LINE_TITLE = Number(process.env.FH_LINE_TITLE) || 15000; // ms someone called in may still say "title" before the call is dropped
@@ -30,14 +32,17 @@ class Room {
         this.peers = new Map(); // id -> peer
         this.nextId = 1;
         this.freedAt = new Map(); // player id -> when its connection closed
+        this.goneTabs = new Map(); // a dropped player's tab token -> { id, name, at }: the same tab back under another name
+        this.decider = null; // the host person last told so (tellDecider)
         this.runId = '';
-        this.world = { sw: {}, va: {}, ss: {}, el: {} };
+        this.world = { sw: {}, va: {}, ss: {}, el: {}, fs: {} };
         this.rules = { balance: true, loot: false }; // the host's run options (Balance changes, Instanced loot), for everyone
         this.founded = false; // a run is in progress with at least one player in it
         this.entered = new Set(); // names that have been in the current run since it was founded
         this.baseStamp = 0; // the save the run was carried on from, if it was
         this.baseBy = '';
         this.owed = new Map(); // name -> fight results waiting for a player who dropped out, oldest first
+        this.sentHome = new Map(); // partner name -> { at, fight: '' | 'owner' | 'guest' }: F8 sent it home (keepHome)
         this.chatSeen = new Map(); // ids of the last chat lines passed on, oldest first
         this.mapOwners = new Map(); // mapId -> peer id simulating that map's events
         this.dirty = false;
@@ -88,17 +93,19 @@ class Room {
     accept(ws, host) {
         const id = this.freshId();
         if (!id) { console.log('turned away a connection: no free player number'); ws.close(1013, 'full'); return; }
-        const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host };
+        const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host, at: Date.now(), heard: 0 };
         this.peers.set(id, peer);
         console.log('player ' + id + ' connected' + (host ? ' (this PC)' : ''));
         this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules });
         this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
+            peer.heard = Date.now();
             if (isBinary) { this.onBinary(peer, raw); return; }
             let msg;
             try { msg = JSON.parse(raw); } catch (e) { return; }
             if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
             try { this.onMessage(peer, msg); } catch (e) { console.error('bad message from player ' + peer.id, e.message); }
+            this.tellDecider();
         });
         ws.isAlive = true;
         ws.on('pong', () => { ws.isAlive = true; });
@@ -121,6 +128,12 @@ class Room {
         return id;
     }
 
+    // A dropped player's tab is back under another name: what was theirs under the old id and name is this one's.
+    tellWas(peer, was) {
+        if (was.name.toLowerCase() === peer.name.toLowerCase()) return; // the same name: everyone matches it already
+        this.broadcast({ t: 'was', id: peer.id, was: was.id, name: peer.name });
+    }
+
     // Whether the tab holding this token is the player of this name, here now.
     ownsName(name, token) {
         const want = String(name || '').trim().toLowerCase();
@@ -132,6 +145,16 @@ class Room {
     // The person hosting (their own browser on this PC), not an AI partner run from here.
     hostPerson() {
         return [...this.peers.values()].find((p) => p.host && p.named && !p.deadWait && !this.isBot(p)) || null;
+    }
+
+    // nameok says whose word the run's options are; this says it again when that moves. Only two people on
+    // the host's PC can move it: the first leaves (or waits dead), and the other's Options show the run's.
+    tellDecider() {
+        const now = this.hostPerson(), was = this.decider;
+        if (now === was) return;
+        this.decider = now;
+        if (was && this.peers.get(was.id) === was) this.send(was, { t: 'decides', on: false });
+        if (now) this.send(now, { t: 'decides', on: true });
     }
 
     // The host's word on the run options: only the ones that exist, only on or off. True if one moved.
@@ -283,8 +306,34 @@ class Room {
         try { fs.unlinkSync(this.parkFile(name)); } catch (e) { /* nothing parked */ }
     }
 
-    // Good for twenty minutes: long enough to restart a browser, too short to be a save.
-    readParked(name) {
+    // A partner F8 sends home keeps its body for the rest of that run, alive or dead (his calls, 11/20), apart
+    // from the parks of people: a person who takes its name later is not offered it.
+    homeFile(name) {
+        return path.join(this.saveDir, 'parked', 'home', path.basename(this.parkFile(name)));
+    }
+
+    keepHome(name) {
+        const sent = this.sentHome.get(name.toLowerCase());
+        this.sentHome.delete(name.toLowerCase());
+        try {
+            const parked = JSON.parse(fs.readFileSync(this.parkFile(name), 'utf8'));
+            // Parked before a fight it was sent home from: no walking that fight back (recover.js's rule
+            // for a drop). A park made after the press (the fight ended in time) is as it stands, and a death
+            // stays a death.
+            if (sent && sent.fight && parked.at < sent.at && parked.droppedAs !== 'dead') parked.droppedAs = sent.fight;
+            fs.mkdirSync(path.dirname(this.homeFile(name)), { recursive: true });
+            fs.writeFileSync(this.homeFile(name), JSON.stringify(parked));
+        } catch (e) { /* nothing parked: sent home mid-fight before its first park */ }
+        this.unpark(name);
+    }
+
+    // Good for twenty minutes: long enough to restart a browser, too short to be a save. A partner's
+    // body kept from F8 has no clock: it is good for its run, and another run turns it away at the
+    // door ('world?', worldbusy), after which the partner comes in as someone new.
+    readParked(name, partner) {
+        if (partner) {
+            try { return Object.assign(JSON.parse(fs.readFileSync(this.homeFile(name), 'utf8')), { home: true }); } catch (e) { /* none kept */ }
+        }
         try {
             const parked = JSON.parse(fs.readFileSync(this.parkFile(name), 'utf8'));
             if (Date.now() - parked.at > 20 * 60 * 1000) { this.unpark(name); return null; }
@@ -502,11 +551,16 @@ class Room {
         this.trace('HoldEnds', { name: hold.name });
     }
 
-    // FH_WRITES_TRACE: what the room did with the traced key, and its value of it after.
+    // FH_WRITES_TRACE: what the room did with the traced key, and its value of it after. A floor
+    // switch: its value on each floor that has one.
     traceWrite(event, peer, more) {
         if (!WRITES_TRACE) return;
         const table = this.world[WRITES_TRACE.kind] || {};
-        const room = WRITES_TRACE.key in table ? table[WRITES_TRACE.key] : 0;
+        let room = WRITES_TRACE.key in table ? table[WRITES_TRACE.key] : 0;
+        if (WRITES_TRACE.kind === 'fs') {
+            room = {};
+            for (const k in table) if (k.split(',')[1] === WRITES_TRACE.key) room[k.split(',')[0]] = table[k];
+        }
         try { fs.appendFileSync(WRITES_TRACE.file, JSON.stringify(Object.assign({ event, who: peer.name, room }, more || {})) + '\n'); } catch (e) { /* a test's own file */ }
     }
 
@@ -536,10 +590,26 @@ class Room {
         // the parked state remembers it, and carrying on picks up from there.
         const st = peer.last && peer.last.st;
         if (peer.named && (st === 'battle' || st === 'dead')) this.markParked(peer.name, st === 'dead' ? 'dead' : (peer.last.br === 'g' ? 'guest' : 'owner'));
+        // Sent home by F8 and gone without coming to the title (dead: the title would throw the body away).
+        if (peer.named && this.sentHome.has(peer.name.toLowerCase()) && !this.recallHolds(peer)) this.keepHome(peer.name);
         this.leaveMap(peer);
         this.leaveWorld(peer);
         this.lobbyGone(peer, false);
         this.broadcast({ t: 'leave', id: peer.id });
+        // The same tab may come back under another name (his friend, 10/20: dropped mid-fight, back as someone
+        // else, and the enemy stood frozen five minutes). Everyone is told who it was, after they heard it
+        // leave (already back, its old line noticed dead only now); the token stays here. Back means its old line
+        // said nothing since: a page loaded again goes quiet, a duplicated tab (Chrome copies the token) does not.
+        if (peer.named && peer.token) {
+            const back = [...this.peers.values()].find((p) => p.named && p.token === peer.token && peer.heard < p.at);
+            if (back) this.tellWas(back, peer);
+            else {
+                const now = Date.now();
+                for (const [t, g] of this.goneTabs) if (now - g.at > 300000) this.goneTabs.delete(t);
+                this.goneTabs.set(peer.token, { id: peer.id, name: peer.name, at: now });
+            }
+        }
+        this.tellDecider();
         this.lobbyTell();
     }
 
@@ -548,7 +618,9 @@ class Room {
     wentToTitle(peer) {
         const was = peer.live;
         if (!this.isBot(peer)) this.endWithPartners(peer);
-        if (!this.recallHolds(peer)) this.unpark(peer.name);
+        // Sent home by F8, alive (a dead one never comes to the title: drop keeps it).
+        const sent = this.sentHome.has(peer.name.toLowerCase());
+        if (this.recallHolds(peer)) { /* kept to call back with the run */ } else if (sent) this.keepHome(peer.name); else this.unpark(peer.name);
         this.leaveWorld(peer);
         // In the spec's terms a partner that leaves the run by itself has dropped and come back.
         if (was && this.isBot(peer)) { this.trace('Drop', peer); this.trace('Connect', peer); }
@@ -681,6 +753,8 @@ class Room {
             peer.named = true;
             peer.token = token;
             this.broadcast({ t: 'name', id: peer.id, name: peer.name });
+            const gone = fresh && token ? this.goneTabs.get(token) : null;
+            if (gone) { this.goneTabs.delete(token); this.tellWas(peer, gone); }
             this.send(peer, { t: 'nameok', name, run: this.runFor(peer), decides: peer === this.hostPerson() });
             if (fresh) this.trace('Connect', peer);
             this.lobbyTell();
@@ -788,8 +862,8 @@ class Room {
                 if (latest > this.baseStamp) newer = latest;
                 this.persist();
                 this.runId = carried ? String(msg.runId) : crypto.randomBytes(6).toString('hex');
-                this.world = saved || { sw: {}, va: {}, ss: {}, el: {} };
-                for (const k of ['sw', 'va', 'ss', 'el']) this.world[k] = this.world[k] || {};
+                this.world = saved || { sw: {}, va: {}, ss: {}, el: {}, fs: {} };
+                for (const k of ['sw', 'va', 'ss', 'el', 'fs']) this.world[k] = this.world[k] || {};
                 // The run's options travel with its world (world.json, the beds, the copies): a restarted
                 // server would otherwise say the defaults to whoever is back before the host, and with
                 // Instanced loot off their own finds would be written into the shared world (Grok g16).
@@ -817,7 +891,7 @@ class Room {
             // Told to the one entering here, and to everyone already in if they moved.
             if (peer === this.hostPerson() && this.takeRules(msg.rules)) this.broadcast({ t: 'rules', rules: this.rules }, peer.id);
             this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, rules: this.rules });
-            this.traceWrite('Asked', peer);
+            this.traceWrite('Asked', peer, { mode });
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
             if (peer === this.hostPerson()) this.maybeRecall();
@@ -868,7 +942,12 @@ class Room {
             // The server knows about partners still starting up, which the game cannot see yet.
             const on = msg.toggle ? this.partners.names().length === 0 : !!msg.on;
             if (!on) {
-                const gone = this.partners.stop();
+                // Sent home from a fight: a fight cannot be parked, so the body it keeps is from before it.
+                // It comes back the way a player who dropped out of that fight does (keepHome).
+                const target = this.partners.names().pop();
+                const body = target && [...this.peers.values()].find((p) => p.named && p.name.toLowerCase() === target.toLowerCase());
+                if (target) this.sentHome.set(target.toLowerCase(), { at: Date.now(), fight: body && body.last && body.last.st === 'battle' ? (body.last.br === 'g' ? 'guest' : 'owner') : '' });
+                const gone = this.partners.stop(target);
                 say(gone ? gone + ' is going home.' : 'There is no AI partner here to send home.');
                 break;
             }
@@ -960,14 +1039,15 @@ class Room {
         case 'park?': {
             // Before the name is in, "nothing" would be a wrong answer; it asks again on nameok.
             if (!peer.named) break;
-            const parked = this.readParked(peer.name);
+            const parked = this.readParked(peer.name, this.isBot(peer));
             this.send(peer, { t: 'parked', has: !!parked, ageSec: parked ? Math.round((Date.now() - parked.at) / 1000) : 0 });
             break;
         }
         case 'park!': {
-            const parked = peer.named ? this.readParked(peer.name) : null;
-            this.send(peer, { t: 'parkdata', blob: parked ? parked.blob : null, droppedAs: parked ? parked.droppedAs || '' : '' });
-            if (parked) this.unpark(peer.name); // once; it is not a save
+            const parked = peer.named ? this.readParked(peer.name, this.isBot(peer)) : null;
+            this.send(peer, { t: 'parkdata', blob: parked ? parked.blob : null, droppedAs: parked ? parked.droppedAs || '' : '', home: !!(parked && parked.home) });
+            // Once; it is not a save.
+            if (parked && parked.home) { try { fs.unlinkSync(this.homeFile(peer.name)); } catch (e) { /* gone */ } } else if (parked) this.unpark(peer.name);
             break;
         }
         case 'owed': { // a fight ended for a guest who is no longer there to be told
@@ -1001,7 +1081,7 @@ class Room {
             if (!msg.w.length) break;
             for (const [kind, key, value] of msg.w) {
                 this.world[kind][key] = value;
-                if (traced(kind, key)) this.traceWrite('Takes', peer, { v: value });
+                if (traced(kind, key)) this.traceWrite('Takes', peer, kind === 'fs' ? { m: String(key).split(',')[0], v: value } : { v: value });
             }
             this.dirty = true;
             for (const p of this.peers.values()) if (p.live && p.id !== peer.id) this.send(p, msg);
@@ -1101,7 +1181,8 @@ function meterLine(s) {
 function validWrite(row) {
     if (!Array.isArray(row) || row.length !== 3) return false;
     const [kind, key, value] = row;
-    if (kind !== 'sw' && kind !== 'va' && kind !== 'ss' && kind !== 'el') return false;
+    if (kind !== 'sw' && kind !== 'va' && kind !== 'ss' && kind !== 'el' && kind !== 'fs') return false;
+    if (kind === 'fs') return /^\d+,\d+$/.test(String(key)) && (value === 0 || value === 1); // a floor's switch: 'map,switch'
     if (kind === 'el') {
         if (!/^\d+,\d+$/.test(String(key)) || !Array.isArray(value) || value.length !== 3) return false;
         return value.every((n) => Number.isInteger(n) && n >= 0 && n <= 9999);

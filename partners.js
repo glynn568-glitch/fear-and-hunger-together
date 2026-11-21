@@ -90,9 +90,11 @@ class Partners {
         if (this.running.size >= MAX) return 'There is no room for another partner: four characters at most.';
         const want = require('./tools/brain').savedMind().plays || this.plays;
         let home = this.homeName(taken);
-        // Another character picked in the panel since this one went home: that one, fresh, under
-        // another name. The body keeps its name and its park, for when its character is picked again.
-        if (home && want && this.cast.get(home) && this.cast.get(home) !== want) {
+        // Another character picked in the panel since this one went home, or someone in the run plays its
+        // character now (it would be refused at the door, and its park spent): someone fresh, under another
+        // name. The body keeps its name and its park, for when its character is free and picked again.
+        const row = home && CAST.find((c) => c[0] === this.cast.get(home));
+        if (home && ((want && this.cast.get(home) && this.cast.get(home) !== want) || (row && new Set(initials || []).has(row[1])))) {
             taken = new Set([...taken, home.toLowerCase()]);
             home = '';
         }
@@ -115,7 +117,8 @@ class Partners {
         const argv = [path.join(__dirname, 'tools', 'bot.js'), `http://localhost:${this.port}/`, '--name', name, '--stdin-stop'];
         if (char) argv.push('--char', char);
         argv.push(...extra);
-        const child = spawn(process.execPath, argv,
+        // With the server's own node options (none when shipped; the tests' twin hook, test/twin-hook.js).
+        const child = spawn(process.execPath, process.execArgv.concat(argv),
             { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
         this.running.set(name, child);
         let last = '';

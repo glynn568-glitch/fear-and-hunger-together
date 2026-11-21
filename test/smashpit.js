@@ -63,6 +63,19 @@ const PIT = 62, GUARD = 34;
         const counted = await Promise.all([blows(a), blows(b)]);
         check('the blow counts for B only', !counted[0][1] && counted[1][1], JSON.stringify(counted));
 
+        // A blow whose player is gone: B's line drops in the middle of the next one (11/14, "KNOWN, minor": a
+        // reload or a drop in those two seconds left 2934 on, and he stood still for everyone for the run).
+        await waitFor(b, () => $gameSwitches.value(2934) && $gameMap._interpreter.isRunning() && $gameMap._interpreter.eventId() === 1, 60000, 'the guard strikes B again');
+        await b.evaluate(() => { Coop.refused = true; Coop._ws.close(); });
+        await waitFor(a, () => !Coop.peersHere().length, 10000, 'A sees B gone');
+        await waitFor(a, () => !$gameSwitches.value(2934) && !$gameSwitches.value(2933), 10000, 'A sees him stand down').catch(() => {});
+        await sleep(300);
+        const gone = await guard(a);
+        check('a blow whose player drops halfway does not leave him standing there: he stands down for whoever is still in the pit',
+            !gone.striking && !gone.armed && gone.trigger !== 0, JSON.stringify(gone));
+        await b.evaluate(() => { Coop.refused = false; Coop.connect(); });
+        await waitFor(b, () => Coop.connected && Coop.world.live, 20000, 'B back in the run');
+
         // The third blow is a game over: B dies and watches; the pit goes on for A.
         await waitFor(b, () => Coop.dead, 60000, 'B dead after the third blow');
         // His page follows on the map's next refresh, which comes late under a full gate's load (11/14: read before it, twice).

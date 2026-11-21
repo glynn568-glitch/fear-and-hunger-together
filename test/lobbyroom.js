@@ -38,7 +38,7 @@ function client(name, opts) {
         const msg = JSON.parse(raw);
         c.got.push(msg);
         // A partner's page says what it is before its name (a partner this server started is known by name at once).
-        if (msg.t === 'hello') { c.id = msg.id; if (o.bot) c.presence(); c.send({ t: 'name', name, token: 't-' + name, called: !!o.called }); c.presence(); }
+        if (msg.t === 'hello') { c.id = msg.id; if (o.bot) c.presence(); c.send({ t: 'name', name, token: o.token || 't-' + name, called: !!o.called }); c.presence(); }
         if (msg.t === 'lobby') c.lobby = msg;
     });
     // As a page does: where it is, said again every second.
@@ -382,6 +382,45 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         B.send({ t: 'name', name: 'Gus', token: 't-Bo' });
         await settle();
         check('a called person renamed onto a held name: the hold ends, their own call stays', wasHeld === JSON.stringify([[MERC], true]) && A.lobby.held.length === 0 && A.lobby.line.indexOf(B.id) >= 0 && A.lobby.line.length === 1, wasHeld + ' ' + JSON.stringify(A.lobby.held) + ' ' + JSON.stringify(A.lobby.line));
+
+        // The same tab back under another name (his friend 10/20: "Enki" dropped mid-fight, back as "Gandalf the
+        // Wizz", and the enemy stood frozen five minutes): everyone hears which old player it is, whether the old
+        // line was noticed dead first or only once the new one is in. Never a token, which opens saves.
+        const Enki = await join('Enki', { token: 't-tab' });
+        await Enki.close();
+        await settle();
+        const Gandalf = await join('Gandalf', { token: 't-tab' });
+        const told = A.last('was');
+        check('a tab back under another name after its line dropped: everyone hears whose it was',
+            told && told.id === Gandalf.id && told.was === Enki.id && told.name === 'Gandalf' && !JSON.stringify(told).includes('t-tab'), JSON.stringify(told));
+        const O = await join('Odo', { token: 't-tab2' });
+        clearInterval(O.beat); // its page loaded again: the old line goes quiet
+        await settle();
+        const was = A.count('was');
+        const M = await join('Merlin', { token: 't-tab2' });
+        const early = A.count('was') - was;
+        O.ws.terminate();
+        await settle();
+        const late = A.last('was'), at = A.got.indexOf(late), left = A.got.findIndex((m) => m.t === 'leave' && m.id === O.id);
+        check('back before the old line is noticed dead: told once it is, after its leave',
+            early === 0 && late && late.id === M.id && late.was === O.id && left >= 0 && left < at, JSON.stringify({ early, late, left, at }));
+        // A duplicated tab (Chrome copies the token) is another page still playing: its first one dropping is no return.
+        const Pia = await join('Pia', { token: 't-tab3' });
+        await join('Pip', { token: 't-tab3' });
+        await sleep(1200);
+        const was2 = A.count('was');
+        Pia.ws.terminate();
+        await settle();
+        check('a duplicated tab still playing: the first one dropping is not taken for it coming back', A.count('was') === was2, JSON.stringify(A.last('was')));
+
+        // Two people on the host's PC (Gandalf and Merlin are, as Ann is): nameok told only Ann the run's options
+        // are hers. She leaves, and the first of the others there is told they are theirs now.
+        const mark = new Map(open.map((c) => [c, c.got.length]));
+        await A.close();
+        await settle();
+        const decider = open.filter((c) => c !== A && c.ws.readyState === 1 && c.got.slice(mark.get(c)).some((m) => m.t === 'decides' && m.on));
+        check('the first person on the host\'s PC leaves: the next one there is told the run\'s options are theirs',
+            decider.length === 1 && decider[0] === Gandalf, decider.map((c) => c.name).join() || 'nobody');
     } catch (e) {
         console.error(e);
         check('test ran to the end', false);

@@ -119,14 +119,23 @@ async function press(page, code) {
         // A mind saved while a partner is in switches that partner (11/11: he changed minds
         // because the first was out of usage; "from now on" left the one beside him mute).
         const idBefore = await a.evaluate(() => Coop.others().find((x) => x.bot === 1).id);
+        // With its body: what it holds comes back with it (11/03, a partner restarted came back a fresh knight).
+        await a.evaluate((id) => { $gameParty.gainItem($dataArmors[36], 1); $gameParty.loseItem($dataArmors[36], 1); Coop.sendTo(id, 'give', { kind: 'armor', id: 36 }); }, idBefore);
+        await a.keyboard.down('Tab');
+        await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the partner is holding the soul');
+        await a.keyboard.up('Tab');
         await a.evaluate(() => Coop.openPartnerSetup());
         await waitFor(a, () => document.querySelector('#coop-setup.open .minds button.on'), 15000, 'the panel a third time');
         await a.evaluate(() => document.querySelector('#coop-setup [data-mind=none]').click());
         await a.evaluate(() => document.querySelector('#coop-setup [data-do=save]').click());
         await waitFor(a, () => !document.querySelector('#coop-setup.open'), 20000, 'the panel closes');
         await waitFor(a, (id) => Coop.others().some((p) => p.bot === 1 && p.st === 'map' && p.id !== id), 90000, 'the partner comes back', idBefore);
+        await sleep(3000);
+        await a.keyboard.down('Tab');
+        const soul = await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the soul back with the partner').then(() => true, () => false);
+        await a.keyboard.up('Tab');
         const back = await a.evaluate(() => { const p = Coop.others().find((x) => x.bot === 1); return { name: p.name, bots: Coop.others().filter((x) => x.bot).length }; });
-        check('a mind saved with a partner in sends that partner out and brings the same one back', back.name === 'Ragnvaldr' && back.bots === 1, JSON.stringify(back));
+        check('a mind saved with a partner in sends that partner out and brings the same one back, what it holds too', back.name === 'Ragnvaldr' && back.bots === 1 && soul, JSON.stringify(Object.assign(back, { soul })));
         await press(a, 'F8');
         await waitFor(a, () => !Coop.others().some((p) => p.bot), 20000, 'the partner leaves');
     } catch (e) {

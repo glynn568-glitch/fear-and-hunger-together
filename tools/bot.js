@@ -70,9 +70,14 @@ async function stop() {
         const left = await page.evaluate(() => {
             if (window.BOT) BOT.leaving = true;
             if (!(window.Coop && Coop.world && Coop.world.live && window.SceneManager)) return '';
-            // Dead and cannot park now (line down): the title would throw the body away.
-            if (Coop.dead) return (Coop.parkNow && Coop.parkNow(true)) || '';
-            const go = () => { SceneManager.goto(Scene_Title); return 'alive'; };
+            // Dead now, or by the time it goes (killed in the fight it was sent home from): park and stay out of
+            // the title. Dead and cannot park now (line down): the title would throw the body away.
+            const go = () => {
+                if (Coop.dead) return (Coop.parkNow && Coop.parkNow(true)) || '';
+                SceneManager.goto(Scene_Title);
+                return 'alive';
+            };
+            if (Coop.dead) return go();
             // A scene in progress cannot be parked. Wait it out: titling with no
             // file throws the body away, and the last person leaving needs it.
             return new Promise((resolve) => {

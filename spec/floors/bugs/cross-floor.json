@@ -1,0 +1,8 @@
+{
+  "why": "0.1.20-0.1.21 (Grok 11/14, the known issue in both release notes): the witch's four switches were one shared switch, so a wake on one floor (114) turned the other floor's (116) copy of her on for a partner standing there, though nobody stepped on its tile.",
+  "code": "tools/census.js SW_WORLD_IDS with 3451 3453 3454 3457 (0.1.20, 0.1.21); client/state.js apply 'sw'",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "    /\\ sw' = [sw EXCEPT ![c] = IF at[c] = Head(toCli[c]).m THEN Head(toCli[c]).v ELSE @]\n", "new": "    /\\ sw' = [sw EXCEPT ![c] = Head(toCli[c]).v]\n"}
+  ]
+}

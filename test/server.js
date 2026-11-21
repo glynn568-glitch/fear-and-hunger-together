@@ -109,13 +109,14 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
         check('first player in founds a run', founded && founded.founded && !!founded.runId);
         for (const bad of [{ t: 'w', w: [1] }, { t: 'w', w: [['__proto__', 'polluted', 1]] }, { t: 'w', w: [['sw', '__proto__', 1]] }, { t: 'w', w: 'x' },
             { t: 'w', w: [['sw', 5, { a: 1 }]] }, { t: 'w', w: [['el', 'nope', [1, 2, 3]]] }, { t: 'w', w: [['el', '3,119', [1, 2]]] }, { t: 'w', w: [['el', '3,119', [1.5, 2, 3]]] },
+            { t: 'w', w: [['fs', '114', 1]] }, { t: 'w', w: [['fs', '116,3451', 2]] }, { t: 'w', w: [['fs', '__proto__', 1]] },
             { t: 'to' }, { t: 'map', mapId: {} }, { t: 'savepoint', stamp: '../../x' }, [1, 2], 'hi', null]) {
             a2.send(JSON.stringify(bad));
         }
         a2.send('{not json');
         a2.send(Buffer.from([1]), { binary: true });
         a2.send(Buffer.from([1, 250, 9, 9]), { binary: true });
-        say(a2, { t: 'w', w: [['sw', 25, 1], ['bogus', 1, 1], ['ss', '1,5,A', 1], ['va', 121, 3], ['el', '3,119', [17, 31, 6]]] });
+        say(a2, { t: 'w', w: [['sw', 25, 1], ['bogus', 1, 1], ['ss', '1,5,A', 1], ['va', 121, 3], ['el', '3,119', [17, 31, 6]], ['fs', '114,3451', 1]] });
         await sleep(300);
         check('the server survives malformed messages', await get('/coop/census.json') === 200);
         say(b, { t: 'world?', runId: '' });
@@ -123,7 +124,8 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
         const joined = got(b, 'world')[0];
         check('good writes are kept and bad ones dropped', joined && joined.world.sw['25'] === 1 && joined.world.ss['1,5,A'] === 1 && joined.world.va['121'] === 3
             && joined.world.el && joined.world.el['3,119'] && joined.world.el['3,119'].join() === '17,31,6'
-            && Object.keys(joined.world).sort().join() === 'el,rules,ss,sw,va' && joined.world.sw['5'] === undefined && !joined.world.el.nope, JSON.stringify(joined && joined.world));
+            && joined.world.fs && joined.world.fs['114,3451'] === 1 && Object.keys(joined.world.fs).join() === '114,3451'
+            && Object.keys(joined.world).sort().join() === 'el,fs,rules,ss,sw,va' && joined.world.sw['5'] === undefined && !joined.world.el.nope, JSON.stringify(joined && joined.world));
         check('the second player joins rather than founds', joined && !joined.founded && joined.runId === founded.runId);
 
         // Someone who joins later learns at once where everyone already is,

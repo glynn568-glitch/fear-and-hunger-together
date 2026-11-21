@@ -78,6 +78,19 @@ const panel = (page) => page.evaluate(() => {
         await sleep(800);
         const rulesB = await b.evaluate(() => ({ decides: Coop.decides, loot: Coop.rules.loot, own: ConfigManager.coopLoot === true }));
         check('the joined friend has the run\'s options, not those of the page they hosted (Grok 11/14)', ownHost && rulesB.decides === false && rulesB.loot === true && !rulesB.own, JSON.stringify({ ownHost, rulesB }));
+        // Told they decide now (two on the host's PC, the first gone): the run's options stay, their Options show
+        // them, and their own saved ones, maybe from before the first changed one, are not sent.
+        const handed = await b.evaluate(() => {
+            const sent = [], send = Coop.send;
+            Coop.send = function (m) { if (m && m.t === 'rules') sent.push(m); return send.apply(this, arguments); };
+            Coop.emit('decides', { t: 'decides', on: true });
+            const out = { decides: Coop.decides, own: ConfigManager.coopLoot, run: Coop.rules.loot, sent: sent.length };
+            Coop.send = send;
+            Coop.decides = false;
+            ConfigManager.coopLoot = false;
+            return out;
+        });
+        check('told they decide now, the run\'s options stay and their Options show them', handed.decides === true && handed.own === true && handed.run === true && handed.sent === 0, JSON.stringify(handed));
         await a.evaluate(() => { ConfigManager.coopLoot = false; Coop.sendRules(); });
         // Each side hears of the other in its own time over a slow line.
         check('the host sees the friend arrive', await waitFor(a, () => Array.from(Coop.peers.values()).some((p) => p.name === 'Bo'), 15000, 'the host sees Bo').then(() => true, () => false));

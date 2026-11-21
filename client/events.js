@@ -190,6 +190,10 @@
             }
         }
     });
+    // The same tab back under another name: its page was loaded again, so a fight it dropped out of is over.
+    Coop.on('was', function (msg) {
+        for (const [key, hold] of Ev.holds) if (hold.by === msg.was && hold.gone) Ev.holds.delete(key);
+    });
     // Dead, or back at the title: they let go of whatever they were using
     // (0.1.8 and before left these behind). A player only just heard of counts
     // as at the title until they say where they are, so only a report counts.

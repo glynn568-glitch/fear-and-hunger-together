@@ -1,0 +1,8 @@
+{
+  "why": "Found on paper 11/17 while designing this fix, before the code: out of the world (a line down) the game keeps its own switch across doors, so one that went through a door while she was out came back in still showing her on the new floor, unless the table sets the floor it stands on.",
+  "code": "client/state.js Coop.on('world') without the showFloor call after the apply loop",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "          /\\ sw' = [sw EXCEPT ![c] = now[at[c]]]\n", "new": "          /\\ sw' = [sw EXCEPT ![c] = IF tab[at[c]] # Nil THEN tab[at[c]] ELSE @]\n"}
+  ]
+}

@@ -84,16 +84,21 @@ for (const id of DUE_SCENES) SW_PRIVATE_IDS.add(id);
 // started a fight with his AI companion"). Shared, they are out for everyone on the floor once they are out.
 // The black witch of the Ancient city too (maps 114/116, his call 11/14): her tiles' touch turns 3453 or 3457
 // on, whose parallel page brings her and wakes her (3454 visible, 3451 to fight); every room change (common
-// event 271) turns all four off. All four, since each machine runs those parallel pages: shared, she wakes
-// for everyone there, and either player changing rooms anywhere sends her away for both. Known gap (Grok
-// 11/14): both floors' tiles read the same switches, so a partner standing on the other floor gets that
-// floor's copy of her woken too, though nobody stepped on its tile.
+// event 271) turns all four off. All four, since each machine runs those parallel pages. But the Grand library
+// (116) has her too, woken by the same four, and 271 runs on whichever map the door is on: shared as one
+// switch, a wake on one floor woke the other floor's copy for a partner standing there (Grok 11/14), and any
+// door anywhere sent her away for everyone. So they are shared per floor (swFloor, client/state.js World.fs):
+// everyone on her floor sees her wake, and a door on that floor sends her away for everyone on it.
+const SW_FLOOR_IDS = [3451, 3453, 3454, 3457];
 // The smash pit's guard (map 62 EV34, his call 11/14): his own timer arms him (2933) to walk up and strike on
 // touch, the blow's scene (EV1) holds him while it plays (2934) and turns both off. Kept per player, he hunted
 // one player while the partner saw him stand still. Shared, he goes after whoever is nearest and stands still
 // for everyone while he strikes; the blow is only the struck player's scene (the others' is held as someone
 // else's). Not his swing pose (2935: six flips a blow, which the room takes for a script's scratch flag).
-const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480, 773, 774, 779, 1781, 360, 3451, 3453, 3454, 3457, 2933, 2934]);
+// (The hounds' 1781 is read on two maps too, the Fortress and the Oldegård forests, but the Rondon maps turn
+// it off from a third: per floor, the hounds would stay out at home. Left as one switch.)
+const SW_WORLD_IDS = new Set([2190, 3153, 3155, 3480, 773, 774, 779, 1781, 360, 2933, 2934]);
+for (const id of SW_FLOOR_IDS) SW_PRIVATE_IDS.add(id); // not in sw: the floor's value is in fs
 // His blows are counted per body (2937 after the first, 2938 after the second; the third kills). The game
 // only ever turns them on, so the census took them for world latches: one player's blows counted against
 // the other, who died of their second.
@@ -250,6 +255,7 @@ const census = {
     ssLoot,
     swLoot,
     lootSkip,
+    swFloor: SW_FLOOR_IDS,
     identity: [242, 243, 244, 245, 246],
     start: 79,
     // Private latches that only mean "a fight just ended and a scene is due".

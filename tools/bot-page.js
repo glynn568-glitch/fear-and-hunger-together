@@ -873,7 +873,8 @@ module.exports = function installBot(options) {
     // Only with neither does it turn up as somebody new.
     Coop.on('parked', function (msg) { BOT.parked = !!msg.has; BOT.parkKnown = true; });
     // The host hands its park over once, so a slow line (a big save at 4 Mbit takes seconds) is waited for.
-    Coop.on('parkdata', function () { BOT.awaitPark = 0; });
+    // Back from home alive, it joins the player; dead, it stays where it fell.
+    Coop.on('parkdata', function (msg) { BOT.awaitPark = 0; BOT.fromHome = !!(msg && msg.home && msg.droppedAs !== 'dead'); });
     // This is put in once the title is up, so the title's own question may already have been answered.
     if (Coop.connected && Coop.name) Coop.send({ t: 'park?' });
     BOT.comeBack = function () {
@@ -2707,8 +2708,12 @@ module.exports = function installBot(options) {
         BOT.titleAt = 0;
         BOT.parkKnown = false;
         if (BOT.cameBack && scene instanceof Scene_Map && scene.isActive()) {
+            // Called back after F8 sent it home: its own body, at the player's side like any call.
+            const who = BOT.cameBack === 'park' && BOT.fromHome && leader();
             BOT.cameBack = '';
             becameCharacter();
+            const near = who && who.m === $gameMap.mapId() && Math.abs(who.x - $gamePlayer.x) + Math.abs(who.y - $gamePlayer.y) <= 3;
+            if (who && who.m && !near && !$gamePlayer.isTransferring()) { Coop.transferTo(who, 2); log('back from home; joining ' + who.name); }
         }
         if (BOT.needStart && scene instanceof Scene_Map && scene.isActive() && !$gamePlayer.isTransferring()) {
             BOT.needStart = false;

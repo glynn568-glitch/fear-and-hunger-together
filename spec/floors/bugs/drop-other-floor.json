@@ -1,0 +1,9 @@
+{
+  "why": "Grok 11/17, round 1 (a mutant that survived every property then): on the way back in, a wake the room never had is kept only for the floor the game stands on, so one made while the line was down on the floor it has since left is forgotten, and everyone agrees she is off. The same loss as a save that kept only its own floor (test/carry.js, twin witch-save).",
+  "code": "client/state.js localShared (the fs loop) or the 'world' handler's contribution; DataManager.makeSaveContents before contents.coop.fs",
+  "file": "Floors.tla",
+  "edits": [
+    {"old": "           now == [m \\in Maps |-> IF tab[m] # Nil THEN tab[m] ELSE IF mode = \"join\" THEN 0 ELSE fs[c][m]]", "new": "           now == [m \\in Maps |-> IF tab[m] # Nil THEN tab[m] ELSE IF mode = \"join\" \\/ m # at[c] THEN 0 ELSE fs[c][m]]"},
+    {"old": "           mine == SetToSeq({m \\in Maps : tab[m] = Nil /\\ mode = \"again\" /\\ fs[c][m] = 1})", "new": "           mine == SetToSeq({m \\in Maps : tab[m] = Nil /\\ mode = \"again\" /\\ m = at[c] /\\ fs[c][m] = 1})"}
+  ]
+}

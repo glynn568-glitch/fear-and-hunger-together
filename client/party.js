@@ -364,15 +364,26 @@
     };
 
     Coop.on('to:pactors?', function (msg) {
-        if (!window.$gameParty || !Coop.world.live || !Coop.inMyParty(msg.from) || (Coop.battle && Coop.battle.role === 'guest')) return;
+        if (!window.$gameParty || !Coop.world.live) return;
+        const b = Coop.battle;
+        if (msg.for !== undefined) {
+            // Asked on a guest's behalf: its characters are fighting in this game's party.
+            const g = b && b.role === 'owner' && b.guests && b.guests.get(msg.from);
+            if (g) Coop.sendTo(msg.for, 'pactors', { of: msg.from, list: $gameParty.members().filter((a) => g.actors.indexOf(a.actorId()) >= 0).map((a) => JsonEx.stringify(a)) });
+            return;
+        }
+        if (!Coop.inMyParty(msg.from)) return;
+        // A guest in a fight: the owner's game holds its characters as they fight, and answers for them.
+        if (b && b.role === 'guest') { if (b.owner !== undefined) Coop.sendTo(b.owner, 'pactors?', { for: msg.from }); return; }
         Coop.sendTo(msg.from, 'pactors', { list: Coop.ownMembers().map((a) => JsonEx.stringify(a)) });
     });
     Coop.on('to:pactors', function (msg) {
         if (!Array.isArray(msg.list)) return;
+        const who = msg.of !== undefined ? msg.of : msg.from;
         const answer = msg.list.join('\n');
-        if (heard.get(msg.from) === answer) return;
-        try { mates.set(msg.from, msg.list.map((j) => JsonEx.parse(j)).filter((a) => a instanceof Game_Actor)); } catch (e) { return; }
-        heard.set(msg.from, answer);
+        if (heard.get(who) === answer) return;
+        try { mates.set(who, msg.list.map((j) => JsonEx.parse(j)).filter((a) => a instanceof Game_Actor)); } catch (e) { return; }
+        heard.set(who, answer);
         refreshLineup();
     });
     // The window showing party mates on this screen, if any.

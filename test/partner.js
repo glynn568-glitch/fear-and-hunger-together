@@ -13,6 +13,19 @@ async function press(page, code) {
 
 (async () => {
     const check = checker();
+    {
+        // A death stays a death: a body marked dead before F8 was pressed in its fight is not made a drop from it.
+        const fs = require('fs');
+        const path = require('path');
+        const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fh-home-'));
+        const room = new (require('../room').Room)(dir);
+        fs.mkdirSync(path.dirname(room.parkFile('Ragn')), { recursive: true });
+        fs.writeFileSync(room.parkFile('Ragn'), JSON.stringify({ at: Date.now() - 1000, runId: 'r', blob: 'b', droppedAs: 'dead' }));
+        room.sentHome.set('ragn', { at: Date.now(), fight: 'owner' });
+        room.keepHome('Ragn');
+        check('a body dead before F8 was pressed in its fight is kept dead', keptAs(dir, 'Ragn') === 'dead', keptAs(dir, 'Ragn'));
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
     const port = 8446;
     const server = await startServer(port);
     const logs = [];
@@ -76,18 +89,39 @@ async function press(page, code) {
         await sleep(2000);
         check('its arrival is not announced as "Player N connected"', !(await a.evaluate(() => window.toasts.some((t) => /^Player d+ connected/.test(t)))), JSON.stringify(await a.evaluate(() => window.toasts)));
 
-        //--- F8 again: it goes home ------------------------------------------
+        //--- F8 again: it goes home, and keeps its body for the run ----------
+        await giveSoul(a);
         await sleep(1000);
         await press(a, 'F8');
         await waitFor(a, () => !Coop.others().some((p) => p.bot), 20000, 'the partner leaves');
         check('F8 again sends it home', true);
         await sleep(2000);
         check('the partner left on purpose, so nothing was kept as a dropped player', parked(server.saves).length === 0, parked(server.saves).join(','));
+        check('a living partner sent home keeps its body for the run (his call, 11/20)', keptHome(server.saves).length === 1, keptHome(server.saves).join(','));
+
+        //--- F8 calls that body back, at the host's side ----------------------
+        // 40 steps' walk from where it left: there within 4 s only if it was put there.
+        await a.evaluate(() => $gamePlayer.reserveTransfer(1, 28, 42, 2, 0));
+        await waitFor(a, () => T.onMap() && $gamePlayer.x === 28 && $gamePlayer.y === 42, 15000, 'Ann across the gate');
+        await press(a, 'F8');
+        await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'the partner is called back');
+        let beside = false;
+        for (const end = Date.now() + 4000; Date.now() < end && !beside;) {
+            beside = await a.evaluate(() => Coop.others().some((p) => p.bot && p.m === $gameMap.mapId() && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 4));
+            if (!beside) await sleep(100);
+        }
+        check('called back, it comes in at the host\'s side', beside, JSON.stringify(await a.evaluate(() => Coop.others().filter((p) => p.bot).map((p) => [p.m, p.x, p.y]).concat([[$gameMap.mapId(), $gamePlayer.x, $gamePlayer.y]]))));
+        await sleep(3000);
+        await a.keyboard.down('Tab');
+        await waitFor(a, () => { const t = document.getElementById('coop-sheets').textContent; return t.length > 40 && !/Nobody else/.test(t); }, 8000, 'the called-back partner\'s sheet');
+        const back = await a.evaluate(() => ({ soul: /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), name: (Coop.others().find((p) => p.bot) || {}).name }));
+        await a.keyboard.up('Tab');
+        check('called back, it is the same body, gear and all', back.soul && back.name === who.name, JSON.stringify(back));
+        check('the kept body is spent once it is back', keptHome(server.saves).length === 0, keptHome(server.saves).join(','));
 
         //--- the last person leaving ends the run; a dropped line does not ---
         // New Game while a partner is still in the dungeon used to be that same run.
         try {
-            await press(a, 'F8');
             await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'a partner for the reroll');
             await a.evaluate(() => $gameVariables.setValue(32, 2));
             await sleep(700);
@@ -137,16 +171,7 @@ async function press(page, code) {
             await bo.close();
             bo = null;
 
-            await a.evaluate(() => {
-                const p = Coop.others().find((q) => q.bot && q.st && q.st !== 'title');
-                if (!p) throw new Error('no partner in the world');
-                $gameParty.gainItem($dataArmors[36], 1);
-                $gameParty.loseItem($dataArmors[36], 1);
-                Coop.sendTo(p.id, 'give', { kind: 'armor', id: 36 });
-            });
-            await a.keyboard.down('Tab');
-            await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the partner is holding the soul');
-            await a.keyboard.up('Tab');
+            await giveSoul(a);
             await a.evaluate(() => $gameVariables.setValue(32, 2));
             await sleep(700);
             await a.evaluate(() => { window.runEnded = false; Coop.on('runover', () => { window.runEnded = true; }); });
@@ -204,10 +229,52 @@ async function press(page, code) {
             await a.keyboard.up('Tab');
             check('the new run calls a new body, not the parked one', fresh.run === freshId && fresh.map && !fresh.soul && fresh.dice === 0, JSON.stringify(fresh));
 
+            await giveSoul(a);
             await press(a, 'F8');
             await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the new partner goes home');
             await sleep(2000);
-            check('nothing is left parked for the next call', parked(server.saves).length === 0, parked(server.saves).join(','));
+            check('nothing is left parked as a dropped player; the body is kept for this run', parked(server.saves).length === 0 && keptHome(server.saves).length === 1, parked(server.saves).join(',') + ' / ' + keptHome(server.saves).join(','));
+
+            // A run started after it does not get that body.
+            await a.evaluate(() => SceneManager.goto(Scene_Title));
+            await waitFor(a, () => SceneManager._scene instanceof Scene_Title && !Coop.world.live, 20000, 'Ann at the title again');
+            await a.evaluate((id) => { window.lastRun = id; T.quickStart(1, 27, 67); }, freshId);
+            await waitFor(a, () => T.onMap(), 60000, 'Ann\'s third run');
+            await a.evaluate(() => { T.settle(); T.begin(); });
+            await waitFor(a, () => Coop.world.live && Coop.world.runId !== window.lastRun, 15000, 'the third run');
+            await press(a, 'F8');
+            await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'a partner in the third run');
+            await sleep(3000);
+            await a.keyboard.down('Tab');
+            await waitFor(a, () => { const t = document.getElementById('coop-sheets').textContent; return t.length > 40 && !/Nobody else/.test(t); }, 8000, 'the third run\'s partner\'s sheet');
+            const third = await a.evaluate(() => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent));
+            await a.keyboard.up('Tab');
+            check('a body kept in one run is not called into the next', !third && keptHome(server.saves).length === 0, String(third) + ' / ' + keptHome(server.saves).join(','));
+            const thirdWho = await a.evaluate(() => { const p = Coop.others().find((q) => q.bot); return { name: p.name, ini: (p.ini || [])[0] }; });
+            await press(a, 'F8');
+            await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the third run\'s partner goes home');
+            await sleep(2000);
+
+            // Someone in the run plays the kept body's character now: called, it would be turned away at the
+            // door and the body spent. Someone else comes instead, and the body waits.
+            bo = await openPlayer(browser, `http://localhost:${port}/?name=Bo`, 'Bo');
+            await waitFor(bo, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'Bo at the title');
+            await bo.evaluate(install);
+            await bo.evaluate((actor) => T.quickStart(actor, 27, 65), { 662: 3, 663: 4, 664: 5 }[thirdWho.ini]);
+            await waitFor(bo, () => T.onMap(), 60000, 'Bo on the map');
+            await bo.evaluate(() => { T.settle(); T.begin(); });
+            await waitFor(bo, () => Coop.world.live, 15000, 'Bo in the run as the kept body\'s character');
+            await sleep(1500);
+            await press(a, 'F8');
+            await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'a partner while Bo plays that character');
+            await sleep(2000);
+            const other = await a.evaluate(() => { const p = Coop.others().find((q) => q.bot); return { name: p.name, ini: (p.ini || [])[0] }; });
+            check('a kept body whose character someone now plays waits; someone else comes', other.name !== thirdWho.name && other.ini !== thirdWho.ini && keptHome(server.saves).length === 1, JSON.stringify({ thirdWho, other, kept: keptHome(server.saves) }));
+            await press(a, 'F8');
+            await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'that partner goes home');
+            await bo.close();
+            bo = null;
+            await sleep(2000);
         } catch (e) {
             const msg = String(e && e.message || e);
             if (msg !== 'stop') check(msg, false);
@@ -286,21 +353,52 @@ async function press(page, code) {
         // title made a fresh knight, and the next call was alive, gear and all).
         await press(a, 'F8');
         await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'the partner is back to be killed');
-        await a.evaluate(() => {
-            const p = Coop.others().find((q) => q.bot);
-            $gameParty.gainItem($dataArmors[36], 1);
-            $gameParty.loseItem($dataArmors[36], 1);
-            Coop.sendTo(p.id, 'give', { kind: 'armor', id: 36 });
-        });
-        await a.keyboard.down('Tab');
-        await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the partner is holding the soul');
-        await a.keyboard.up('Tab');
-        await waitFor(a, () => {
+        await giveSoul(a);
+
+        // Sent home from the middle of a fight, the body it keeps is from before that fight: it comes back the
+        // way a player who dropped out of that fight does (here a guest in Ann's; in its own, at 1 HP).
+        const closeEnough = () => waitFor(a, () => {
             const p = Coop.others().find((q) => q.bot);
             return p && p.st === 'map' && p.m === $gameMap.mapId() && Math.abs(p.x - $gamePlayer.x) + Math.abs(p.y - $gamePlayer.y) <= 6;
         }, 30000, 'the partner is close enough to pull into a fight');
+        await closeEnough();
+        await a.evaluate(() => { BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
+        await waitFor(a, () => Coop.battle && Coop.battle.guests && [...Coop.battle.guests.values()].some((g) => g.actors && g.actors.length), 20000, 'the partner is in the fight to be sent home from');
+        await waitFor(a, () => Coop.others().some((p) => p.bot && p.st === 'battle'), 10000, 'the partner says it is fighting');
+        const fighter = await a.evaluate(() => Coop.others().find((p) => p.bot).name);
+        await press(a, 'F8');
+        await waitFor(a, () => !Coop.others().some((p) => p.bot), 30000, 'the partner is sent home from the fight');
+        await sleep(2000);
+        check('sent home from a fight, the body it keeps does not walk that fight back', keptAs(server.saves, fighter) === 'guest', fighter + ': ' + keptAs(server.saves, fighter));
+        await a.evaluate(() => {
+            for (const e of $gameTroop.members()) e.addState(e.deathStateId());
+            const w = SceneManager._scene._actorCommandWindow;
+            if (w) { w.deactivate(); w.close(); }
+            BattleManager.processVictory();
+        });
+        for (let i = 0; i < 40 && !(await a.evaluate(() => SceneManager._scene instanceof Scene_Map && !Coop.battle)); i++) {
+            if (await a.evaluate(() => $gameMessage.isBusy())) await press(a, 'Enter'); else await sleep(400);
+        }
+        await press(a, 'F8');
+        await waitFor(a, () => Coop.others().some((p) => p.bot === 1 && p.st === 'map'), 90000, 'the partner is back from the fight');
+
+        // Sent home from a fight and killed in it before it is gone (the review 11/21: it went to the title
+        // alive-looking, and the mark for that fight brought it back at 1 HP): it is kept dead.
+        await closeEnough();
         await a.evaluate(() => { BattleManager.setup(1, true, true); SceneManager.push(Scene_Battle); });
         await waitFor(a, () => Coop.battle && Coop.battle.guests && [...Coop.battle.guests.values()].some((g) => g.actors && g.actors.length), 20000, 'the partner is in the fight');
+        await waitFor(a, () => Coop.others().some((p) => p.bot && p.st === 'battle'), 10000, 'the partner says it is fighting');
+        const doomed = await a.evaluate(() => Coop.others().find((p) => p.bot).name);
+        await press(a, 'F8');
+        // When Ann sees it dead and when it is gone, from the press (it has about 4 s in a fight before the title).
+        await a.evaluate(() => {
+            const doom = window.__doom = { t0: Date.now() };
+            const iv = setInterval(() => {
+                const p = Coop.others().find((q) => q.bot);
+                if (p && p.st === 'dead' && !doom.dead) doom.dead = Date.now() - doom.t0;
+                if (!p) { doom.gone = Date.now() - doom.t0; clearInterval(iv); }
+            }, 50);
+        });
         await a.evaluate(() => {
             for (const g of Coop.battle.guests.values()) for (const id of g.actors) {
                 const actor = $gameActors.actor(id);
@@ -315,6 +413,13 @@ async function press(page, code) {
         for (let i = 0; i < 40 && !(await a.evaluate(() => SceneManager._scene instanceof Scene_Map && !Coop.battle)); i++) {
             if (await a.evaluate(() => $gameMessage.isBusy())) await press(a, 'Enter'); else await sleep(400);
         }
+        await waitFor(a, () => window.__doom.gone, 30000, 'the partner killed while leaving is gone');
+        await sleep(2000);
+        const doom = await a.evaluate(() => window.__doom);
+        check('killed in the fight it was sent home from, it is kept dead', keptAs(server.saves, doomed) === 'dead',
+            doomed + ': ' + keptAs(server.saves, doomed) + ' (seen dead ' + (doom.dead == null ? 'never' : doom.dead + ' ms') + ', gone ' + doom.gone + ' ms after the press)');
+        await press(a, 'F8');
+        await waitFor(a, () => Coop.others().some((p) => p.bot && (p.st === 'dead' || p.st === 'map')), 90000, 'the partner killed while leaving is called back');
         await waitFor(a, () => Coop.others().some((p) => p.bot && p.st === 'dead'), 20000, 'the partner is dead');
         await sleep(800);
         const gearOf = () => a.evaluate(() => {
@@ -329,9 +434,12 @@ async function press(page, code) {
         await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent) && /dead/.test(document.getElementById('coop-sheets').textContent), 8000, 'the dead partner\'s sheet');
         const before = await gearOf();
         await a.keyboard.up('Tab');
+        const deadName = await a.evaluate(() => Coop.others().find((p) => p.bot).name);
         await press(a, 'F8');
         await waitFor(a, () => !Coop.others().some((p) => p.bot), 20000, 'the dead partner is sent home');
         await sleep(2500);
+        // Kept for the run like a living one (his call, 11/20), not the 20 minutes of a dropped player.
+        check('a dead partner sent home keeps its body for the run too', keptAs(server.saves, deadName) === 'dead', deadName + ': ' + keptAs(server.saves, deadName));
         await press(a, 'F8');
         await waitFor(a, () => Coop.others().some((p) => p.bot && (p.st === 'dead' || p.st === 'map')), 90000, 'the partner is called back');
         await sleep(3000);
@@ -352,6 +460,32 @@ async function press(page, code) {
     server.kill();
     process.exit(code);
 })();
+
+// The bodies kept from F8, for the run (room.js homeFile).
+function keptHome(saves) {
+    const dir = require('path').join(saves, 'parked', 'home');
+    try { return require('fs').readdirSync(dir).filter((n) => /\.json$/i.test(n)); } catch (e) { return []; }
+}
+
+// How the body kept from F8 under this name comes back (droppedAs: '' as it stands, 'guest' or 'owner' of a fight).
+function keptAs(saves, name) {
+    const file = require('path').join(saves, 'parked', 'home', name.toLowerCase().replace(/[^a-z0-9 _'-]/g, '') + '.json');
+    try { return JSON.parse(require('fs').readFileSync(file, 'utf8')).droppedAs || ''; } catch (e) { return 'nothing kept as ' + name + ' (' + keptHome(saves).join(',') + ')'; }
+}
+
+// Ann hands the partner a Crow Mauler soul: gear that tells its body from a fresh one.
+async function giveSoul(a) {
+    await a.evaluate(() => {
+        const p = Coop.others().find((q) => q.bot && q.st && q.st !== 'title');
+        if (!p) throw new Error('no partner in the world');
+        $gameParty.gainItem($dataArmors[36], 1);
+        $gameParty.loseItem($dataArmors[36], 1);
+        Coop.sendTo(p.id, 'give', { kind: 'armor', id: 36 });
+    });
+    await a.keyboard.down('Tab');
+    await waitFor(a, () => /Crow Mauler soul/.test(document.getElementById('coop-sheets').textContent), 8000, 'the partner is holding the soul');
+    await a.keyboard.up('Tab');
+}
 
 function parked(saves) {
     const dir = require('path').join(saves, 'parked');

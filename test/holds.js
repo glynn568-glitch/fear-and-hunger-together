@@ -4,11 +4,14 @@
 const { twoPlayers, checker, sleep, waitFor } = require('./common');
 const { openPlayer } = require('./lib');
 
+const install = require('./helpers');
+
 const GUARD = 9; // guard1 on level 1
+const GUARD3 = 100; // guard3 on level 1, the other guard there
 
 (async () => {
     const check = checker();
-    let s, again;
+    let s, again, cy;
     try {
         s = await twoPlayers(8531);
         const { a, b } = s;
@@ -65,8 +68,28 @@ const GUARD = 9; // guard1 on level 1
         await waitFor(again, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'A back at the title');
         await waitFor(b, (e) => !Coop.events.holdOf(e), 8000, 'B: the guard is free', GUARD).catch(() => {});
         check('back at the title, their fight is over: the enemy is free at once', !(await b.evaluate((e) => !!Coop.events.holdOf(e), GUARD)));
+
+        // His friend 10/20: dropped mid-fight and came back in the same tab under another name; the enemy stood
+        // frozen five minutes. Cy fights the other guard (EV100), Cy's line drops, then the same tab comes back
+        // as Gandalf.
+        cy = await openPlayer(s.browser, 'http://localhost:8531/?name=Cy', 'Cy');
+        await waitFor(cy, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'Cy at the title');
+        await cy.evaluate(install);
+        await cy.evaluate(() => T.quickStart(4, 27, 66));
+        await waitFor(cy, () => T.onMap(), 60000, 'Cy on the map');
+        await cy.evaluate(() => { T.settle(); T.begin(); });
+        await waitFor(cy, () => Coop.world.live, 10000, 'Cy live');
+        await cy.evaluate(fight, GUARD3);
+        await waitFor(cy, () => Coop.battle && Coop.battle.role === 'owner', 30000, 'Cy in the fight');
+        await waitFor(b, (e) => { const h = Coop.events.holdOf(e); return h && h.k === 'battle'; }, 5000, 'B hears the other guard is in a fight', GUARD3);
+        await cy.evaluate(() => { Coop.connect = function () {}; Coop._ws.close(); });
+        await waitFor(b, (e) => { const h = Coop.events.holdOf(e); return h && h.gone; }, 10000, 'B sees Cy gone mid-fight', GUARD3);
+        await cy.goto('http://localhost:8531/?name=Gandalf', { waitUntil: 'domcontentloaded' });
+        await waitFor(cy, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected && Coop.name === 'Gandalf', 90000, 'Gandalf at the title');
+        await waitFor(b, (e) => !Coop.events.holdOf(e), 8000, 'B: the other guard is free', GUARD3).catch(() => {});
+        check('back in the same tab under another name, their fight is over: the enemy is free at once', !(await b.evaluate((e) => !!Coop.events.holdOf(e), GUARD3)));
     } catch (e) { console.error(e); check('test ran to the end', false); }
-    const code = check.finish(s ? [s.b].concat(again ? [again] : []) : []);
+    const code = check.finish(s ? [s.b].concat(again ? [again] : [], cy ? [cy] : []) : []);
     if (s) await s.close();
     process.exit(code);
 })();

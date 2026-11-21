@@ -1,7 +1,8 @@
 // Broken twins: each one takes a single fix back out of the mod, in the test's own copy of the
 // code as it is served or loaded (never the files on disk), and runs the suite that proves the
 // fix. That suite has to FAIL. A suite that still passes with its fix gone was proving nothing.
-//   node test/twins.js            every twin (its suite once clean, then broken; one at a time)
+//   node test/twins.js            every twin (its suite once clean, then broken; six suites at a time,
+//                                 one suite's twins one after another; FH_TEST_JOBS as run.js)
 //   node test/twins.js paste-box  some of them
 //   node test/twins.js --check    only that every twin still finds its code (lint runs this)
 // FH_TWIN=<name> is read by test/lib.js (pages: the served /coop/ file) and test/twin-hook.js
@@ -15,6 +16,41 @@ const OUT = path.join(__dirname, 'out', 'twins');
 
 // file: relative to the repo. find must occur exactly once in it.
 const TWINS = {
+    'home-body': {
+        why: 'his call 11/20: a living partner F8 sent home was thrown away; the next call was somebody new',
+        suite: 'partner', file: 'room.js',
+        find: 'else if (sent) this.keepHome(peer.name);', put: 'else if (sent) this.unpark(peer.name);',
+    },
+    'home-beside': {
+        why: 'his call 11/20: a body called back after F8 came in where it had left, maybe floors away from the host',
+        suite: 'partner', file: 'tools/bot-page.js',
+        find: '            if (who && who.m && !near && !$gamePlayer.isTransferring()) { Coop.transferTo(who, 2); log(\'back from home; joining \' + who.name); }\n', put: '',
+    },
+    'home-fight': {
+        why: 'advisor 11/20: F8 in a fight kept the body from before it, so a losing partner could be sent home and called back whole',
+        suite: 'partner', file: 'room.js',
+        find: '            if (sent && sent.fight && parked.at < sent.at && parked.droppedAs !== \'dead\') parked.droppedAs = sent.fight;\n', put: '',
+    },
+    'home-dead': {
+        why: 'his call 11/20: a dead partner sent home kept its body only 20 minutes; then the next call was alive and fresh',
+        suite: 'partner', file: 'room.js',
+        find: '        if (peer.named && this.sentHome.has(peer.name.toLowerCase()) && !this.recallHolds(peer)) this.keepHome(peer.name);\n', put: '',
+    },
+    'home-dies-leaving': {
+        why: 'review 11/21: F8 in a fight, killed in it before it left: it went to the title as if alive and came back at 1 HP',
+        suite: 'partner', file: 'tools/bot.js',
+        find: '                if (Coop.dead) return (Coop.parkNow && Coop.parkNow(true)) || \'\';\n', put: '',
+    },
+    'home-death-stays': {
+        why: 'review 11/21: a park marked dead before the F8 press was turned into a fight drop (1 HP)',
+        suite: 'partner', file: 'room.js',
+        find: ' && parked.droppedAs !== \'dead\') parked.droppedAs = sent.fight;', put: ') parked.droppedAs = sent.fight;',
+    },
+    'home-taken': {
+        why: 'a kept body whose character someone now plays was turned away at the door and spent',
+        suite: 'partner', file: 'partners.js',
+        find: ' || (row && new Set(initials || []).has(row[1]))', put: '',
+    },
     'bot-dressing': {
         why: '10/21 marathons froze the host: the bot\'s change of clothes handed pieces back, each asking for another change',
         suite: 'ai', file: 'tools/bot-page.js',
@@ -229,12 +265,118 @@ const TWINS = {
     'witch-fights': {
         why: 'his call 11/14: the black witch woke and fought on one machine only, invisible to the partner, and a room change sent her away on one screen and left her fighting on the other',
         suite: 'hounds', file: 'client/census.json',
-        find: ',3450,3451,3452,', put: ',3450,3452,',
+        find: '"swFloor":[3451,3453,3454,3457]', put: '"swFloor":[3453,3454,3457]',
     },
     'witch-shows': {
         why: 'his call 11/14: the black witch\'s first page (3454) left on one machine after a room change: she stood on one screen only',
         suite: 'hounds', file: 'client/census.json',
-        find: ',3453,3454,3455,', put: ',3453,3455,',
+        find: '"swFloor":[3451,3453,3454,3457]', put: '"swFloor":[3451,3453,3457]',
+    },
+    'witch-other-floor': {
+        why: 'Grok 11/14, the known issue in the 0.1.20 and 0.1.21 notes: a wake on one of her floors woke the other floor\'s copy of the black witch for a partner standing there',
+        suite: 'hounds', file: 'client/state.js',
+        find: 'if (!$gameMap || $gameMap.mapId() !== mapId || !!$gameSwitches._data[id] === !!value) return false;',
+        put: 'if (!$gameMap || !!$gameSwitches._data[id] === !!value) return false;',
+    },
+    'witch-arrival': {
+        why: 'the fix weighed 11/14 and not built: her switches kept per floor with no reload on arrival, so a partner walking onto her floor while she was out was hunted by a witch they could not see',
+        suite: 'hounds', file: 'client/state.js',
+        find: '        if (World.live) showFloor(mapId);\n', put: '',
+    },
+    'recruit-flag': {
+        why: 'Grok hunt 10/31 (#4): a solo save holding a recruit joined a run where her flag was off, and her cage showed her again, a second Girl on another machine',
+        suite: 'buckman', file: 'client/state.js',
+        find: "                if (kind === 'sw' && holdsRecruit(key)) { mine.push([kind, key, value]); continue; }\n", put: '',
+    },
+    'recruit-twice': {
+        why: 'BUG HUNT 11/13 (tools/hunt/recruit.js): the flag that closes a recruit is set after the Add Actor, so two players on one skeleton\'s body, or the Void\'s recruits, a moment apart both raised it',
+        suite: 'rules', file: 'client/state.js',
+        find: 'if (add && add.code === 129 && add.parameters[1] === 0 && joinedElsewhere(', put: 'if (false && joinedElsewhere(',
+    },
+    'recruit-cage': {
+        why: 'found 11/17 checking every recruit page: the Girl\'s cage opens (81) half a second before she joins, so a look only after the Add Actor missed the 28 cage pages',
+        suite: 'rules', file: 'client/state.js',
+        find: '            for (let j = i - 1; j >= 0 && list[j].indent >= d; j--) { const f = closes(list[j], d); if (f) return f; }\n', put: '',
+    },
+    'parallel-claim': {
+        why: 'field 11/11: Enki pulled the Blue Sin without the book after pho\'s cave-in; its parallel page turned 3142 on again, the mine never came down on him, and the page rumbled every two seconds for good',
+        suite: 'lift', file: 'client/state.js',
+        find: '!World.live || !page || (page.trigger !== 3 && page.trigger !== 4)', put: '!World.live || !page || page.trigger !== 3',
+    },
+    'pit-gone': {
+        why: 'known since 11/14, listed 11/20: a reload or a dropped line during the smash pit guard\'s blow left 2934 on, and he stood still for everyone for the rest of the run',
+        suite: 'smashpit', file: 'client/death.js',
+        find: '        $gameSwitches.setValue(2934, false);\n    };\n', put: '    };\n',
+    },
+    'autorun-claim': {
+        why: 'advisor 11/20, the same rule for steps that start by themselves: B used the Beacon of the Depths as A\'s write of its next step landed first, and B was left standing in the city, the beacon shut to them',
+        suite: 'lift', file: 'client/state.js',
+        find: '!World.live || !page || (page.trigger !== 3 && page.trigger !== 4)', put: '!World.live || !page || page.trigger !== 4',
+    },
+    'chain-running-page': {
+        why: 'advisor 11/20: whose step a write is goes by the page the interpreter runs; the event had already turned to the next step (A\'s), so the Beacon left B behind',
+        suite: 'lift', file: 'client/state.js',
+        find: '        const page = data && data.pages[it._coopPage];\n', put: '        const page = data && $gameMap.event(it._eventId) && $gameMap.event(it._eventId).page();\n',
+    },
+    'recruit-void': {
+        why: 'Grok round 3 (11/17): the Void\'s two-at-once page closes both on 2611, so a partner taking 2 a moment before lost 7 for the run',
+        suite: 'rules', file: 'client/state.js',
+        find: '                if (own && own !== close) return own;\n', put: '',
+    },
+    'guest-row': {
+        why: 'known since 11/01 (his report: a party mate\'s status "disappears or is inconsistent" in the menu): a mate who was a guest in someone\'s fight did not answer the lineup, so their row kept its copy from before the fight',
+        suite: 'party', file: 'client/party.js',
+        find: "        if (b && b.role === 'guest') { if (b.owner !== undefined) Coop.sendTo(b.owner, 'pactors?', { for: msg.from }); return; }\n",
+        put: "        if (b && b.role === 'guest') return;\n",
+    },
+    'rename-hold': {
+        why: 'his friend 10/20: dropped mid-fight as "Enki", back in the same tab as "Gandalf the Wizz"; nobody matched the new name to the fight, so its enemy stood frozen five minutes',
+        suite: 'holds', file: 'client/events.js',
+        find: "    Coop.on('was', function (msg) {\n",
+        put: "    Coop.on('was', function (msg) {\n        return;\n",
+    },
+    'rename-told': {
+        why: 'the room never said which old player a tab back under a new name was (the 10/20 rename freeze)',
+        suite: 'lobbyroom', file: 'room.js',
+        find: "            if (gone) { this.goneTabs.delete(token); this.tellWas(peer, gone); }\n",
+        put: "            if (gone) this.goneTabs.delete(token);\n",
+    },
+    'rename-told-late': {
+        why: 'a tab back under a new name before its old line was noticed dead was never matched to it',
+        suite: 'lobbyroom', file: 'room.js',
+        find: "            if (back) this.tellWas(back, peer);\n",
+        put: "            if (back) { /* not told */ }\n",
+    },
+    'rename-duplicate': {
+        why: 'Sonnet 11/17: a duplicated tab (Chrome copies the token) still playing was taken for the first one coming back, freeing the enemy of a fight that first tab was still in',
+        suite: 'lobbyroom', file: 'room.js',
+        find: ' && p.token === peer.token && peer.heard < p.at);', put: ' && p.token === peer.token);',
+    },
+    'decider-told': {
+        why: 'known 11/14: the host person moving (two on the host\'s PC, the first gone) was never said; the second\'s Options never showed the run\'s options',
+        suite: 'lobbyroom', file: 'room.js',
+        find: "        if (now) this.send(now, { t: 'decides', on: true });\n", put: '',
+    },
+    'decider-stale': {
+        why: 'Sonnet 11/17: the new host person sent their own saved options, which can predate the first one\'s change mid-run, and undid it for everyone',
+        suite: 'app', file: 'client/state.js',
+        find: '            ConfigManager.coopLoot = Coop.rules.loot;\n', put: '',
+    },
+    'witch-save': {
+        why: 'Grok 11/17, round 1 of the floor switches: a save kept only the floor it stood on, so a run carried on from saves without the bed\'s world copy forgot the witch out on the other floor',
+        suite: 'carry', file: 'client/state.js',
+        find: ', el: el, fs: Object.keys(World.fs) };', put: ', el: el };',
+    },
+    'witch-load-overlay': {
+        why: 'Grok 11/17, round 2: a load took the floor the save stood on from its switches, which after a door taken with the line down still showed the floor left, so the save lost her or woke the other floor\'s copy',
+        suite: 'carry', file: 'client/state.js',
+        find: '            for (const k of floors) if (/^\\d+,\\d+$/.test(k)) World.fs[k] = 1;\n',
+        put: '            for (const k of floors) if (/^\\d+,\\d+$/.test(k)) World.fs[k] = 1;\n            const here = $gameMap.mapId();\n            if (here) for (const id of floorSw) if ($gameSwitches._data[id]) World.fs[here + \',\' + id] = 1; else delete World.fs[here + \',\' + id];\n',
+    },
+    'witch-line-back': {
+        why: 'found designing the fix 11/17: a game that took a door while its line was down came back in still showing the witch of the floor it had left',
+        suite: 'hounds', file: 'client/state.js',
+        find: '        if (window.$gameMap && showFloor($gameMap.mapId())) changed = true;\n', put: '',
     },
     'pit-armed': {
         why: 'his call 11/14: the smash pit\'s guard armed himself by each machine\'s own timer and hunted one player while the partner saw him stand still',
@@ -468,7 +610,7 @@ const TWINS = {
     'plays-home': {
         why: 'his 11/03 pick: a body sent home of another character came back instead of the one picked',
         suite: 'plays', file: 'partners.js',
-        find: 'if (home && want && this.cast.get(home) && this.cast.get(home) !== want) {', put: 'if (false) {',
+        find: '(want && this.cast.get(home) && this.cast.get(home) !== want) || ', put: '',
     },
     'plays-name': {
         why: 'Grok 11/03: under a configured name, another pick took the parked body\'s name, read its park and spent it',
@@ -503,22 +645,22 @@ const TWINS = {
     },
     'locked-door-walk': {
         why: 'his call 11/06: the long way to Level 1\'s circle stopped at the Level 2 basement\'s locked door, a wall to the partner\'s walking',
-        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        suite: 'pitc', file: 'tools/bot-page.js', rests: ['test/pit.js'],
         find: '|| (force ? Nav.search(goalX, goalY, eventId, adjacentOk, false, true) : null);', put: ';',
     },
     'locked-door-answer': {
         why: '11/06: at a locked door on a circle trip the question went to the model (which can say Leave)',
-        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        suite: 'pitc', file: 'tools/bot-page.js', rests: ['test/pit.js'],
         find: 'const door = doorChoice();', put: 'const door = null;',
     },
     'fight-through': {
         why: 'his call 11/06 "fight thru": a monster left standing in a corridor ended a circle trip for minutes',
-        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        suite: 'pitc', file: 'tools/bot-page.js', rests: ['test/pit.js'],
         find: '!(force && (lockedDoor(ev) || foe(ev)))', put: '!(force && lockedDoor(ev))',
     },
     'sight-mid-transfer': {
         why: '11/06: the partner\'s remark timer read its surroundings while a transfer had the next map\'s data in: an event id that map has not got, a crash that halted its game',
-        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        suite: 'pitc', file: 'tools/bot-page.js', rests: ['test/pit.js'],
         find: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map) || $gamePlayer.isTransferring()) return [];",
         put: "    function sightList() {\n        if (!window.$gameMap || !window.$dataMap || !(SceneManager._scene instanceof Scene_Map)) return [];",
     },
@@ -646,7 +788,7 @@ const TWINS = {
     },
     'locked-door-order': {
         why: '11/06: force first (free, the door never strikes back); a key is spent only once forcing failed',
-        suite: 'pit', file: 'tools/bot-page.js', env: { FH_PIT: 'C' },
+        suite: 'pitc', file: 'tools/bot-page.js', rests: ['test/pit.js'],
         find: "const o = pick('open') || (d.forced ? pick('item') || pick('force') : pick('force') || pick('item'));", put: "const o = pick('open') || pick('item') || pick('force');",
     },
 };
@@ -704,14 +846,15 @@ function runSuite(suite, twin, log, vars) {
 }
 
 // What a twin's verdict rests on: its own definition, the file it breaks and the suite that
-// has to notice. While none of the three has changed since it was last caught, the verdict
-// stands (FH_TWINS_CHANGED=1, the gate: 55 twins one at a time were 15 minutes of every run).
+// has to notice (and what that suite is built on: rests, pitc on pit.js). While none of them has changed
+// since it was last caught, the verdict stands (FH_TWINS_CHANGED=1, the gate: 55 twins one at a time
+// were 15 minutes of every run).
 const PROVEN = path.join(__dirname, 'out', 'twins-proven.json');
 function stampOf(name) {
     const t = TWINS[name];
     const h = require('crypto').createHash('sha1');
     h.update(JSON.stringify(t));
-    for (const f of [t.file, 'test/' + t.suite + '.js']) h.update(fs.readFileSync(path.join(ROOT, f)));
+    for (const f of [t.file, 'test/' + t.suite + '.js'].concat(t.rests || [])) h.update(fs.readFileSync(path.join(ROOT, f)));
     return h.digest('hex');
 }
 
@@ -774,11 +917,25 @@ if (require.main === module) {
     (async () => {
         const started = Date.now();
         const missed = [];
-        // One at a time: each runs a whole suite with its usual ports.
-        for (const n of names) {
+        // Each runs a whole suite with its usual ports, and every suite has ports of its own (run.js runs six
+        // at once), so the twins of different suites run side by side and one suite's twins one after another
+        // (11/20: 81 twins one at a time were two and a half hours of the gate). Only run.js's suites are kept
+        // apart; any other (endings: its cases sit on lift's, publish's, quietline's ports) runs alone, after:
+        // a twin failing on a taken port would pass for caught.
+        const jobs = Math.max(1, Number(process.env.FH_TEST_JOBS) || Math.min(6, Math.floor(require('os').cpus().length / 2)));
+        const inRun = new Set((fs.readFileSync(path.join(__dirname, 'run.js'), 'utf8').match(/const ALL = \[([^\]]*)\]/)[1].match(/'[\w-]+'/g) || []).map((s) => s.slice(1, -1)));
+        const bySuite = new Map();
+        for (const n of names) bySuite.set(TWINS[n].suite, (bySuite.get(TWINS[n].suite) || []).concat(n));
+        const lanes = [...bySuite.values()].filter((g) => inRun.has(TWINS[g[0]].suite)).sort((a, b) => b.length - a.length);
+        const alone = [...bySuite.values()].filter((g) => !inRun.has(TWINS[g[0]].suite)).flat();
+        const one = async (n) => {
             if (await runTwin(n)) proven[n] = stampOf(n); else { missed.push(n); delete proven[n]; }
             fs.writeFileSync(PROVEN, JSON.stringify(proven, null, 1));
-        }
+        };
+        await Promise.all(Array.from({ length: Math.min(jobs, lanes.length) }, async () => {
+            while (lanes.length) for (const n of lanes.shift()) await one(n);
+        }));
+        for (const n of alone) await one(n);
         const secs = Math.round((Date.now() - started) / 1000);
         console.log(missed.length ? `${missed.length} twin(s) not caught (${secs}s): ${missed.join(' ')}` : names.length ? `all ${names.length} passed (${secs}s): every twin was caught` : 'no twin to run: all ' + stood + ' stand');
         if (process.env.FH_TEST_RESULT) fs.writeFileSync(process.env.FH_TEST_RESULT, JSON.stringify({ suites: names.length, stood, broken: missed, flaky: [], secs }));

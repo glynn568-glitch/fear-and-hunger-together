@@ -25,7 +25,7 @@ const NOSRAMUS_SCENE = [1290, 1291, 1294, 2126]; // his scene under way, and "me
 
 (async () => {
     const check = checker();
-    const port = 8479;
+    const port = Number(process.env.FH_PIT_PORT) || 8479;
     const server = await startServer(port);
     const browser = await launch();
     const asked = [];
@@ -144,9 +144,10 @@ const NOSRAMUS_SCENE = [1290, 1291, 1294, 2126]; // his scene under way, and "me
             return { presses, maps, back, secs, gaveUp, lines: lines.slice(), pitAsked: asked.filter((q) => q.kind === 'choice' && /pit leading to darkness|strange mechanism/.test(q.text)).length, doorAsked: asked.filter((q) => q.kind === 'choice' && /locked/.test(q.text)).length };
         }
 
-        // FH_PIT=A, B or C (or A,B): only those cases, for the twins (each under the twins' 10 minutes).
-        const only = (process.env.FH_PIT || '').split(',').filter(Boolean);
-        const runs = (k) => !only.length || only.indexOf(k) >= 0;
+        // FH_PIT=A, B or C (or A,B): only those cases. A and B by default; C is test/pitc.js (all three
+        // were 540-600 s under the full run's load, at its 10-minute kill: killed once 11/20).
+        const only = (process.env.FH_PIT || 'A,B').split(',').filter(Boolean);
+        const runs = (k) => only.indexOf(k) >= 0;
         if (runs('A')) {
             //--- A: the hole is the way --------------------------------------------------
             const A = await trip('A', true, 150000);

@@ -19,10 +19,11 @@ const battle = (p) => p.evaluate(() => ({
 // `aGuardsFrom`-th on (from 0), else attacks the torso, or, at full strength, part `hit` once `hitAfter` grabs
 // have come, until it stops grabbing (`hitTurn`: the last turn A aimed at it). Each grab is the turn switch `sw` came on, with its
 // outcome line (GabText matching `gab`). Ends once `until` grabs have shown their outcome and `after` turns
-// past the hit have been chosen.
-async function grabFight(a, o) {
+// past the hit have been chosen. `mate`: A's companion, joining in its first turn and choosing after B's
+// character; once B has guarded a grab, the fight waits there while `drop` (in node) runs.
+async function grabFight(a, o, drop) {
     await a.evaluate((o) => {
-        const gx = window._grabs = { turns: [], grabs: [], coins: 0, coinUp: false };
+        const gx = window._grabs = { turns: [], grabs: [], mate: [], coins: 0, coinUp: false };
         const set = Game_Switches.prototype.setValue;
         gx.undo = [() => { Game_Switches.prototype.setValue = set; }];
         Game_Switches.prototype.setValue = function (id, v) {
@@ -50,7 +51,13 @@ async function grabFight(a, o) {
             if ($gameMessage.isBusy()) { Input._currentState.ok = !Input._currentState.ok; return; }
             const actor = BattleManager.actor(), act = BattleManager.inputtingAction();
             if (!BattleManager.isInputting() || !actor || !act || gx.last === act) return;
+            if (actor.actorId() === o.mate && gx.pause && !gx.dropped) return;
             gx.last = act;
+            if (o.mate && !$gameParty._actors.includes(o.mate)) {
+                $gameParty.addActor(o.mate);
+                const m = $gameActors.actor(o.mate);
+                m.addParam(0, 9000); m.addParam(2, -999); m.makeActions();
+            }
             $gameParty.members().forEach((m) => m.recoverAll());
             const brief = Coop.battleBrief(actor);
             if (actor.actorId() === 3) {
@@ -58,6 +65,10 @@ async function grabFight(a, o) {
                 const guard = !!brief.grab && !brief.guarded;
                 gx.turns.push({ turn: $gameTroop.turnCount() + 1, grab: brief.grab, guarded: brief.guarded, guard, pull: !!(part && part.pullsBack) });
                 Coop.applyPick(actor, guard ? { do: 'guard' } : { do: 'attack', target: 0 });
+                if (guard && o.mate && !gx.pause && $gameParty.battleMembers().some((m) => m.actorId() === o.mate)) { gx.pause = true; gx.dropTurn = $gameTroop.turnCount() + 1; }
+            } else if (actor.actorId() === o.mate) {
+                gx.mate.push({ turn: $gameTroop.turnCount() + 1, grab: brief.grab, guarded: brief.guarded });
+                Coop.applyPick(actor, brief.grab && !brief.guarded ? { do: 'guard' } : { do: 'attack', target: 0 });
             } else if (brief.grab && gx.grabs.length >= o.aGuardsFrom) {
                 Coop.applyPick(actor, { do: 'guard' });
             } else {
@@ -77,16 +88,21 @@ async function grabFight(a, o) {
         }
         BattleManager.setup(o.troop, true, true); SceneManager.push(Scene_Battle);
     }, o);
-    await waitFor(a, (o) => {
-        const gx = window._grabs, shown = gx.grabs.filter((g) => g.text);
-        const past = gx.pulled ? gx.turns.filter((t) => t.turn > gx.hitTurn).length : 0;
-        return shown.length >= o.until && past >= o.after || !(SceneManager._scene instanceof Scene_Battle) && gx.turns.length > 0;
-    }, 150000, 'the grabs of troop ' + o.troop, o);
+    for (;;) {
+        await waitFor(a, (o) => {
+            const gx = window._grabs, shown = gx.grabs.filter((g) => g.text);
+            const past = gx.pulled ? gx.turns.filter((t) => t.turn > gx.hitTurn).length : 0;
+            return gx.pause && !gx.dropped || shown.length >= o.until && past >= o.after || !(SceneManager._scene instanceof Scene_Battle) && gx.turns.length > 0;
+        }, 150000, 'the grabs of troop ' + o.troop, o);
+        if (!drop || !(await a.evaluate(() => window._grabs.pause && !window._grabs.dropped))) break;
+        await drop();
+        await a.evaluate(() => { window._grabs.dropped = true; });
+    }
     const out = await a.evaluate(() => {
         const gx = window._grabs;
         gx.undo.forEach((f) => f());
         if (SceneManager._scene instanceof Scene_Battle) BattleManager.abort();
-        return { turns: gx.turns, grabs: gx.grabs, hitTurn: gx.hitTurn || 0, coins: gx.coins, end: gx.end || '', sw: { 337: $gameSwitches.value(337) } };
+        return { turns: gx.turns, grabs: gx.grabs, mate: gx.mate, dropTurn: gx.dropTurn || 0, hitTurn: gx.hitTurn || 0, coins: gx.coins, end: gx.end || '', sw: { 337: $gameSwitches.value(337) } };
     });
     await waitFor(a, () => SceneManager._scene instanceof Scene_Map, 15000, 'A back from troop ' + o.troop);
     return out;
@@ -272,6 +288,20 @@ async function grabFight(a, o) {
         check('the tongue is marked as pulling back while out; hit, it pulls back',
             known.every((t) => t.pull === (t.grab === 'Snatch')) && known.some((t) => t.turn === snake.hitTurn + 1 && !t.grab),
             JSON.stringify(snake));
+
+        // His 10/28 worry about the partner: briefed after a player's guard, it trusts that guard, and that player's
+        // line drops before the turn plays. The guard is chosen on the owner's game and stays chosen: the leap misses
+        // all the same. A's companion (actor 2) chooses after B's character; once B guards a leap, B's line drops,
+        // then the companion is briefed and the turn plays. Last in this file: B stays offline.
+        await sleep(1000);
+        const dropB = async () => {
+            await b.evaluate(() => { Coop.connect = function () {}; Coop._ws.close(); });
+            await waitFor(a, (id) => !Coop.peers.has(id), 10000, 'A hears B is gone', s.idB);
+        };
+        const gone = await grabFight(a, { troop: 25, sw: 340, gab: 'leap', hit: 0, hitAfter: 99, aGuardsFrom: 99, until: 1, after: 0, mate: 2 }, dropB);
+        const leap = gone.grabs.find((g) => g.turn === gone.dropTurn), told = gone.mate.find((t) => t.turn === gone.dropTurn);
+        check('a guest guards, then their line drops before the turn plays: the partner briefed after is told someone guards, and the leap misses',
+            gone.dropTurn > 0 && told && !!told.guarded && leap && /evade/.test(leap.text) && gone.coins === 0, JSON.stringify(gone));
     } catch (e) { console.error(e); check('test ran to the end', false); }
     const code = check.finish(s ? [s.a, s.b] : []);
     if (s) await s.close();
