@@ -10,8 +10,9 @@ const check = checker();
 const wsl = (script) => spawnSync('wsl', ['-e', 'sh', '-c', script], { encoding: 'utf8', timeout: 120000 });
 const probe = wsl('echo ok');
 if (probe.error || !/ok/.test(probe.stdout || '')) {
-    console.log('PASS no WSL on this PC: skipped');
-    process.exit(0);
+    // A skip that printed PASS let the gate pass with play.sh untested (11/22 design review).
+    console.log('FAIL WSL did not answer: play.sh is untested. Start WSL (wsl -e echo ok) and run again.');
+    process.exit(1);
 }
 
 // This checkout, as WSL sees it (a worktree tests its own play.sh, not master's).

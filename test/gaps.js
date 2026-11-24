@@ -96,11 +96,18 @@ const resumeOffer = (page) => page.evaluate(() => { const b = document.getElemen
         check("B's save from another game is left alone; the shared save goes in the next slot", after[1] === 'another-game' && after[2] && after[2] !== 'another-game', JSON.stringify(slots) + ' -> ' + JSON.stringify(after));
 
         //--- the keys are explained ---
+        await b.setViewport({ width: 816, height: 624 }); // the game's own window, the smallest it runs in
         await b.keyboard.press('F1');
         await sleep(300);
-        const help = await b.evaluate(() => { const h = document.getElementById('coop-help'); const pad = h.querySelector('footer.pad'); return { shown: h.style.display !== 'none', text: pad.style.display === 'none' ? h.textContent.replace(pad.textContent, '') : h.textContent }; });
-        check('F1 explains how playing together works', help.shown && /Facing a partner: hand them something/.test(help.text) && /ritual circle/.test(help.text) && help.text.length < 760, help.text.length + ' chars');
+        const help = await b.evaluate(() => {
+            const h = document.getElementById('coop-help'), r = h.getBoundingClientRect();
+            const pad = h.querySelector('footer.pad');
+            return { shown: h.style.display !== 'none', text: pad.style.display === 'none' ? h.textContent.replace(pad.textContent, '') : h.textContent,
+                fits: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, size: [Math.round(r.width), Math.round(r.height)] };
+        });
+        check('F1 explains how playing together works, and fits an 816x624 window', help.shown && /Facing a partner: hand them something/.test(help.text) && /ritual circle/.test(help.text) && help.fits, help.text.length + ' chars, ' + help.size.join('x'));
         await b.keyboard.press('F1');
+        await b.setViewport({ width: 900, height: 700 });
 
         //--- G lays a bear trap, as the menu does ---
         await b.evaluate(() => { $gameParty.gainItem($dataItems[76], 2); window.TRAPS = 0; const r = Game_Temp.prototype.reserveCommonEvent; Game_Temp.prototype.reserveCommonEvent = function (id) { if (id === 55) TRAPS++; return r.apply(this, arguments); }; });

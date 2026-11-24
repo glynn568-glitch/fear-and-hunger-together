@@ -61,7 +61,10 @@
             // opening, a save loading, playing alone), which the lobby must not take for idling at the title.
             const scene = SceneManager._scene;
             const up = scene && !(scene instanceof Scene_Title || scene instanceof Scene_Boot || scene instanceof Scene_Load || scene instanceof Scene_Options) ? 1 : 0;
-            return Coop.isBot ? { st: 'title', m: 0, up: up, bot: 1 } : { st: 'title', m: 0, up: up };
+            // alone: refused into a game of its own (another run, or someone has this character). It is not on
+            // the way in, so the yard hounds and the lobby's call do not wait on it (11/22 review).
+            const alone = Coop.world.otherRun || Coop.world.sameAs ? 1 : 0;
+            return Coop.isBot ? { st: 'title', m: 0, up: up, alone: alone, bot: 1 } : { st: 'title', m: 0, up: up, alone: alone };
         }
         const leader = $gameParty.leader();
         const light = Coop.myLight ? Coop.myLight() : { lr: 0, lc: '' };
@@ -381,6 +384,14 @@
         if (e.code !== 'KeyF' || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
         if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
         if (followTarget()) Coop.follow();
+    });
+
+    // The server turned a friend away for a different game or a different Together (11/22). The host's page says so.
+    Coop.on('turned', function (msg) {
+        const text = String(msg.text || '').slice(0, 300);
+        if (!text) return;
+        if (Coop.toast) Coop.toast(text, 12000);
+        Coop.note(text);
     });
 
     // Say which kind of world this player has walked into: a save from

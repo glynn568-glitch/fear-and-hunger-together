@@ -8,15 +8,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALL = ['lint', 'server', 'join', 'hostrun', 'loot', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobbyroom', 'lobby', 'lobbysave', 'lobbysoak', 'ghost', 'crow', 'hounds', 'smashpit', 'crossed', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'pit', 'pitc', 'setup', 'plays', 'soak'];
+const ALL = ['lint', 'server', 'join', 'hostrun', 'loot', 'four', 'app', 'boot', 'title', 'intro', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobbyroom', 'lobby', 'lobbysave', 'lobbyswitch', 'lobbysoak', 'doorway', 'inputs', 'olderjoin', 'tunneldrop', 'uifix', 'roomfix', 'ghost', 'crow', 'hounds', 'houndhold', 'smashpit', 'crossed', 'holds', 'refight', 'reports', 'scenes', 'slips', 'lift', 'walk', 'meterline', 'transfer', 'follow', 'paste', 'differs', 'strange', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'humans', 'publish', 'pointer', 'pad', 'deck', 'import', 'buckman', 'oldsaves', 'party', 'carry', 'followers', 'battle', 'encounter', 'death', 'ending', 'endpartner', 'mahabre', 'sleep', 'rules', 'traps', 'hunger', 'trade', 'cast', 'talk', 'chat', 'scroll', 'softlocks', 'doors', 'gaps', 'lifecycle', 'resume', 'stamps', 'reconnect', 'quietline', 'bot', 'ai', 'plain', 'minds', 'codex', 'ai-resume', 'partner', 'pit', 'pitc', 'setup', 'plays', 'soak'];
 // The suites where how the players are connected can change the outcome: joining, moving
 // between maps, fights and their picture, dropped lines, what is carried over the line.
 // The gate runs every suite as shipped, and only these in its other ways of connecting
 // (FH_TEST_LINE=1). The rest (the partner's own play, menus, the launcher, start-up) do the
 // same thing on any line: four full passes of them were an hour of the gate's 80 minutes.
-const LINE = new Set(['join', 'hostrun', 'loot', 'four', 'title', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobby', 'lobbysave', 'lobbysoak', 'ghost', 'crow', 'hounds', 'smashpit', 'crossed', 'holds', 'refight', 'scenes', 'lift',
+const LINE = new Set(['join', 'hostrun', 'loot', 'four', 'title', 'two', 'events', 'kept', 'loadfade', 'frontdoor', 'lobby', 'lobbysave', 'lobbyswitch', 'lobbysoak', 'doorway', 'olderjoin', 'ghost', 'crow', 'hounds', 'houndhold', 'smashpit', 'crossed', 'holds', 'refight', 'scenes', 'lift',
     'meterline', 'transfer', 'follow', 'paste', 'differs', 'midfight', 'dropfight', 'slowlink', 'deafwatch', 'import', 'buckman', 'party', 'carry', 'followers', 'battle',
-    'encounter', 'death', 'ending', 'trade', 'cast', 'talk', 'chat', 'doors', 'lifecycle', 'resume', 'reconnect', 'quietline', 'soak']);
+    'encounter', 'death', 'ending', 'trade', 'cast', 'talk', 'chat', 'doors', 'lifecycle', 'resume', 'stamps', 'reconnect', 'quietline', 'soak']);
 for (const n of LINE) if (ALL.indexOf(n) < 0) throw new Error('LINE names a suite that is not in ALL: ' + n);
 // The public copy has no oldsaves (it loads real players' saves, kept private).
 const names = process.argv.slice(2).length ? process.argv.slice(2) : ALL.filter((n) => n === 'lint' || fs.existsSync(path.join(__dirname, n + '.js'))).filter((n) => !process.env.FH_TEST_LINE || LINE.has(n));
@@ -87,8 +87,9 @@ function runOne(name, again) {
     fs.mkdirSync(path.dirname(TIMES), { recursive: true });
     fs.writeFileSync(TIMES, JSON.stringify(times, null, 1));
     // Alone, three times: passing all three means the suite is flaky under load, not that
-    // the game is broken. It is named, to be fixed, and does not fail the run (11/11: one
-    // flake used to cost the whole gate again, 80 minutes a time; 0.1.9 took four runs).
+    // the game is broken. It is named, and the run stays green so the name is known
+    // (11/11: one flake used to cost the whole gate again, 80 minutes a time). The release
+    // gate blocks on it (his ruling 11/22): a flaky suite does not ship.
     const flaky = [];
     for (const name of failed) {
         let passes = 0;

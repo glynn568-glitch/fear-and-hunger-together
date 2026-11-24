@@ -20,7 +20,7 @@
     Coop.padUsed = false; // the last thing pressed was on a controller
     window.addEventListener('keydown', function (e) { if (e.isTrusted) Coop.padUsed = false; }, true);
     // The key or button to name in a prompt: Coop.keyName('F') -> 'R3' on a controller.
-    const NAMES = { F: 'R3', Y: 'Start', R: 'RT', Esc: 'B', Tab: 'LT', F1: 'View' };
+    const NAMES = { F: 'R3', Y: 'Start', R: 'RT', Esc: 'B', Tab: 'LT', F1: 'View', Enter: 'A' };
     Coop.keyName = function (key) { return Coop.padUsed && NAMES[key] ? NAMES[key] : key; };
 
     function send(type, k, target, extra) {
@@ -45,8 +45,12 @@
         const el = document.activeElement;
         return el && el.tagName === 'INPUT' && el.closest('#coop-chat');
     }
-    // While a panel or the chat line has the controller, the game does not.
-    Coop.padHeld = function () { return !!(panel() || chatOpen()); };
+    function nameOpen() {
+        const el = document.activeElement;
+        return !!(el && el.tagName === 'INPUT' && el.closest('#coop-name'));
+    }
+    // While a panel, the chat line or the name box has the controller, the game does not.
+    Coop.padHeld = function () { return !!(panel() || chatOpen() || nameOpen()); };
 
     // Each pad on its own (a Deck with a controller plugged in has two).
     const pads = new Map(); // index -> { was, chord, sent: Map(button -> key), masked: Set(button) }
@@ -93,7 +97,7 @@
 
     function handle(st, now, down, up) {
         const box = panel();
-        if (box || chatOpen()) releaseAll(st);
+        if (box || chatOpen() || nameOpen()) releaseAll(st);
         if (box) {
             const list = controls(box);
             const at = list.indexOf(document.activeElement);
@@ -110,6 +114,12 @@
             return;
         }
         if (chatOpen()) {
+            if (down(A)) send('keydown', ['Enter', 13, 'Enter'], document.activeElement);
+            if (down(B)) send('keydown', ['Escape', 27, 'Escape'], document.activeElement);
+            return;
+        }
+        if (nameOpen()) {
+            // The title will not start without a name, and this box had no pad way out (11/22).
             if (down(A)) send('keydown', ['Enter', 13, 'Enter'], document.activeElement);
             if (down(B)) send('keydown', ['Escape', 27, 'Escape'], document.activeElement);
             return;

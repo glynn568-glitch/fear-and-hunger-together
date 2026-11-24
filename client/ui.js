@@ -117,26 +117,57 @@
     Coop.on('refused', function (msg) {
         Coop.toast(msg.text, 1e9);
     });
+    // A dead host link keeps retrying. Once it has been unreachable for about 30 seconds, say once
+    // that the link may have changed. The clock starts at the first hostdown and ends when the host
+    // answers (online): a joiner's page reconnects to its own server on every try, which is not that (11/22).
+    const HOST_LINK = 'The host\'s link may have changed. Ask them for it again: Together, Leave, then Join with the new link.';
+    let hostDownSince = 0, hostLinkSaid = false, hostLinkTimer = 0;
+    function sayHostLink() {
+        if (hostLinkSaid || !hostDownSince) return;
+        hostLinkSaid = true;
+        Coop.note(HOST_LINK);
+        Coop.toast(HOST_LINK, 20000);
+    }
     Coop.on('hostdown', function () {
+        if (!hostDownSince) {
+            hostDownSince = Date.now();
+            clearTimeout(hostLinkTimer);
+            hostLinkTimer = setTimeout(sayHostLink, 30000);
+        }
+        if (hostLinkSaid) return;
         Coop.toast('Cannot reach the host. Trying again...', 4000);
+    });
+    Coop.on('online', function () {
+        hostDownSince = 0;
+        hostLinkSaid = false;
+        clearTimeout(hostLinkTimer);
     });
 
     // Saves are filed under the player's name, so a game cannot start without one.
+    // A click on New Game or Continue takes the name sitting in the box. Blur would, but the click
+    // can land before the blur, and the game then buzzes an empty name (11/22).
+    function commitName() {
+        const typed = String(nameInput.value || '').trim();
+        if (typed) Coop.setName(typed);
+        return !!Coop.name;
+    }
     const _commandNewGame = Scene_Title.prototype.commandNewGame;
     Scene_Title.prototype.commandNewGame = function () {
-        if (!Coop.name) return needName(this);
+        if (!commitName()) return needName(this);
         _commandNewGame.call(this);
     };
     const _commandContinue = Scene_Title.prototype.commandContinue;
     Scene_Title.prototype.commandContinue = function () {
-        if (!Coop.name) return needName(this);
+        if (!commitName()) return needName(this);
         _commandContinue.call(this);
     };
     function needName(scene) {
         SoundManager.playBuzzer();
         nameInput.classList.add('need');
         nameInput.focus();
-        Coop.toast('Type a name first (bottom left).');
+        Coop.toast(Coop.padUsed
+            ? 'Type a name first (bottom left). Steam+X opens the keyboard on a Steam Deck.'
+            : 'Type a name first (bottom left).');
         scene._commandWindow.activate();
     }
 
@@ -188,17 +219,21 @@
         ['Enter', 'Facing a partner: hand them something, use or cast on them, or join their fight or party.'],
         ['F', 'Follow a partner who has just left the room.'],
         ['Y', 'Talk. AI partners take orders.'],
-        ['F8', 'Host: call an AI partner in, or send it home.'],
+        ['F8', 'Host: call an AI partner in, or send it home. Together on the title does this too.'],
         ['Fights', 'Whoever touches the enemy starts it and keeps what it drops. Anyone near joins. You command your own.'],
         ['Bags', ''], // the run's loot rule, filled in as the panel opens
         ['Party', 'Four characters between you.'],
         ['Death', 'You watch. A partner can call you back at a ritual circle. Hold Esc to let the character go.'],
-        ['Beds', 'Sleeping saves everyone. Another day, all press Continue.'],
+        ['Beds', 'Sleeping saves everyone. Another day, pick the run and your save at the title.'],
         ['Crash', 'Restart and press R at the title.'],
     ];
-    help.innerHTML = '<h1>Playing together</h1><dl>' + HELP.map((row) => '<dt>' + row[0] + '</dt><dd data-row="' + row[0] + '">' + row[1] + '</dd>').join('') + '</dl>'
+    help.innerHTML = '<h1>Playing together</h1><dl>' + HELP.map((row) => '<dt data-key="' + row[0] + '">' + row[0] + '</dt><dd data-row="' + row[0] + '">' + row[1] + '</dd>').join('') + '</dl>'
         + '<footer class="pad"><b>RT</b> torch &nbsp;&middot;&nbsp; <b>L3</b> phase &nbsp;&middot;&nbsp; <b>LT</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>R3</b> follow &nbsp;&middot;&nbsp; <b>Start</b> talk &nbsp;&middot;&nbsp; <b>View</b> this &nbsp;&middot;&nbsp; <b>View+Start</b> held: unstuck</footer>'
-        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';
+        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap, also from the bag &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';
+    // The key column follows the last device, the way prompts do. F8 and G have no pad button (11/22).
+    function fillKeys() {
+        for (const dt of help.querySelectorAll('dt[data-key]')) dt.textContent = Coop.keyName(dt.getAttribute('data-key'));
+    }
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(help));
     // The loot row follows the run's rule, an open panel too.
     function fillBags() {
@@ -218,6 +253,7 @@
         const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
         help.querySelector('footer.pad').style.display = pads.length ? '' : 'none';
         fillBags();
+        fillKeys();
         help.style.display = help.style.display === 'none' ? '' : 'none';
     });
 
@@ -245,6 +281,7 @@
         nameBox.style.display = onTitle ? '' : 'none';
         const rows = [];
         if (!Coop.connected) rows.push('<div class="row bad">co-op: reconnecting...</div>');
+        if (hostLinkSaid) rows.push('<div class="row bad">' + esc(HOST_LINK) + '</div>');
         if (Coop.world.sameAs) rows.push('<div class="row bad">playing alone: ' + esc(Coop.world.sameAs) + ' has this character</div>');
         if (Coop.world.otherRun) rows.push('<div class="row bad">playing alone: the others are in a different run</div>');
         if (Coop.world.hostWait && !onTitle) rows.push('<div class="row bad">waiting for ' + esc(Coop.world.hostWait) + ' to start or continue a game</div>');

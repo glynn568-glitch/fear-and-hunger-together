@@ -369,4 +369,30 @@
         Ev._mapId = 0; // forces a fresh record on the first update
         Ev._touch.clear();
     };
+
+    // The yard's bark timer is each machine's own (Map074 hound_TIMER, variable 211):
+    // one more every 10 frames, and at 250 it turns HOUNDS_ARE_COMING (1781) on, about
+    // 42 s. While anyone is still on the way in, hold it on every page of the run. A
+    // hound reached the host while a friend sat through the opening (11/22). The same
+    // variable arms the forest hounds later; holding it does not touch them otherwise.
+    const BARK = 211;
+    Ev.barkHeld = function () {
+        const L = Coop.lobby;
+        if (L && ((L.line && L.line.length) || (L.held && L.held.length))) return true;
+        if (!Coop.others) return false;
+        for (const p of Coop.others()) {
+            if (p.alone) continue; // playing a game of their own: not coming in
+            // Map 10 is the opening. Before the run: a game is up and the world is not joined.
+            if (p.m === 10) return true;
+            if ((p.st || 'title') === 'title' && p.up) return true;
+        }
+        return false;
+    };
+    const _barkSet = Game_Variables.prototype.setValue;
+    Game_Variables.prototype.setValue = function (id, value) {
+        // 100 and 180 (yard) and 220 (forest) are bark lines that then add one.
+        // Holding that exact count would say the line again every frame (11/22).
+        if (id === BARK && value > (this._data[id] || 0) && Ev.barkHeld() && [100, 180, 220].indexOf(this._data[id] || 0) < 0) return;
+        _barkSet.call(this, id, value);
+    };
 })();

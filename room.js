@@ -19,6 +19,7 @@ const TITLE_GHOST = Number(process.env.FH_TITLE_GHOST) || 10000; // ms a player 
 const LINE_TITLE = Number(process.env.FH_LINE_TITLE) || 15000; // ms someone called in may still say "title" before the call is dropped
 const LINE_HOLD = Number(process.env.FH_LINE_HOLD) || 30000; // ms the call and the character of someone whose line dropped are kept for them
 const CHARACTERS = [661, 662, 663, 664]; // the switch the opening sets for each protagonist (client/state.js STARTED_AS)
+const CHARACTER_NAMES = { 661: 'Cahara', 662: "D'arce", 663: 'Enki', 664: 'Ragnvaldr' };
 const RATE = Number(process.env.FH_RATE || 0);
 const JITTER = Number(process.env.FH_JITTER || 0);
 const METER_LOG_MS = Number(process.env.FH_METER_LOG_MS) || 60000; // how often a player's meter goes in the log
@@ -71,12 +72,16 @@ class Room {
 
     persist() {
         if (!this.dirty || !this.runId) return;
-        this.dirty = false;
         const dir = this.runDir(this.runId);
-        fs.mkdirSync(dir, { recursive: true });
         const file = path.join(dir, 'world.json');
-        fs.writeFileSync(file + '.tmp', JSON.stringify(this.world));
-        fs.renameSync(file + '.tmp', file);
+        // A throw here used to kill the process: nothing handles uncaughtException (11/22).
+        // Left dirty, so the next pass tries again.
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(file + '.tmp', JSON.stringify(this.world));
+            fs.renameSync(file + '.tmp', file);
+            this.dirty = false;
+        } catch (e) { console.error('could not save the world: ' + (e && e.message)); }
     }
 
     readWorld(runId, stamp) {
@@ -96,7 +101,9 @@ class Room {
         const peer = { ws, id, name: 'Player ' + id, mapId: 0, live: false, canOwn: false, host: !!host, at: Date.now(), heard: 0 };
         this.peers.set(id, peer);
         console.log('player ' + id + ' connected' + (host ? ' (this PC)' : ''));
-        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules });
+        // now is this machine's clock. A friend receives this same hello through their own server,
+        // and a bed is numbered from it, so a page whose clock is wrong still sorts (11/22).
+        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules, now: Date.now() });
         this.broadcast({ t: 'join', id, name: peer.name, host: peer.host }, id);
         ws.on('message', (raw, isBinary) => {
             peer.heard = Date.now();
@@ -104,7 +111,11 @@ class Room {
             let msg;
             try { msg = JSON.parse(raw); } catch (e) { return; }
             if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
-            try { this.onMessage(peer, msg); } catch (e) { console.error('bad message from player ' + peer.id, e.message); }
+            try { this.onMessage(peer, msg); } catch (e) {
+                console.error('bad message from player ' + peer.id, e.message);
+                // An ask that throws never answered, and the page stayed "entering" alone (11/22).
+                if (msg.t === 'world?') this.send(peer, { t: 'worldfail', why: String(e && e.message || 'failed').slice(0, 180) });
+            }
             this.tellDecider();
         });
         ws.isAlive = true;
@@ -361,18 +372,19 @@ class Room {
         return this.lobby.line.has(peer.name.toLowerCase());
     }
 
-    // The run someone at the title would come into: the host's choice, or the one under way.
+    // The run someone at the title would come into: the host's choice, or the one under way (its id
+    // either way, so their page tells its saves of this run from those of other runs).
     lobbyRun(peer) {
         if (!this.founded) return this.lobby.run;
         const run = this.runFor(peer);
-        return run ? { kind: 'save', runId: run.runId, stamp: run.stamp } : { kind: 'new' };
+        return run ? { kind: 'save', runId: run.runId, stamp: run.stamp } : { kind: 'new', runId: this.runId };
     }
 
-    // What someone would come in as: the character they picked, else their own save of the run.
+    // What someone would come in as: the character they picked, else the save they would load (their
+    // own of this run, or one of another run they chose to bring: his ruling 11/21, no save is blocked).
     lobbyChar(peer) {
         const lob = peer.lob || {};
-        const run = this.lobbyRun(peer);
-        return lob.pick || (run && run.kind === 'save' ? lob.has : 0) || 0;
+        return lob.pick || lob.has || 0;
     }
 
     // A Ready or Join sent with the pick it follows stands only if the room took that pick: one
@@ -425,16 +437,39 @@ class Room {
         }
     }
 
-    // A person's word in the lobby. Each case is one action of the spec, with its guards.
+    // Who has a character here: someone at the title who would come in as it, someone in the run, or a held call.
+    whoHas(char, except) {
+        for (const p of this.peers.values()) {
+            if (p === except || !p.named) continue;
+            if (p.live && Array.isArray(p.ini) && p.ini.indexOf(char) >= 0) return p.name;
+            if (!p.live && this.lobbyChar(p) === char) return p.name;
+        }
+        for (const hold of this.lobby.held.values()) if (hold.char === char) return hold.name;
+        return 'someone';
+    }
+
+    // A person's word in the lobby. Each case is one action of the spec, with its guards. A word the
+    // room does not take is answered with the reason (lobbyno), and the host's log keeps it: refusals
+    // nobody saw were both of 11/21's "nothing works" moments.
     lobbySay(peer, msg) {
         if (!peer.named || this.isBot(peer)) return;
         const host = this.hostPerson();
         const lob = peer.lob || (peer.lob = {});
         const character = (v) => (CHARACTERS.indexOf(v) >= 0 ? v : 0);
         const others = this.people().filter((p) => p !== peer);
+        const no = (why) => {
+            console.log('lobby: ' + peer.name + "'s " + msg.do + ' refused: ' + why);
+            this.send(peer, { t: 'lobbyno', do: msg.do, why });
+        };
+        const taken = (char) => (CHARACTER_NAMES[char] || 'That character') + ' is taken by ' + this.whoHas(char, peer) + '.';
+        const notAtTitle = 'Your game is still running. Try again once you are back at the title.';
+        const onTheWay = 'Someone is already on the way in. Wait until they are in.';
         switch (msg.do) {
         case 'run': { // ChooseRun: the host says what this night is, and nobody stays ready
-            if (peer !== host || this.founded || this.lobby.line.size || !this.atTitle(peer)) break;
+            if (peer !== host) { no('Only the host chooses the run.'); break; }
+            if (this.founded) { no('A run is already under way.'); break; }
+            if (this.lobby.line.size) { no(onTheWay); break; }
+            if (!this.atTitle(peer)) { no(notAtTitle); break; }
             this.lobbyReset();
             const run = msg.run || {};
             if (run.kind === 'new' && character(msg.pick)) {
@@ -447,7 +482,7 @@ class Room {
             this.trace('ChooseRun', peer, { run: this.lobby.run ? this.lobby.run.kind : 'none', c: lob.pick || lob.has || 0 });
             break;
         }
-        case 'has': { // which character this person's own save of the run is
+        case 'has': { // which character this person's own save is (their page works it out: no answer)
             const has = character(msg.has);
             if (has === (lob.has || 0) || peer.live || this.inLine(peer)) break;
             // Carrying a save on, the host is who the save they chose is ('run' said it).
@@ -460,11 +495,14 @@ class Room {
         }
         case 'pick': { // Pick: a character nobody else here has, and nobody in the run
             const run = this.lobbyRun(peer);
-            if (!run || !this.atTitle(peer) || this.inLine(peer) || lob.ready) break;
-            if (peer === host && run.kind !== 'new') break; // carrying a save on, the host is who that save is
+            if (!run) { no('The host has not chosen the run yet.'); break; }
+            if (!this.atTitle(peer)) { no(notAtTitle); break; }
+            if (this.inLine(peer)) { no('You are already on your way in.'); break; }
+            if (lob.ready) { no('You have chosen already. Choose again once the room has caught up.'); break; }
+            if (peer === host && run.kind !== 'new') { no('You are carrying your save on, so you come in as who it is.'); break; }
             const want = character(msg.pick);
-            if (!want && peer === host) break;
-            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) break;
+            if (!want && peer === host) { no('Choose a character.'); break; }
+            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) { no(taken(want)); break; }
             lob.pick = want;
             this.trace('Pick', peer, { c: want });
             break;
@@ -472,30 +510,43 @@ class Room {
         case 'ready': { // Ready, Unready
             if (peer === host) break;
             if (!msg.on) {
-                if (!lob.ready || !this.atTitle(peer) || this.inLine(peer)) break;
+                if (!lob.ready || this.inLine(peer)) break;
+                if (!this.atTitle(peer)) { no(notAtTitle); break; }
                 lob.ready = false;
                 this.trace('Unready', peer);
                 break;
             }
-            if (lob.ready || lob.away || this.founded || this.lobby.line.size || !this.lobby.run || !this.atTitle(peer)) break;
+            if (lob.ready) break;
+            // The pick this follows was refused and said why; this one goes with it.
             if (!this.asPicked(lob, msg)) break;
+            if (lob.away) { no('You were away. Press any key and try again.'); break; }
+            if (this.founded) { no('The run is already under way: join it instead.'); break; }
+            if (this.lobby.line.size) { no(onTheWay); break; }
+            if (!this.lobby.run) { no('The host has not chosen the run yet.'); break; }
+            if (!this.atTitle(peer)) { no(notAtTitle); break; }
             const mine = this.lobbyChar(peer);
+            if (!mine) { no('Choose who you come in as first.'); break; }
             // Theirs alone: not the host's, and not anyone's who is already ready.
-            if (!mine || others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) break;
+            if (others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) { no(taken(mine)); break; }
             lob.ready = true;
             this.trace('Ready', peer);
             break;
         }
-        case 'away': // GoAway, Back: five minutes without a key at the title
+        case 'away': // GoAway, Back: five minutes without a key at the title (the page says it: no answer)
             if (!msg.on) { if (lob.away) { lob.away = false; this.trace('Back', peer); } break; }
             if (peer === host || lob.away || lob.ready || !this.atTitle(peer)) break;
             lob.away = true;
             this.trace('GoAway', peer);
             break;
         case 'start': { // Start: only with every person here, at the title and not away, ready
-            if (peer !== host || this.founded || this.lobby.line.size || !this.lobby.run) break;
-            if (!this.atTitle(peer) || !this.lobbyChar(peer)) break;
-            if (others.some((p) => this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready))) break;
+            if (peer !== host) { no('Only the host starts the run.'); break; }
+            if (this.founded) { no('The run is already under way.'); break; }
+            if (this.lobby.line.size) { no(onTheWay); break; }
+            if (!this.lobby.run) { no('Choose the run first.'); break; }
+            if (!this.atTitle(peer)) { no(notAtTitle); break; }
+            if (!this.lobbyChar(peer)) { no('Choose who you come in as first.'); break; }
+            const waiting = others.filter((p) => this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready));
+            if (waiting.length) { no('Waiting on ' + waiting.map((p) => p.name).join(' and ') + ' to choose who they come in as.'); break; }
             const called = [peer].concat(others.filter((p) => p.lob && p.lob.ready));
             for (const p of called) this.lobby.line.add(p.name.toLowerCase());
             this.trace('Start', peer);
@@ -503,9 +554,15 @@ class Room {
             break;
         }
         case 'join': { // Join: into a run under way
-            if (!this.founded || !this.atTitle(peer) || this.inLine(peer) || lob.away || !this.asPicked(lob, msg)) break;
+            if (this.inLine(peer)) break;
+            // The pick this follows was refused and said why; this one goes with it.
+            if (!this.asPicked(lob, msg)) break;
+            if (!this.founded) { no('The run has not started yet.'); break; }
+            if (!this.atTitle(peer)) { no(notAtTitle); break; }
+            if (lob.away) { no('You were away. Press any key and try again.'); break; }
             const mine = this.lobbyChar(peer);
-            if (!mine || this.lobbyBusy().has(mine)) break;
+            if (!mine) { no('Choose who you come in as first.'); break; }
+            if (this.lobbyBusy().has(mine)) { no(taken(mine)); break; }
             this.lobby.line.add(peer.name.toLowerCase());
             this.trace('Join', peer);
             this.trace('BeginLoad', peer);
@@ -568,12 +625,30 @@ class Room {
     // once the room has done it, with what the room then holds.
     trace(event, peer, more) {
         if (!process.env.FH_LOBBY_TRACE) return;
-        const as = (p) => (this.isBot(p) ? 'Partner' : p.name);
+        // The spec knows people, not names: someone renamed mid-run (test/lobbyroom.js) keeps the first name they
+        // were seen with, and a tab back after its line dropped is the person its token first came as. A second
+        // page on a token whose first is still connected (a duplicated tab, a reload not yet noticed) is someone
+        // else to the spec, under its own name (11/24).
+        const names = this.traceNames || (this.traceNames = new Map());
+        const first = (name, token) => {
+            if (token && !names.has(token)) names.set(token, name);
+            return (token && names.get(token)) || name;
+        };
+        const as = (p) => {
+            if (this.isBot(p)) return 'Partner';
+            if (!p.traceAs) {
+                const prior = p.token && names.get(p.token);
+                const taken = prior && [...this.peers.values()].some((q) => q !== p && q.traceAs === prior);
+                p.traceAs = prior && !taken ? prior : p.name;
+                if (p.token && !prior) names.set(p.token, p.name);
+            }
+            return p.traceAs;
+        };
         const named = [...this.peers.values()].filter((p) => p.named);
         const now = {
             founded: this.founded,
             run: this.lobby.run ? this.lobby.run.kind : 'none',
-            line: named.filter((p) => this.inLine(p)).map(as).concat([...this.lobby.held.values()].map((hold) => hold.name)).sort(),
+            line: named.filter((p) => this.inLine(p)).map(as).concat([...this.lobby.held.values()].map((hold) => first(hold.name, hold.token))).sort(),
             ready: named.filter((p) => p.lob && p.lob.ready).map(as).sort(),
             ins: named.filter((p) => p.live).map(as).sort(),
         };
@@ -729,7 +804,11 @@ class Room {
             if (clash) {
                 if (!token || clash.token !== token) { this.send(peer, { t: 'nametaken', name }); break; }
                 // The same browser tab coming back before its old line was noticed dead.
-                clash.ws.terminate();
+                // terminate() in this turn drops the last bytes, and the page opens the line again (11/22).
+                this.send(clash, { t: 'replaced' });
+                const old = clash.ws;
+                if (old.readyState === 1) old.close(4003, 'replaced');
+                else try { old.terminate(); } catch (e) { /* already gone */ }
                 this.drop(clash, 'its own tab came back');
             }
             const fresh = !peer.named;
@@ -772,6 +851,8 @@ class Room {
             break;
         }
         case 'world?': {
+            // FH_TEST_BOOM: the roomfix suite proves a thrown ask is answered. A player's message cannot set this.
+            if (process.env.FH_TEST_BOOM && msg.how === 'boom') throw new Error('boom');
             let founded = false;
             const who = peer.name.toLowerCase();
             const how = ['new', 'load', 'park', 'again'].indexOf(msg.how) >= 0 ? msg.how : 'new';
@@ -799,9 +880,13 @@ class Room {
                 && (p.live && p.ini ? p.ini.some((n) => ini.indexOf(n) >= 0) : !called && this.inLine(p) && ini.indexOf(this.lobbyChar(p)) >= 0))
                 || (!called && [...this.lobby.held.values()].find((hold) => ini.indexOf(hold.char) >= 0));
             if (twin) { this.send(peer, { t: 'worldclash', name: twin.name }); break; }
-            // Someone loading a save from another run does not get to pour
-            // it into the one being played.
-            if (this.founded && msg.runId && String(msg.runId) !== this.runId) {
+            // A save of another run (his ruling 11/21: the host's run takes priority, nobody's save is blocked):
+            // that character comes in as saved, into this run's world, as someone arriving ('join' below); the
+            // other run's story stays behind. An AI partner's body from another run is not brought: it comes in
+            // as someone new (partners.js, keepHome).
+            // A save made outside any run (alone, or in an opening before the world was joined) is another run's too.
+            const other = this.founded && (how === 'load' ? String(msg.runId || '') !== this.runId : !!msg.runId && String(msg.runId) !== this.runId);
+            if (other && this.isBot(peer)) {
                 this.send(peer, { t: 'worldbusy', runId: this.runId });
                 break;
             }
@@ -817,7 +902,7 @@ class Room {
             // as they last were, provided that was earlier.
             let behind = false;
             const stamp = Number(msg.stamp) || 0;
-            if (this.founded && how === 'load' && msg.runId && this.baseStamp && stamp !== this.baseStamp) {
+            if (this.founded && how === 'load' && !other && msg.runId && this.baseStamp && stamp !== this.baseStamp) {
                 const have = Array.isArray(msg.have) ? msg.have.map(Number) : [];
                 const swap = have.indexOf(this.baseStamp) >= 0;
                 if (swap || stamp > this.baseStamp) {
@@ -890,7 +975,8 @@ class Room {
             // The host's game says what the run's options are.
             // Told to the one entering here, and to everyone already in if they moved.
             if (peer === this.hostPerson() && this.takeRules(msg.rules)) this.broadcast({ t: 'rules', rules: this.rules }, peer.id);
-            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, newer, rules: this.rules });
+            this.send(peer, { t: 'world', runId: this.runId, world: this.world, founded, mode, stamp: this.baseStamp, by: this.baseBy, behind, other, newer, rules: this.rules });
+            if (other) console.log(peer.name + ' brought a character from another run (' + String(msg.runId).slice(0, 40) + ') into this one');
             this.traceWrite('Asked', peer, { mode });
             if (founded) for (const p of this.peers.values()) if (p !== peer) this.send(p, { t: 'run', run: this.runFor(p) });
             this.deliverOwed(peer);
@@ -920,7 +1006,8 @@ class Room {
             } else peer.titleSince = 0;
             // Called in, and still at the title a while later: their game never started. The call
             // is dropped, so nobody (a partner, or everyone if this is the host) waits on them for ever.
-            if (peer.named && !peer.live && msg.st === 'title' && !msg.up && this.inLine(peer)) {
+            // Playing alone after a refusal (alone) is not coming in either, though their game runs.
+            if (peer.named && !peer.live && msg.st === 'title' && (!msg.up || msg.alone) && this.inLine(peer)) {
                 if (!peer.lineSince) peer.lineSince = Date.now();
                 else if (Date.now() - peer.lineSince > LINE_TITLE) {
                     peer.lineSince = 0;
@@ -1033,7 +1120,12 @@ class Room {
                 fs.mkdirSync(path.join(this.saveDir, 'parked'), { recursive: true });
                 // Sync: a send-home closes the page as soon as this is answered, and an async write can lose the race.
                 fs.writeFileSync(this.parkFile(peer.name), JSON.stringify({ at: Date.now(), runId: String(msg.runId || ''), blob: msg.blob }));
-            } catch (e) { console.log('park failed for ' + peer.name + ': ' + (e && e.message)); break; }
+            } catch (e) {
+                const why = writeWhy(e);
+                console.log('park failed for ' + peer.name + ': ' + (e && e.message));
+                this.send(peer, { t: 'parkno', why });
+                break;
+            }
             this.send(peer, { t: 'parkok', n: msg.n | 0 });
             break;
         case 'park?': {
@@ -1089,8 +1181,17 @@ class Room {
         case 'savepoint': { // freeze a copy of the world next to a save
             if (!this.runId || !peer.live) break;
             const dir = this.runDir(this.runId);
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(path.join(dir, `world@${Number(msg.stamp)}.json`), JSON.stringify(this.world));
+            try {
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, `world@${Number(msg.stamp)}.json`), JSON.stringify(this.world));
+            } catch (e) {
+                // A save of this bed would carry on into an empty world (readWorld finds no world@ for it):
+                // nobody saves alongside, and the saver is told to save again (11/22 review).
+                this.dirty = true;
+                console.error('could not keep the save: ' + (e && e.message));
+                this.send(peer, { t: 'savefail', stamp: Number(msg.stamp), why: writeWhy(e) });
+                break;
+            }
             this.persist();
             this.broadcast(msg, peer.id);
             // Each player from another PC keeps this copy too, so any of them
@@ -1100,8 +1201,10 @@ class Room {
             break;
         }
         case 'demote':
-            fs.mkdirSync(this.saveDir, { recursive: true });
-            fs.appendFileSync(path.join(this.saveDir, 'demoted.log'), `${new Date().toISOString()} ${msg.key}\n`);
+            try {
+                fs.mkdirSync(this.saveDir, { recursive: true });
+                fs.appendFileSync(path.join(this.saveDir, 'demoted.log'), `${new Date().toISOString()} ${msg.key}\n`);
+            } catch (e) { console.error('could not write the demote log: ' + (e && e.message)); }
             this.broadcast(msg, peer.id);
             break;
         case 'to': { // direct message to one peer
@@ -1178,6 +1281,16 @@ function meterLine(s) {
 
 // A world write is [kind, key, value]: a switch or variable id, a self
 // switch key like "12,34,A", or a kept event "map,event" -> [x, y, direction].
+// What a player is told when a save or a park cannot be written. The log keeps the technical line
+// (it would name a folder on this PC). server.js uses it for save files too.
+function writeWhy(e) {
+    const code = e && e.code;
+    if (code === 'ENOSPC') return 'the disk is full';
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return 'the save folder cannot be written';
+    if (code === 'EEXIST' || code === 'ENOTDIR' || code === 'EISDIR') return 'the save folder could not be made';
+    return 'the save could not be written';
+}
+
 function validWrite(row) {
     if (!Array.isArray(row) || row.length !== 3) return false;
     const [kind, key, value] = row;
@@ -1191,4 +1304,4 @@ function validWrite(row) {
     return typeof value === 'number' || (kind === 'va' && typeof value === 'string' && value.length < 2000);
 }
 
-module.exports = { Room };
+module.exports = { Room, writeWhy };

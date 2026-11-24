@@ -37,6 +37,8 @@ function alive(pid) {
     try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
+const GPU_DIED = 'chrome: its GPU process died';
+
 async function launch() {
     // Profiles left by earlier runs (they exit too soon to remove their own);
     // one still in use by a running test cannot be removed and is skipped.
@@ -58,8 +60,28 @@ async function launch() {
             ...gl, '--ignore-gpu-blocklist',
             // Linux under WSL runs everything as root, where Chrome will not start sandboxed.
             ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
-            '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
+            '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
+            // Chrome's own warnings and errors, read below.
+            '--enable-logging=stderr', '--log-level=1',
+            // Chrome 158 (installed here 11/23) draws its pages through Skia Graphite on Dawn/D3D. From then on
+            // its GPU process died now and then mid-gate (exit 34, the driver lost the device), 7 times in two
+            // gates, never before. This is the drawing every earlier gate had; the game's WebGL is unchanged.
+            '--disable-features=SkiaGraphite'],
         userDataDir: profile,
+    });
+    // What Chrome says about its GPU process goes into every page's log. On 11/24 that process died
+    // in the middle of gates 1 and 2: every page of its browser lost WebGL at once, the game stopped on
+    // "The graphics driver reset", and the test only saw a title or a map that never came.
+    // Exit code 34 is Chrome giving up on its GPU process after the graphics driver lost the device
+    // ("some drivers can't recover from errors"). The suite's stderr says so, for test/run.js.
+    browser.pages_ = [];
+    const proc = browser.process();
+    if (proc && proc.stderr) proc.stderr.on('data', (d) => {
+        for (const line of String(d).split('\n')) {
+            if (!/gpu|GPU|watchdog|D3D|DXGI|[Dd]evice (lost|removed|hung|reset)|context lost|ANGLE|angle/.test(line) || /CONSOLE/.test(line)) continue;
+            for (const p of browser.pages_) p.logs.push('[chrome] ' + line.trim().slice(0, 300));
+            if (/GPU process exited unexpectedly/.test(line)) process.stderr.write(GPU_DIED + ': ' + line.trim().slice(0, 200) + '\n');
+        }
     });
     return browser;
 }
@@ -97,6 +119,7 @@ async function openPlayer(browser, url, label, slow) {
     await page.setViewport({ width: 900, height: 700 });
     page.errors = [];
     page.logs = [];
+    if (browser.pages_) browser.pages_.push(page);
     page.on('pageerror', (e) => page.errors.push(String(e && e.stack || e)));
     page.on('console', (m) => {
         const text = m.text();
@@ -109,6 +132,30 @@ async function openPlayer(browser, url, label, slow) {
     await serveTwin(page, slow);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     return page;
+}
+
+// The host goes online, privately, the way the Together panel does it, and follows on until
+// Cloudflare has published the link. Stopped and started again at once (to change Hide my IP, say):
+// the old cloudflared's exit once took the new tunnel's place, and no link came.
+// Cloudflare refuses a quick tunnel now and then, more often when several are asked for at once
+// (the internet gate brings up three suites together). The app's answer says to try again in a
+// minute, and so does this; any other failure is the test's to report.
+async function goOnline(port) {
+    const head = { 'x-fh-app': '1', 'content-type': 'application/json' };
+    const online = (on) => fetch(`http://localhost:${port}/coop/app/online`, { method: 'POST', headers: head, body: JSON.stringify({ on, private: true }) }).then((r) => r.json());
+    let app;
+    for (let tries = 0; tries < 4; tries++) {
+        await online(true);
+        await online(false);
+        app = await online(true);
+        if (!/gave out no link/.test(app.error || '')) break;
+        await sleep(60000);
+    }
+    for (let i = 0; i < 60 && app.mode === 'online' && !app.ready; i++) {
+        await sleep(2000);
+        app = await (await fetch(`http://localhost:${port}/coop/app`, { headers: head })).json();
+    }
+    return app;
 }
 
 async function waitFor(page, fn, timeout, what, ...args) {
@@ -129,4 +176,4 @@ async function shot(page, name) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-module.exports = { startServer, launch, openPlayer, waitFor, shot, sleep, OUT, ROOT };
+module.exports = { startServer, launch, openPlayer, goOnline, waitFor, shot, sleep, OUT, ROOT, GPU_DIED };

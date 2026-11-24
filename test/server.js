@@ -139,12 +139,14 @@ const got = (ws, t) => ws.inbox.filter((m) => m.t === t);
         check('a late joiner is told where a silent player is', known && known.last && known.last.m === 77 && known.last.st === 'away', JSON.stringify(known));
         late.close();
 
-        // A save from some other run cannot be poured into this one.
+        // A save from some other run comes into this one, as someone arriving (his ruling 11/21: no save is
+        // blocked); its own run's world is not poured in.
         const c = await client();
         await sleep(100);
         say(c, { t: 'world?', runId: 'someotherrun', stamp: 5 });
         await sleep(200);
-        check('a save from a different run is kept out', got(c, 'worldbusy').length === 1 && got(c, 'world').length === 0);
+        const came = got(c, 'world')[0];
+        check('a save from a different run comes into this run, not its own', got(c, 'worldbusy').length === 0 && came && came.other && came.runId === founded.runId, JSON.stringify(came && { runId: came.runId, other: came.other }));
         for (const ws of [a2, b, c]) ws.close();
 
         // A friend without the mod is told where to get it if the button opens nothing.

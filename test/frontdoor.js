@@ -52,6 +52,12 @@ function watchErrors() {
             const errs = [...await a.evaluate(() => window.__errs), ...await b.evaluate(() => window.__errs)];
             check(label + ': no script errors', errs.length === 0, errs.join(' || ').slice(0, 600));
             if (shelf) {
+                // Bo's solo save is another run's (11/21): he comes in next to Ann, then walks to map 3.
+                const maps = [await a.evaluate(() => $gameMap.mapId()), await b.evaluate(() => $gameMap.mapId())];
+                check(label + ': Bo comes in next to Ann', maps[0] === maps[1], JSON.stringify(maps));
+                await b.evaluate(() => $gamePlayer.reserveTransfer(3, 53, 45, 2, 0));
+                await waitFor(b, () => T.onMap() && $gameMap.mapId() === 3 && !$gamePlayer.isTransferring(), 30000, 'Bo walks to map 3').catch(() => {});
+                await sleep(500);
                 const at = await b.evaluate((id) => { const ev = $gameMap.mapId() === 3 && $gameMap.event(id); return ev ? [ev.x, ev.y] : null; }, SHELF);
                 check(label + ': the shelf Bo slid alone stands at home, as in the run', at && at[0] === 16 && at[1] === 31, JSON.stringify(at));
             }

@@ -1,6 +1,7 @@
 //=============================================================================
-// fh-coop: saving. Save files live on the host's machine, filed under each
-// player's name, so nothing depends on one browser's storage. When one player
+// fh-coop: saving. Save files live on each player's own PC (a joiner's server
+// keeps them, server.js proxyStore), filed under the player's name, so nothing
+// depends on one browser's storage or on who hosts tonight. When one player
 // saves, the others save the same slot as soon as it is safe, and the server
 // freezes a copy of the world beside it, so a reload brings everyone back to
 // the same moment.
@@ -41,7 +42,10 @@
         const key = keyOf(savefileId);
         const data = LZString.compressToBase64(json);
         const res = Coop.fetchSync('PUT', base() + key, data);
-        if (res.status !== 204) throw new Error('The host did not accept the save (' + res.status + ').');
+        if (res.status !== 204) {
+            saveWhy = (res.text || '').replace(/\s+/g, ' ').trim().slice(0, 180) || ('the save was not kept (' + res.status + ')');
+            throw new Error(saveWhy);
+        }
         cache.exists[key] = true;
         cache.data[key] = json;
     };
@@ -138,19 +142,68 @@
     let quiet = false; // true while saving because someone else did
     let pending = null; // { slot, stamp, by, runId }
     let saving = false;
+    let saveWhy = ''; // why the last write failed, if it did
+    // What the slot held before this page's last bed in a run: { slot, stamp, file, info }. The host can
+    // still answer that it could not keep the world for that bed (savefail), and then the slot goes back
+    // to it. Otherwise "did not write" was untrue and the last good save gave way to one that carries on
+    // into an empty world (11/24 review).
+    let before = null;
+
+    function failSave(alongside) {
+        const why = saveWhy || 'it did not write';
+        const text = alongside
+            ? 'The save with ' + (pending && pending.by || 'them') + ' did not write (' + why + '). Save from the menu when you can.'
+            : 'Your save did not write (' + why + '). Try again.';
+        if (Coop.toast) Coop.toast(text, 8000);
+        Coop.note((alongside ? 'save alongside failed: ' : 'save failed: ') + why);
+    }
 
     const _saveGame = DataManager.saveGame;
     DataManager.saveGame = function (savefileId) {
-        const stamp = quiet && pending ? pending.stamp : Date.now();
+        // Alongside keeps the saver's number. In a run a new bed takes the host's clock.
+        // Alone, this page's own: there is no other save to sort it against (11/22).
+        const stamp = quiet && pending ? pending.stamp : (Coop.world.live ? Coop.now() : Date.now());
         Coop.world.saveStamp = stamp;
+        before = null;
+        if (Coop.world.live && !quiet && routed(savefileId)) {
+            const info = (DataManager.loadGlobalInfo() || [])[savefileId];
+            before = { slot: savefileId, stamp, file: StorageManager.load(savefileId), info: info ? JSON.parse(JSON.stringify(info)) : null };
+        }
         saving = true;
+        saveWhy = '';
         let ok = false;
-        try { ok = _saveGame.call(this, savefileId); } finally { saving = false; }
+        // The engine usually catches a failed write and returns false. A throw still has to be said (11/22).
+        try { ok = _saveGame.call(this, savefileId); }
+        catch (e) { ok = false; if (!saveWhy) saveWhy = String(e && e.message || 'it did not write').slice(0, 180); }
+        finally { saving = false; }
         // AI partners share the host's browser storage: only a person's saves count.
         if (ok && !Coop.isBot) try { localStorage.setItem('fhcoop.savedAs', Coop.name); } catch (e) { /* storage blocked */ }
         if (ok && Coop.world.live && !quiet) Coop.send({ t: 'savepoint', slot: savefileId, stamp, by: Coop.name, runId: Coop.world.runId });
+        if (!ok && !quiet) failSave(false);
         return ok;
     };
+
+    // The host's PC could not keep the world for this bed: the save here would carry on into an empty one.
+    Coop.on('savefail', function (msg) {
+        saveWhy = String(msg && msg.why || '');
+        if (before && Number(msg && msg.stamp) === before.stamp) putBack(before);
+        before = null;
+        failSave(false);
+    });
+    function putBack(b) {
+        try {
+            const info = DataManager.loadGlobalInfo() || [];
+            if (b.file != null) {
+                StorageManager.save(b.slot, b.file);
+                info[b.slot] = b.info;
+            } else {
+                StorageManager.remove(b.slot);
+                info[b.slot] = null;
+            }
+            DataManager.saveGlobalInfo(info);
+            Coop.note('save ' + b.slot + ' put back as it was');
+        } catch (e) { Coop.note('could not put save ' + b.slot + ' back: ' + (e && e.message)); }
+    }
 
     Coop.on('savepoint', function (msg) {
         if (Coop.world.live && msg.runId === Coop.world.runId) pending = { slot: msg.slot, stamp: msg.stamp, by: msg.by, runId: msg.runId };
@@ -199,7 +252,7 @@
         if (ok) {
             StorageManager.cleanBackup(slot);
             Coop.toast(pending.by + ' saved. ' + (Coop.dead ? 'You were saved with them as you are, in your slot ' : 'Your game was saved with theirs, in your slot ') + slot + '.', 5000);
-        }
+        } else failSave(true);
         pending = null;
     }
 

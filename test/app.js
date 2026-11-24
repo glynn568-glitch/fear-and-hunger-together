@@ -6,6 +6,7 @@ const http = require('http');
 const { startServer, launch, openPlayer, waitFor, sleep, shot } = require('./lib');
 const install = require('./helpers');
 const { checker } = require('./common');
+const { choose } = require('./lobbylib');
 
 const HOST = 8510, FRIEND = 8511, OTHER = 8512;
 
@@ -43,7 +44,8 @@ const panel = (page) => page.evaluate(() => {
         }
         const cmds = await a.evaluate(() => SceneManager._scene._commandWindow._list.map((c) => c.name));
         check('the title menu offers Together', cmds.join('|') === 'New Game|Continue|Together' || cmds[cmds.length - 1] === 'Together', cmds.join('|'));
-        await a.evaluate(() => { const w = SceneManager._scene._commandWindow; w.select(w._list.length - 1); w.callOkHandler(); });
+        // The way a player opens it: down to Together and Enter, which leaves the title menu (11/22).
+        await choose(a, 'Together');
         await waitFor(a, () => Coop.together.isOpen(), 5000, 'panel opens from the menu');
         await waitFor(a, () => document.querySelector('#coop-together .status').textContent !== '', 5000, 'the panel says where things stand');
         check('choosing it opens the panel', (await panel(a)).status === 'Just you, on this PC.');

@@ -51,10 +51,17 @@ Step(e) ==
       [] e.event = "Join" -> Join(e.who)
       [] OTHER -> FALSE
 
+\* Only people the trace names act silently. Anyone else never connected to the room, so nothing
+\* they did can show in it. A game begun before its player connects is placed just before that
+\* player's next event: until then the room has never heard of them. Unseen games of everyone not
+\* connected (five states each, ten names) swamped every trace, a six-event one too (11/24).
+Named == {Trace[i].who : i \in {j \in DOMAIN Trace : "who" \in DOMAIN Trace[j]}}
+NextWho == IF l < Len(Trace) /\ "who" \in DOMAIN Trace[l + 1] THEN Trace[l + 1].who ELSE ""
+
 Silent ==
-    \/ \E x \in People, c \in Chars : SoloStart(x, c)
-    \/ \E x \in People : Quit(x)
-    \/ \E x \in People : Bounce(x)
+    \/ \E x \in People \cap Named, c \in Chars : (conn[x] \/ x = NextWho) /\ SoloStart(x, c)
+    \/ \E x \in People \cap Named : Quit(x)
+    \/ \E x \in People \cap Named : Bounce(x)
     \/ \E c \in Chars : PartnerLoad(c)
     \/ PartnerRefused
 

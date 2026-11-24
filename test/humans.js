@@ -7,7 +7,7 @@
 // nobody stuck, characters and bags as the fight left them, both games agree.
 // Needs the internet; creates a short-lived private quick tunnel.
 //   node test/humans.js
-const { startServer, launch, openPlayer, waitFor, sleep } = require('./lib');
+const { startServer, launch, openPlayer, goOnline, waitFor, sleep } = require('./lib');
 const install = require('./helpers');
 const { checker } = require('./common');
 const { chaosLink } = require('./chaos');
@@ -85,14 +85,7 @@ const enemy = (p, name) => p.evaluate((name) => {
         // friend's breakable line runs straight to the host on this PC.
         let link;
         if (process.env.FH_TEST_TUNNEL === '1') {
-            const online = (on) => fetch(`http://localhost:${HOST}/coop/app/online`, { method: 'POST', headers: { 'x-fh-app': '1', 'content-type': 'application/json' }, body: JSON.stringify({ on, private: true }) }).then((r) => r.json());
-            // Hosting stopped and started again at once (to change Hide my IP, say): the old
-            // cloudflared's exit once took the new tunnel's place, and no link came.
-            await online(true);
-            await online(false);
-            let app = await online(true);
-            // As the Together panel does: it follows on until Cloudflare has published the link.
-            for (let i = 0; i < 60 && app.mode === 'online' && !app.ready; i++) { await sleep(2000); app = await (await fetch(`http://localhost:${HOST}/coop/app`, { headers: { 'x-fh-app': '1' } })).json(); }
+            const app = await goOnline(HOST);
             check('the host is online through a tunnel', /^https:\/\/.+trycloudflare\.com\/\?k=/.test(app.link || ''), JSON.stringify(app).slice(0, 200));
             check('and its link works once it is handed out', !!app.ready, JSON.stringify(app).slice(0, 200));
             link = new URL(app.link);
@@ -135,8 +128,19 @@ const enemy = (p, name) => p.evaluate((name) => {
         const near = await b.evaluate((g) => { for (let r = 3; r <= 5; r++) for (let dx = -r; dx <= r; dx++) { const dy = r - Math.abs(dx); for (const y of [g.y + dy, g.y - dy]) { const x = g.x + dx; if ($gameMap.isValid(x, y) && $gameMap.isPassable(x, y, 2) && !$gameMap.eventsXyNt(x, y).length) return { x, y }; } } return null; }, guard);
         await b.evaluate((p) => $gamePlayer.locate(p.x, p.y), near);
         await waitFor(a, (p) => Coop.peersHere().some((q) => q.x === p.x && q.y === p.y && q.st === 'map'), 10000, 'the friend is near the host', near);
-        await a.evaluate((g) => { $gamePlayer.locate(g.x, g.y); $gameMap.event(g.id).start(); }, guard);
+        await a.evaluate((g) => { $gamePlayer.locate(g.x, g.y); }, guard);
+        // Beside the guard, then a real step into it. event.start() began the fight with no walk (11/22).
+        const into = await a.evaluate((id) => {
+            const ev = $gameMap.event(id);
+            const dx = $gamePlayer.x - ev.x, dy = $gamePlayer.y - ev.y;
+            const dir = dx > 0 ? 4 : dx < 0 ? 6 : dy > 0 ? 8 : 2;
+            return { 2: 'ArrowDown', 4: 'ArrowLeft', 6: 'ArrowRight', 8: 'ArrowUp' }[dir];
+        }, guard.id);
+        for (let i = 0; i < 4 && !(await a.evaluate(() => SceneManager._scene instanceof Scene_Battle)); i++) {
+            await a.keyboard.down(into); await sleep(180); await a.keyboard.up(into); await sleep(400);
+        }
         await waitFor(a, () => SceneManager._scene instanceof Scene_Battle && Coop.battle && Coop.battle.role === 'owner', 15000, 'the host fights the guard');
+        check('walking into the guard starts the fight', await a.evaluate(() => SceneManager._scene instanceof Scene_Battle && Coop.battle && Coop.battle.role === 'owner'));
         // A guard that lasts and barely hurts: the fight has to outlive every outage below.
         await waitFor(a, () => $gameTroop.members().length > 0, 10000, 'the troop is up');
         await a.evaluate(() => { for (const e of $gameTroop.members()) { e.addParam(0, 20000); e.setHp(e.mhp); e.addParam(2, -e.param(2) + 1); } });
@@ -185,8 +189,33 @@ const enemy = (p, name) => p.evaluate((name) => {
         const g = await b.evaluate(() => Coop.viewer.ages.slice());
         ages.push(...g);
         keyLag.push(...await a.evaluate(() => KEYLAG.slice()));
-        // Finish it: the guard falls.
-        await a.evaluate(() => { $gameActors.actor(3).setHp(55); for (const e of $gameTroop.members()) e.addState(e.deathStateId()); const w = SceneManager._scene._actorCommandWindow; if (w) { w.deactivate(); w.close(); } BattleManager.processVictory(); });
+        // Finish it: the guard is one hit off falling, and a player picks Attack and reads the victory text.
+        // processVictory() from here skipped those confirms (11/22). No applyPick.
+        await a.evaluate(() => { $gameActors.actor(3).setHp(55); for (const e of $gameTroop.members()) e.setHp(1); });
+        let aimed = false;
+        for (let n = 0; n < 40 && await a.evaluate(() => SceneManager._scene instanceof Scene_Battle && !!Coop.battle); n++) {
+            const st = await a.evaluate(() => ({
+                input: BattleManager._phase === 'input' && !!BattleManager.actor(),
+                actor: BattleManager._phase === 'input' && BattleManager.actor() ? BattleManager.actor().actorId() : 0,
+                enemy: !!(SceneManager._scene._enemyWindow && SceneManager._scene._enemyWindow.active),
+                msg: $gameMessage.isBusy(),
+            }));
+            if (st.msg) { await human(a, 'Enter'); if (await b.evaluate(() => $gameMessage.isBusy())) await human(b, 'Enter'); continue; }
+            const who = st.actor === 3 ? b : a;
+            if (st.enemy) { await human(who, 'KeyZ'); aimed = true; continue; }
+            if (st.input && st.actor) {
+                const nav = await a.evaluate(() => { const w = SceneManager._scene._actorCommandWindow; return w && w.active ? { at: w.index(), to: w.findSymbol('attack') } : null; });
+                if (nav && nav.to >= 0) {
+                    for (let k = 0; k < Math.abs(nav.to - nav.at); k++) await human(who, nav.to > nav.at ? 'ArrowDown' : 'ArrowUp');
+                    await human(who, 'KeyZ');
+                } else await sleep(400);
+                continue;
+            }
+            // Attack is already chosen. A miss, or the guard acting on the way out, must not throw
+            // away the outages above: he is finished here, and the engine's own victory text is what gets read.
+            if (aimed) await a.evaluate(() => { $gameActors.actor(3).setHp(55); for (const e of $gameTroop.members()) if (e.isAlive()) e.addState(e.deathStateId()); });
+            await sleep(400);
+        }
         for (const p of [a, b]) {
             for (let i = 0; i < 40 && !(await p.evaluate(() => SceneManager._scene instanceof Scene_Map && !$gameMap.isEventRunning() && !Coop.battle)); i++) {
                 if (await p.evaluate(() => $gameMessage.isBusy())) await human(p, 'Enter'); else await sleep(400);

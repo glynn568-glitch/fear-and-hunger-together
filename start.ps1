@@ -112,83 +112,89 @@ function Open-Game {
     }
 }
 
-if (-not $Online) {
-    Remove-Item Env:FH_KEY -ErrorAction SilentlyContinue
-    $server = Start-Process $node -ArgumentList "`"$root\server.js`"" -NoNewWindow -PassThru
-    try {
-        Open-Game
-        Write-Host ''
-        Write-Host "The game is at http://localhost:$Port/  (use Chrome, Edge or Opera)."
-        if ($Join) { Write-Host "Joined $Join, playing from your own copy of the game." }
-        elseif ($Partner) { Write-Host 'Your AI partner joins once you are in the dungeon. Y talks to it, F8 sends it home.' }
-        else { Write-Host 'F8 in the game calls an AI partner in.' }
-        Write-Host 'Close this window, or press Ctrl+C, to stop.'
-        Wait-Process -Id $server.Id
-    } finally {
-        if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-    }
-    return
+function Get-Hello {
+    try { return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/coop/hello" -TimeoutSec 2 }
+    catch { return $null }
 }
 
-$cloudflared = "$root\tools\cloudflared.exe"
-# The same exact release as tools\tunnel.js, checked against Cloudflare's published SHA-256.
-$cfSha = '86AEE4017B26625CEE8484C113558F48EFFA4CD47F7AA05FCF425604E5D2B23C'
-if ((Test-Path $cloudflared) -and (Get-FileHash $cloudflared -Algorithm SHA256).Hash -ne $cfSha) {
-    try { Remove-Item $cloudflared -ErrorAction Stop }
-    catch {
-        Write-Host 'An old cloudflared.exe is still running or locked; close it (or restart the PC) and try again.' -ForegroundColor Red
-        exit 1
-    }
-}
-if (-not (Test-Path $cloudflared)) {
-    Write-Host 'Downloading cloudflared 2026.10.0 (the tunnel program, from its official GitHub releases)...'
-    Invoke-WebRequest 'https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-windows-amd64.exe' -OutFile $cloudflared -UseBasicParsing
-    if ((Get-FileHash $cloudflared -Algorithm SHA256).Hash -ne $cfSha) {
-        Remove-Item $cloudflared
-        Write-Host 'The download did not match Cloudflare''s published checksum; removed it.' -ForegroundColor Red
-        exit 1
-    }
+# The server opens the one tunnel (the same path as Together's Host online). A tunnel
+# this script used to start left the game on "just this PC", and Host online then
+# replaced the key, so the link in this window died (11/22).
+function Get-OnlineState {
+    $state = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/coop/app/online" -Method Post -Headers @{ 'x-fh-app' = '1' } -ContentType 'application/json' -Body (@{ on = $true; private = ($env:FH_RELAY -ne '0') } | ConvertTo-Json) -TimeoutSec 90
+    if ($state.error) { throw $state.error }
+    return $state
 }
 
-# Only someone holding the link can reach the server through the tunnel.
-$key = -join ((1..16) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
-$env:FH_KEY = $key
-
-$log = Join-Path $env:TEMP "fh-coop-tunnel-$PID.log"
-$server = Start-Process $node -ArgumentList "`"$root\server.js`"" -NoNewWindow -PassThru
-$tunnel = Start-Process $cloudflared -ArgumentList "tunnel --no-autoupdate --url http://127.0.0.1:$Port" -NoNewWindow -PassThru -RedirectStandardError $log
-try {
-    $url = $null
-    foreach ($i in 1..60) {
-        Start-Sleep -Milliseconds 500
-        if ($tunnel.HasExited) { throw "cloudflared stopped. See $log" }
-        $hit = Select-String -Path $log -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($hit) { $url = $hit.Matches[0].Value; break }
-    }
-    if (-not $url) { throw "No tunnel address after 30 seconds. See $log" }
-    # A new address takes Cloudflare a moment (on a bad day, minutes) to publish; a friend
-    # who tries it before then is told it does not exist. Handed out once it answers.
-    $name = ([Uri]$url).Host
-    Write-Host 'Waiting for Cloudflare to publish the link...'
-    foreach ($i in 1..45) {
-        $ok = $false
-        try { $j = Invoke-RestMethod -Uri "https://cloudflare-dns.com/dns-query?name=$name&type=A" -Headers @{ accept = 'application/dns-json' } -TimeoutSec 5; $ok = $j.Status -eq 0 -and $j.Answer } catch { }
-        if ($ok -and (Select-String -Path $log -Pattern 'Registered tunnel connection' -Quiet)) { break }
-        Start-Sleep -Seconds 2
-    }
-    $link = "$url/?k=$key"
-    Set-Clipboard $link
-    Open-Game
+function Show-Link($state) {
+    $link = [string]$state.link
+    if (-not $link) { throw 'No link for a friend.' }
+    try { Set-Clipboard $link } catch { }
     Write-Host ''
     Write-Host "You:         http://localhost:$Port/"
     Write-Host "Your friend: $link   (copied to the clipboard)"
     Write-Host '             They need the game too, and this mod: Play.cmd, "Join a friend", paste the link.'
-    Write-Host ''
     if ($Private) { Write-Host 'Private: your friend''s browser never learns your IP address.' }
-    Write-Host 'Both of you: use Chrome, Edge or Opera. Close this window, or press Ctrl+C, to stop; the link dies with it.'
-    if ($Partner) { Write-Host 'Your AI partner joins once you are in the dungeon. Y talks to it, F8 sends it home.' }
-    else { Write-Host 'F8 in the game (on your PC) calls an AI partner in.' }
+    return $link
+}
+
+# A second Play while the server is up used to open another window: a second
+# player from one PC (11/22). Bring the one already open forward, or say so.
+function Show-Already([string]$link) {
+    $raised = $false
+    try {
+        Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
+        [Microsoft.VisualBasic.Interaction]::AppActivate('Fear & Hunger') | Out-Null
+        $raised = $true
+    } catch { }
+    if ($raised) {
+        Write-Host 'Fear & Hunger Together is already running. Its window is in front.'
+        return
+    }
+    $msg = 'Fear & Hunger Together is already running. Switch to its window.'
+    if ($link) { $msg += " Your friend's link: $link" }
+    Write-Host $msg
+    if (-not $NoBrowser) {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show($msg, 'Fear & Hunger: Together') | Out-Null
+    }
+}
+
+if ((Get-Hello).fh -eq 'together') {
+    $link = ''
+    if ($Online) { $link = Show-Link (Get-OnlineState) }
+    Show-Already $link
+    return
+}
+
+Remove-Item Env:FH_KEY -ErrorAction SilentlyContinue
+$server = Start-Process $node -ArgumentList "`"$root\server.js`"" -NoNewWindow -PassThru
+try {
+    $up = $false
+    foreach ($i in 1..40) {
+        $hello = Get-Hello
+        if ($hello -and $hello.fh -eq 'together') { $up = $true; break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $up) { throw 'The game did not start. Close this window and run it again.' }
+    if ($Online) { Show-Link (Get-OnlineState) | Out-Null }
+    Open-Game
+    Write-Host ''
+    if (-not $Online) { Write-Host "The game is at http://localhost:$Port/  (use Chrome, Edge or Opera)." }
+    if ($Join) { Write-Host "Joined $Join, playing from your own copy of the game." }
+    elseif ($Online -and $Partner) { Write-Host 'Your AI partner joins once you are in the dungeon. Y talks to it, F8 sends it home.' }
+    elseif ($Online) { Write-Host 'F8 in the game (on your PC) calls an AI partner in.' }
+    elseif ($Partner) { Write-Host 'Your AI partner joins once you are in the dungeon. Y talks to it, F8 sends it home.' }
+    else { Write-Host 'F8 in the game calls an AI partner in.' }
+    if ($Online) { Write-Host 'Both of you: use Chrome, Edge or Opera. Close this window, or press Ctrl+C, to stop; the link dies with it.' }
+    else { Write-Host 'Close this window, or press Ctrl+C, to stop.' }
     Wait-Process -Id $server.Id
 } finally {
-    foreach ($p in @($tunnel, $server)) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+    # A hard kill skips the tunnel's own exit. Ask the server to stop, then force it (11/22).
+    if ($server -and -not $server.HasExited) {
+        try {
+            Invoke-WebRequest -Uri "http://127.0.0.1:$Port/coop/app/quit" -Method Post -Headers @{ 'x-fh-app' = '1' } -ContentType 'application/json' -Body '{}' -TimeoutSec 3 -UseBasicParsing | Out-Null
+        } catch { }
+        if (-not $server.WaitForExit(4000)) { Stop-Process -Id $server.Id -Force }
+    }
 }

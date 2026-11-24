@@ -16,6 +16,376 @@ const OUT = path.join(__dirname, 'out', 'twins');
 
 // file: relative to the repo. find must occur exactly once in it.
 const TWINS = {
+    // g19 (11/22 review): someone playing alone held the hounds and the call; a bed with no world was saved alongside
+    'alone-says': {
+        why: '11/22: a page refused into its own game said only up, so every page took it for someone on the way in',
+        suite: 'houndhold', file: 'client/presence.js',
+        find: "            const alone = Coop.world.otherRun || Coop.world.sameAs ? 1 : 0;",
+        put: "            const alone = 0;",
+    },
+    'alone-no-bark': {
+        why: '11/22: the yard and forest hounds waited for good on someone playing a game of their own',
+        suite: 'houndhold', file: 'client/events.js',
+        find: "            if (p.alone) continue; // playing a game of their own: not coming in\n",
+        put: "",
+    },
+    'alone-off-line': {
+        why: '11/22: called, then refused into a game of their own: the call waited on them for good (up never went off)',
+        suite: 'lobbyroom', file: 'room.js',
+        find: "            if (peer.named && !peer.live && msg.st === 'title' && (!msg.up || msg.alone) && this.inLine(peer)) {",
+        put: "            if (peer.named && !peer.live && msg.st === 'title' && !msg.up && this.inLine(peer)) {",
+    },
+    'bed-no-world': {
+        why: '11/22: the room could not keep a bed\'s world and said nothing; its saves would carry on into an empty world',
+        suite: 'roomfix', file: 'room.js',
+        find: "                this.send(peer, { t: 'savefail', stamp: Number(msg.stamp), why: writeWhy(e) });\n",
+        put: "",
+    },
+    'bed-no-world-said': {
+        why: '11/22: the page did not say a bed whose world the host could not keep',
+        suite: 'roomfix', file: 'client/save.js',
+        find: "        failSave(false);\n    });\n    function putBack(b) {\n",
+        put: "    });\n    function putBack(b) {\n",
+    },
+    'save-no-char-said': {
+        why: '11/24 review: the host choosing a save with no character in it got a buzz and nothing said',
+        suite: 'lobbysave', file: 'client/lobby.js',
+        find: "            if (Coop.toast) Coop.toast(why, 6000);\n",
+        put: "",
+    },
+    'bed-put-back': {
+        why: '11/24 review: a bed whose world the host could not keep stayed in its slot over the good save, while the page said it did not write',
+        suite: 'roomfix', file: 'client/save.js',
+        find: "        if (before && Number(msg && msg.stamp) === before.stamp) putBack(before);\n",
+        put: "",
+    },
+    'bed-put-back-stamp': {
+        why: '11/24 review: the room\'s savefail did not say which bed, so the page could not put the slot back',
+        suite: 'roomfix', file: 'room.js',
+        find: "                this.send(peer, { t: 'savefail', stamp: Number(msg.stamp), why: writeWhy(e) });\n",
+        put: "                this.send(peer, { t: 'savefail', why: writeWhy(e) });\n",
+    },
+    // g18 (11/22 save stamps on the host clock), from docs/grok/g18-twins.txt
+    'host-now': {
+        why: '11/22: hello did not carry the host clock, so a page set 15 minutes off stamped its own',
+        suite: 'stamps', file: 'room.js',
+        find: "        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules, now: Date.now() });",
+        put: "        this.send(peer, { t: 'hello', id, peers: this.roster(), relayOnly: this.relayOnly, rules: this.rules });",
+    },
+    'clock-offset': {
+        why: '11/22: the page ignored the host clock on hello, so its beds stayed on its own clock',
+        suite: 'stamps', file: 'client/net.js',
+        find: "        Coop.clockOffset = typeof msg.now === 'number' ? msg.now - Date.now() : 0;",
+        put: '        Coop.clockOffset = 0;',
+    },
+    'bed-clock': {
+        why: '11/22: a bed in a run was stamped with the page clock',
+        suite: 'stamps', file: 'client/save.js',
+        find: '        const stamp = quiet && pending ? pending.stamp : (Coop.world.live ? Coop.now() : Date.now());',
+        put: '        const stamp = quiet && pending ? pending.stamp : Date.now();',
+    },
+    // g16a (11/22 design review), from docs/grok/g16a-twins.txt
+    'focus-join': {
+        why: '11/22: a join link at the title focused Host online, so A or Enter hosted',
+        suite: 'uifix', file: 'client/together.js',
+        find: "        setTimeout(() => { const joinBtn = $('[data-do=join]'); const b = focusJoin && joinBtn && !joinBtn.closest('[hidden]') ? joinBtn : box.querySelector('button.big:not([hidden])'); if (b) b.focus(); }, 0);",
+        put: "        setTimeout(() => { const b = box.querySelector('button.big:not([hidden])'); if (b) b.focus(); }, 0);",
+    },
+    'host-link': {
+        why: '11/22: a joiner whose host was gone said "Trying again" for ever',
+        suite: 'uifix', file: 'client/ui.js',
+        find: '            hostLinkTimer = setTimeout(sayHostLink, 30000);',
+        put: '            hostLinkTimer = setTimeout(sayHostLink, 3000000);',
+    },
+    'script-error': {
+        why: '11/22: SceneManager.catchException drew the red screen and the log never saw the stack',
+        suite: 'uifix', file: 'client/fixes.js',
+        find: "        if (window.Coop && Coop.note) Coop.note(Coop._scriptError = 'script error: ' + text);",
+        put: '',
+    },
+    'report-unread': {
+        why: '11/22: a bug report whose server log could not be read still said it was copied',
+        suite: 'uifix', file: 'client/together.js',
+        find: "        const unread = 'The server log could not be read. Send app\\\\data\\\\server-*.log and launcher.log.';",
+        put: "        const unread = 'Bug report copied. Paste it into your message about the bug.';",
+    },
+    'report-state': {
+        why: '11/22: the bug report said nothing about the line, the world or this PC\'s saves once the socket was down',
+        suite: 'uifix', file: 'client/together.js',
+        find: "        return [connection, world, 'saves: ' + saveList(), 'last error: ' + (Coop._scriptError || 'none')].join('\\n');",
+        put: "        return '';",
+    },
+    'name-pad': {
+        why: '11/22: a controller could not submit or leave the name box',
+        suite: 'uifix', file: 'client/pad.js',
+        find: "            // The title will not start without a name, and this box had no pad way out (11/22).\n            if (down(A)) send('keydown', ['Enter', 13, 'Enter'], document.activeElement);\n            if (down(B)) send('keydown', ['Escape', 27, 'Escape'], document.activeElement);",
+        put: '',
+    },
+    'name-held': {
+        why: '11/22: A on the name box would also have been OK in the game',
+        suite: 'uifix', file: 'client/pad.js',
+        find: '    Coop.padHeld = function () { return !!(panel() || chatOpen() || nameOpen()); };',
+        put: '    Coop.padHeld = function () { return !!(panel() || chatOpen()); };',
+    },
+    'name-steam': {
+        why: '11/22: after a controller, "Type a name first" did not say how a Steam Deck opens the keyboard',
+        suite: 'uifix', file: 'client/ui.js',
+        find: "            ? 'Type a name first (bottom left). Steam+X opens the keyboard on a Steam Deck.'",
+        put: "            ? 'Type a name first (bottom left).'",
+    },
+    'name-mouse': {
+        why: '11/22: New Game could run before the name box blurred, so a click started on an empty name',
+        suite: 'uifix', file: 'client/ui.js',
+        find: '        if (typed) Coop.setName(typed);',
+        put: '        if (false) Coop.setName(typed);',
+    },
+    'banner-click': {
+        why: '11/22: the carry-on line was pointer-events none, so a mouse could not take it',
+        suite: 'uifix', file: 'client/recover.js',
+        find: "    box.style.cssText = 'position:fixed;left:50%;top:9%;transform:translateX(-50%);z-index:56;pointer-events:auto;cursor:pointer;display:none;white-space:nowrap;'",
+        put: "    box.style.cssText = 'position:fixed;left:50%;top:9%;transform:translateX(-50%);z-index:56;pointer-events:none;display:none;white-space:nowrap;'",
+    },
+    'banner-listen': {
+        why: '11/22: the carry-on line had no click, so the mouse could not do what R does',
+        suite: 'uifix', file: 'client/recover.js',
+        find: "    box.addEventListener('click', carryOn);",
+        put: '',
+    },
+    'banner-text': {
+        why: '11/22: the carry-on line did not say a click would do it',
+        suite: 'uifix', file: 'client/recover.js',
+        find: "        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press ' + Coop.keyName('R') + ' to carry on from there. Or click here.';",
+        put: "        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press ' + Coop.keyName('R') + ' to carry on from there.';",
+    },
+    'park-empty': {
+        why: '11/22: R with an empty park did nothing',
+        suite: 'uifix', file: 'client/recover.js',
+        find: "            const said = 'Nothing was kept from that drop. The last bed save is the safe point.';",
+        put: "            const said = '';",
+    },
+    'parkno': {
+        why: '11/22: a park that did not write was only a silence',
+        suite: 'uifix', file: 'client/recover.js',
+        find: "        const said = 'Your place could not be kept. The last bed save is the safe point.';",
+        put: "        const said = '';",
+    },
+    'chat-keys': {
+        why: '11/22: the chat line kept saying Enter and Esc after a controller was in use',
+        suite: 'uifix', file: 'client/chat.js',
+        find: "        input.placeholder = 'Say something (' + Coop.keyName('Enter') + ' sends, ' + Coop.keyName('Esc') + ' cancels)';",
+        put: "        input.placeholder = 'Say something (Enter sends, Esc cancels)';",
+    },
+    'names-enter': {
+        why: '11/22: Coop.keyName had no pad name for Enter, so prompts could not say A',
+        suite: 'uifix', file: 'client/pad.js',
+        find: "    const NAMES = { F: 'R3', Y: 'Start', R: 'RT', Esc: 'B', Tab: 'LT', F1: 'View', Enter: 'A' };",
+        put: "    const NAMES = { F: 'R3', Y: 'Start', R: 'RT', Esc: 'B', Tab: 'LT', F1: 'View' };",
+    },
+    'help-keys': {
+        why: '11/22: the help key column was written once, so it stayed on keyboard names after a controller',
+        suite: 'uifix', file: 'client/ui.js',
+        find: '        fillKeys();',
+        put: '',
+    },
+    'help-f8': {
+        why: '11/22: F8 has no pad button and the help did not say Together does the same thing',
+        suite: 'uifix', file: 'client/ui.js',
+        find: "        ['F8', 'Host: call an AI partner in, or send it home. Together on the title does this too.'],",
+        put: "        ['F8', 'Host: call an AI partner in, or send it home.'],",
+    },
+    'help-g': {
+        why: '11/22: G has no pad button and the help did not say the bag lays the trap too',
+        suite: 'uifix', file: 'client/ui.js',
+        find: "        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap, also from the bag &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';",
+        put: "        + '<footer><b>F9</b> lag meter &nbsp;&middot;&nbsp; <b>F4</b> full screen &nbsp;&middot;&nbsp; <b>Ctrl+Shift+U</b> unstuck &nbsp;&middot;&nbsp; <b>Ctrl+Shift+B</b> bug report &nbsp;&middot;&nbsp; <b>Tab</b> everyone&rsquo;s gear &nbsp;&middot;&nbsp; <b>G</b> bear trap &nbsp;&middot;&nbsp; <b>F1</b> close</footer>';",
+    },
+    'version-note': {
+        why: '11/22: a version refusal was toasted on the joiner and not written down',
+        suite: 'uifix', file: 'client/net.js',
+        find: '        Coop.note(Coop.refused);',
+        put: '',
+    },
+    'replaced': {
+        why: '11/22: the tab that lost its token kept reconnecting and pushed the new one off',
+        suite: 'uifix', file: 'client/net.js',
+        find: "        Coop.refused = 'This game is open in another tab or window.';",
+        put: '',
+    },
+    // g16b (11/22 design review), from docs/grok/g16b-twins.txt
+    'bring-keeps-trying': {
+        why: '11/22: a fight longer than 15 seconds left a brought character on the other run\'s map',
+        suite: 'roomfix', file: 'client/state.js',
+        find: '        if (!World._bringBy || !World.live) return;',
+        put: '        if (Date.now() > World._bringBy || !World.live) { World._bringBy = 0; return; }',
+    },
+    'turned-told': {
+        why: '11/22: the host\'s page was never told who had been turned away, or why',
+        suite: 'roomfix', file: 'server.js',
+        find: "        for (const p of room.peers.values()) if (p.host && !room.isBot(p)) room.send(p, { t: 'turned', text });",
+        put: "        if (false) for (const p of room.peers.values()) if (p.host && !room.isBot(p)) room.send(p, { t: 'turned', text });",
+    },
+    'save-told': {
+        why: '11/22: a save that did not write only buzzed',
+        suite: 'roomfix', file: 'client/save.js',
+        find: '        if (!ok && !quiet) failSave(false);',
+        put: '        if (false) failSave(false);',
+    },
+    'save-alongside-told': {
+        why: '11/22: the save made beside someone else\'s failed the same way, and said nothing',
+        suite: 'roomfix', file: 'client/save.js',
+        find: '        } else failSave(true);',
+        put: '        } else if (false) failSave(true);',
+    },
+    'save-write-lives': {
+        why: '11/22: a save write that threw killed the process (nothing handles uncaughtException)',
+        suite: 'roomfix', file: 'server.js',
+        find: "                console.error('could not write a save: ' + (e && e.message));",
+        put: '                throw e;',
+    },
+    'world-write-lives': {
+        why: '11/22: persisting the world threw the same way and killed the process',
+        suite: 'roomfix', file: 'room.js',
+        find: "        } catch (e) { console.error('could not save the world: ' + (e && e.message)); }",
+        put: '        } catch (e) { throw e; }',
+    },
+    'bed-write-lives': {
+        why: '11/22: keeping the world beside a save threw and killed the process',
+        suite: 'roomfix', file: 'room.js',
+        find: "                console.error('could not keep the save: ' + (e && e.message));",
+        put: '                throw e;',
+    },
+    'saves-where': {
+        why: '11/22: the readme still said saves live on the host\'s PC',
+        suite: 'roomfix', file: 'README.md',
+        find: "- Saves live in `app\\data\\saves` on each player's own PC, not in the game's own save folder.",
+        put: "- Saves live in `app\\data\\saves` on the host's PC (a friend's saves too), not in the game's own save folder.",
+    },
+    'worldfail-answered': {
+        why: '11/22: a world ask that threw was only logged, and the page stayed entering',
+        suite: 'roomfix', file: 'room.js',
+        find: "                if (msg.t === 'world?') this.send(peer, { t: 'worldfail', why: String(e && e.message || 'failed').slice(0, 180) });",
+        put: "                if (false) this.send(peer, { t: 'worldfail', why: String(e && e.message || 'failed').slice(0, 180) });",
+    },
+    'park-told': {
+        why: '11/22: a park that did not write was a line in the host\'s log and nothing on that player\'s page',
+        suite: 'roomfix', file: 'room.js',
+        find: "                this.send(peer, { t: 'parkno', why });",
+        put: "                if (false) this.send(peer, { t: 'parkno', why });",
+    },
+    'slot-unread': {
+        why: '11/22: a slot that could not be read left the success toast up and dropped the player on the title',
+        suite: 'roomfix', file: 'client/state.js',
+        find: '                if (Coop.toast) Coop.toast(unread, 9000);',
+        put: '                if (false) Coop.toast(unread, 9000);',
+    },
+    'tab-replaced': {
+        why: '11/22: the old tab was cut off before it could be told its own tab had come back',
+        suite: 'roomfix', file: 'room.js',
+        find: "                this.send(clash, { t: 'replaced' });",
+        put: "                if (false) this.send(clash, { t: 'replaced' });",
+    },
+    'no-host-saves': {
+        why: '11/22: a joiner with no save under a name was handed whatever the host still had filed there',
+        suite: 'roomfix', file: 'server.js',
+        find: '    handleStore(req, res, own);',
+        put: `    if (req.method === 'GET' && !fs.existsSync(own)) {
+            const headers = { 'x-forwarded-for': '203.0.113.9' };
+            if (req.headers['x-fh-token']) headers['x-fh-token'] = req.headers['x-fh-token'];
+            fetch(JOIN.origin + req.url, { headers }).then((r) => (r.ok ? r.arrayBuffer() : null)).then((buf) => {
+                if (!buf) { res.writeHead(404); res.end(); return; }
+                try { fs.mkdirSync(path.dirname(own), { recursive: true }); fs.writeFileSync(own, Buffer.from(buf)); } catch (err) { /* still answer */ }
+                res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+                res.end(Buffer.from(buf));
+            }).catch(() => { if (!res.headersSent) { res.writeHead(404); res.end(); } });
+            return;
+        }
+        handleStore(req, res, own);`,
+    },
+    // g16c (11/22 design review), from docs/grok/g16c-twins.txt
+    'bark-held': {
+        why: '11/22: the yard bark timer (variable 211) called the hounds while a friend was still in the opening',
+        suite: 'houndhold', file: 'client/events.js',
+        find: "        if (id === BARK && value > (this._data[id] || 0) && Ev.barkHeld() && [100, 180, 220].indexOf(this._data[id] || 0) < 0) return;",
+        put: "        if (false) return;",
+    },
+    'flaky-blocks': {
+        why: '11/22 ruling: a suite that fails in the run and passes three times alone is flaky, and that blocks the release',
+        suite: 'houndhold', file: 'test/gate.js',
+        find: "    return !broken.length && !flaky.length;",
+        put: "    return !broken.length;",
+    },
+    'one-tunnel': {
+        why: '11/22: start.ps1 -Online started its own cloudflared, so the game stayed on this PC and Host online replaced the key',
+        suite: 'houndhold', file: 'start.ps1',
+        find: '    $state = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/coop/app/online" -Method Post -Headers @{ \'x-fh-app\' = \'1\' } -ContentType \'application/json\' -Body (@{ on = $true; private = ($env:FH_RELAY -ne \'0\') } | ConvertTo-Json) -TimeoutSec 90',
+        put: "    $state = @{ mode = 'local'; link = '' }",
+    },
+    'second-window': {
+        why: '11/22: a second Play while the server was up opened another game window, a second player from one PC',
+        suite: 'houndhold', file: 'start.ps1',
+        find: "if ((Get-Hello).fh -eq 'together') {",
+        put: "if ($false) {",
+    },
+    'picker-waits': {
+        why: '11/21 live: the picker held to the lobby\'s pick waited for a button; by touch on a Deck there was none ("stuck on enki")',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "                if (name === 'ok') return shown;", put: "                if (name === 'ok' && !shown) return false;",
+    },
+    'dead-brought': {
+        why: 'advisor 11/22: a save made dead (alongside someone else\'s) was offered as a character to bring into a new run',
+        suite: 'lobbysave', file: 'client/lobby.js',
+        find: "            if (!save || !save.char || save.dead) return;", put: "            if (!save || !save.char) return;",
+    },
+    'other-run-busy': {
+        why: '11/21 ruling: a friend\'s save of another run was turned away (worldbusy); the host\'s run takes priority, nobody\'s save is blocked',
+        suite: 'lobbysave', file: 'room.js',
+        find: '            if (other && this.isBot(peer)) {', put: '            if (other) {',
+    },
+    'other-run-unlisted': {
+        why: '11/21 live: only a save of the run being played showed; the friend\'s saves of other runs were nowhere on screen',
+        suite: 'lobbysave', file: 'client/lobby.js',
+        find: '            const saves = (L.own ? [L.own] : []).concat(otherSaves().filter((o) => !L.own || o.char !== L.own.char));', put: '            const saves = L.own ? [L.own] : [];',
+    },
+    'other-run-unasked': {
+        why: 'his 11/22 "we should be clear": a save of another run was brought in without saying its run\'s progress stays behind',
+        suite: 'lobbysave', file: 'client/lobby.js',
+        find: '            if (save && save.other) {', put: '            if (false) {',
+    },
+    'other-run-where': {
+        why: 'a character brought from another run stood where that run left them, maybe floors past the host',
+        suite: 'lobbysave', file: 'client/state.js',
+        find: '        if (msg.other) {\n            World._bringBy = Date.now() + 15000;', put: '        if (msg.other) {\n            World._bringBy = 0;',
+    },
+    'other-run-worldwhen': {
+        why: 'advisor 11/22: with worldbusy gone, a save of another run met the carried-on-moment check and bounced',
+        suite: 'lobbyswitch', file: 'room.js',
+        find: "if (this.founded && how === 'load' && !other && msg.runId", put: "if (this.founded && how === 'load' && msg.runId",
+    },
+    'grey-unnamed': {
+        why: '11/21 live: a greyed character said nothing of whose it was ("Cahara blocked")',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "            return { name: c.name + (by ? ' (' + by + ')' : ''), act: 'pick:' + c.id,", put: "            return { name: c.name, act: 'pick:' + c.id,",
+    },
+    'start-unsaid': {
+        why: 'his 11/21 "the menu system wasnt clear enough": a greyed Start did not say whom it waited on',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "                { name: 'Start' + (wait.length ? ' (waiting on ' + wait.join(', ') + ')' : ''),", put: "                { name: 'Start',",
+    },
+    'rechoose-stuck': {
+        why: '11/22: choosing again while ready was refused (the room keeps a ready player\'s character): the ready goes first',
+        suite: 'lobby', file: 'client/lobby.js',
+        find: "        if (me.ready) say('ready', { on: false });\n", put: '',
+    },
+    'lobby-silent': {
+        why: '11/21 live: the room dropped picks, readies and joins without a word, twice "nothing works"',
+        suite: 'lobbyroom', file: 'room.js',
+        find: '            this.send(peer, { t: \'lobbyno\', do: msg.do, why });\n', put: '',
+    },
+    'joiner-log': {
+        why: '11/21 live: a joiner\'s PC logged nothing past "joined"; the evidence sat on the host\'s Deck',
+        suite: 'lobbysave', file: 'server.js',
+        find: '        if (!isBinary) keepNotes(data);\n', put: '',
+    },
     'home-body': {
         why: 'his call 11/20: a living partner F8 sent home was thrown away; the next call was somebody new',
         suite: 'partner', file: 'room.js',
@@ -215,7 +585,7 @@ const TWINS = {
     'ready-hidden': {
         why: 'his playtest 11/14: before the host chose the run the friend\'s menu was a lone Together, which was disorienting',
         suite: 'lobby', file: 'client/lobby.js',
-        find: "if (!L.run) return [{ name: 'Ready', act: 'ready', enabled: false }, { name: 'Together', symbol: 'together' }];", put: "if (!L.run) return [{ name: 'Together', symbol: 'together' }];",
+        find: "if (!L.run) return [{ name: 'As: (' + nameOf(L.host) + ' is choosing the run)', act: 'as', enabled: false }, { name: 'Together', symbol: 'together' }];", put: "if (!L.run) return [{ name: 'Together', symbol: 'together' }];",
     },
     'title-click': {
         why: 'his playtest 11/14: Together is worked with the mouse, and the title menu beneath it took no clicks',
@@ -230,12 +600,12 @@ const TWINS = {
     'ready-buzz': {
         why: 'his playtest 11/14: Ready with no character was greyed and only buzzed until "Come in as..." had been used',
         suite: 'lobby', file: 'client/lobby.js',
-        find: "else if (what === 'join' || what === 'ready') { L.mode = 'pick'; L.pickFor = what; }", put: "else if (what === 'ready') say('ready', { on: true });",
+        find: "else if (what === 'join' || what === 'as') { L.mode = 'pick'; L.pickFor = what; }", put: "else if (what === 'as') say('ready', { on: true });\n        else if (what === 'join') { L.mode = 'pick'; L.pickFor = what; }",
     },
     'ready-after-pick': {
-        why: 'Ready opened the character list, and the pick left the friend still not ready',
+        why: 'Ready opened the character list, and the pick left the friend still not ready (11/22: choosing is the ready)',
         suite: 'lobby', file: 'client/lobby.js',
-        find: "if (L.pickFor === 'ready') say('ready', { on: true, pick: id });", put: "if (false) say('ready', { on: true, pick: id });",
+        find: "        else say('ready', { on: true, pick });\n", put: '',
     },
     'lobby-heard-late': {
         why: 'gate 11/14: on a slow PC the room\'s word on the lobby came before lobby.js, and the friend sat out the lobby',
@@ -245,12 +615,12 @@ const TWINS = {
     'ready-old-pick': {
         why: 'Grok 11/14: a pick the room dropped (taken meanwhile) was followed by a Ready that stood as the earlier pick',
         suite: 'lobby', file: 'room.js',
-        find: 'if (!this.asPicked(lob, msg)) break;', put: '',
+        find: '            if (!this.asPicked(lob, msg)) break;\n            if (lob.away)', put: '            if (lob.away)',
     },
     'join-old-pick': {
         why: 'Grok 11/14: the same for Join, into the run as the earlier pick',
         suite: 'lobby', file: 'room.js',
-        find: '|| lob.away || !this.asPicked(lob, msg)) break;', put: '|| lob.away) break;',
+        find: '            if (!this.asPicked(lob, msg)) break;\n            if (!this.founded)', put: '            if (!this.founded)',
     },
     'rules-stale-host': {
         why: 'Grok 11/14: a friend who hosted their own page and then joined by link showed their own run options, not the run\'s',
@@ -693,7 +1063,7 @@ const TWINS = {
     'lob-all-ready': {
         why: 'his rule 11/08: Start only when every person here is ready',
         suite: 'lobbyroom', file: 'room.js',
-        find: '            if (others.some((p) => this.atTitle(p) && !(p.lob && p.lob.away) && !(p.lob && p.lob.ready))) break;\n', put: '',
+        find: '            if (waiting.length) { no(', put: '            if (false) { no(',
     },
     'lob-away': {
         why: 'his rule 11/08: someone idle at the title is away and does not hold Start up',
@@ -708,17 +1078,17 @@ const TWINS = {
     'lob-one-each': {
         why: 'two saves of one character both ready: the second is refused only after loading',
         suite: 'lobbyroom', file: 'room.js',
-        find: 'if (!mine || others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) break;', put: 'if (!mine) break;',
+        find: 'if (others.some((p) => (p === host || (p.lob && p.lob.ready)) && this.lobbyChar(p) === mine)) { no(taken(mine)); break; }', put: '',
     },
     'lob-pick-taken': {
         why: 'a character someone here has picked, or someone in the run plays, could be picked again',
         suite: 'lobbyroom', file: 'room.js',
-        find: '            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) break;\n', put: '',
+        find: '            if (want && (others.some((p) => this.lobbyChar(p) === want) || this.lobbyBusy().has(want))) { no(taken(want)); break; }\n', put: '',
     },
     'lob-ready-holds': {
         why: 'ready says what that person will load: no other pick while ready',
         suite: 'lobbyroom', file: 'room.js',
-        find: 'if (!run || !this.atTitle(peer) || this.inLine(peer) || lob.ready) break;', put: 'if (!run || !this.atTitle(peer) || this.inLine(peer)) break;',
+        find: '            if (lob.ready) { no(', put: '            if (false) { no(',
     },
     'lob-save-turns': {
         why: 'a ready person whose save turned out to be another character stayed ready for the first',

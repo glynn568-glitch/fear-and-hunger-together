@@ -32,7 +32,10 @@
     input.maxLength = 200;
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.placeholder = 'Say something (Enter sends, Esc cancels)';
+    function nameKeys() {
+        input.placeholder = 'Say something (' + Coop.keyName('Enter') + ' sends, ' + Coop.keyName('Esc') + ' cancels)';
+    }
+    nameKeys();
     box.appendChild(lines);
     box.appendChild(input);
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(box));
@@ -132,6 +135,7 @@
 
     function open() {
         scale();
+        nameKeys();
         box.classList.add('open');
         input.value = '';
         input.focus();

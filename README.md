@@ -17,9 +17,9 @@ Everything else comes in the box, except one thing: the first time you host onli
 
 ## Starting
 
-1. Unzip anywhere (or install it with the itch app and press Launch).
+1. Unzip anywhere (or install it with the itch app and press Launch). Updating: your saves are in the old version's `app\data` folder; copy it into the new `app` folder, or unzip the new version over the old one.
 2. Double-click **Fear & Hunger Together**. The game opens in its own window. Close the window to quit.
-3. Type a name (bottom left), then New Game or Continue. With friends at the title, the host picks the run instead (a new one, or a save), everyone else presses Ready and picks who to play (or their own save), and the host's Start takes everybody in together. A run already under way shows Join.
+3. Type a name (bottom left), then New Game or Continue. With friends at the title, the menu changes. The host picks the run under **Run:** (a new one, or a save) and who they play under **As:**. Everyone else picks who they come in as under **As:**: a new character, or one of their own saves, from any run. The host's **Start** takes everybody in together. A run already under way shows Join.
 
 **Together** on the title screen does the rest:
 
@@ -131,7 +131,7 @@ The same options work on the command line, which overrides the file: `node tools
 - Some special enemies (the Crow Mauler, the red man, the harvestmen, the yellow mage) and some puzzles are each player's own, not shared.
 - If the game's own scripts get you stuck, Ctrl+Shift+U frees you.
 - Hosting online uses a free Cloudflare quick tunnel. The link changes every time and dies when you close the game. **Hide my IP address** is on by default: everything goes through the tunnel, fight video included (60 pictures a second, at most 1.5 Mbit/s of upload for each player watching, less on a slow line). Turn it off and the players' browsers connect to each other directly, asking public address servers (Google's and Cloudflare's STUN servers) for a route; each player's IP address is then visible to the others.
-- Saves live in `app\data\saves` on the host's PC (a friend's saves too), not in the game's own save folder.
+- Saves live in `app\data\saves` on each player's own PC, not in the game's own save folder.
 - Found a bug? Press Ctrl+Shift+B (or **Copy a bug report** in the Together panel) and paste what it copies into your report: the versions, the end of this PC's logs and what the game was doing. Link keys, API keys and your Windows user name are left out. The full logs are `app\data\server-8420.log` and `app\data\launcher.log`.
 - API keys pasted at F8 sit in `app\data\partner-mind.json` in plain text. Delete that file to forget them; don't share it.
 

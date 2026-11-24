@@ -8,13 +8,32 @@
 //   twins     each fix taken back out (test/twins.js): its suite has to fail (run first)
 // Every suite runs as shipped; direct, join and badlink run the suites where the line can
 // change the outcome (run.js LINE); twins run where their code changed since last caught.
-// A suite that fails and then passes three times alone is flaky: named, not a failure.
-// On a pass, test/out/gate.json names the commit; tools/release.js ships only that commit.
+// A suite that fails and then passes three times alone is flaky: named, and it blocks
+// the release (his ruling 11/22). On a pass, test/out/gate.json names the commit;
+// tools/release.js ships only that commit.
 //   node test/gate.js              all six (about half an hour; FH_TEST_JOBS=4 while he plays)
 //   node test/gate.js join badlink some of them (no gate.json is written)
 const { spawnSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+
+// True when this mode may count toward a release. A flaky suite is named by run.js
+// and does not fail that run; it still blocks the gate.
+function modeOk(r) {
+    const broken = (r && r.broken) || [];
+    const flaky = (r && r.flaky) || [];
+    return !broken.length && !flaky.length;
+}
+// Which suites passed three times alone, for the log.
+function flakyReason(results) {
+    const names = [];
+    for (const r of Object.values(results || {})) {
+        for (const n of (r && r.flaky) || []) if (names.indexOf(n) < 0) names.push(n);
+    }
+    return names.length ? names.join(' ') + ' passed alone 3 of 3' : '';
+}
+module.exports = { modeOk, flakyReason };
+if (require.main !== module) return;
 
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(__dirname, 'out');
@@ -26,7 +45,7 @@ const MODES = {
     direct: { FH_TEST_LINE: '1' },
     join: { FH_TEST_RELAY: '1', FH_TEST_JOIN: '1', FH_TEST_LINE: '1' },
     badlink: { FH_TEST_RELAY: '1', FH_LAG: '80', FH_RATE: '500000', FH_TEST_LINE: '1' },
-    internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans', 'deckhost'] },
+    internet: { FH_TEST_RELAY: '1', FH_TEST_TUNNEL: '1', suites: ['humans', 'deckhost', 'lobby'] },
 };
 const asked = process.argv.slice(2);
 const modes = asked.length ? asked : Object.keys(MODES);
@@ -74,9 +93,16 @@ console.log('\n=== gate');
 let pass = true;
 for (const mode of modes) {
     const r = results[mode] || { suites: 0, broken: ['(not run)'], flaky: [] };
-    const ok = !r.broken.length;
+    const broken = r.broken || [];
+    const flaky = r.flaky || [];
+    const ok = modeOk(r);
     pass = pass && ok;
-    console.log(`${ok ? 'ok  ' : 'FAIL'} ${mode.padEnd(8)} ${ok ? 'all ' + r.suites + ' suites' + (r.stood ? ' (' + r.stood + ' stand)' : '') + (r.flaky.length ? '; FLAKY, fix the test: ' + r.flaky.join(' ') : '') : 'broken: ' + (r.broken.join(' ') || '-') + '; flaky: ' + (r.flaky.join(' ') || '-')}  (logs: test/out/gate/${mode}/)`);
+    const detail = ok
+        ? 'all ' + r.suites + ' suites' + (r.stood ? ' (' + r.stood + ' stand)' : '')
+        : (broken.length
+            ? 'broken: ' + (broken.join(' ') || '-') + (flaky.length ? '; ' + flakyReason({ m: r }) : '')
+            : flakyReason({ m: r }));
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${mode.padEnd(8)} ${detail}  (logs: test/out/gate/${mode}/)`);
 }
 // The tree must be the same commit, unchanged, from the first suite to the last.
 const same = git(['rev-parse', 'HEAD']) === commit && !git(['status', '--porcelain']);
@@ -84,6 +110,9 @@ if (pass && full && !dirty && same) {
     fs.writeFileSync(path.join(OUT, 'gate.json'), JSON.stringify({ commit, at: new Date().toISOString(), results }, null, 1));
     console.log('GATE PASSED for ' + commit.slice(0, 7) + ': this commit may be released.');
 } else {
-    console.log(pass ? (dirty || !same ? 'Passed, but the tree had uncommitted changes or changed during the run: commit and run the gate again to release.' : 'Passed for the modes asked; run them all to release.') : 'GATE FAILED: nothing ships until every mode passes.');
+    // A flaky or broken run must not leave an earlier pass sitting there to ship.
+    if (!pass) { try { fs.unlinkSync(path.join(OUT, 'gate.json')); } catch (e) { /* none yet */ } }
+    const reason = flakyReason(results);
+    console.log(pass ? (dirty || !same ? 'Passed, but the tree had uncommitted changes or changed during the run: commit and run the gate again to release.' : 'Passed for the modes asked; run them all to release.') : 'GATE FAILED: ' + (reason ? reason + '. ' : '') + 'nothing ships until every mode passes.');
 }
 process.exit(pass ? 0 : 1);

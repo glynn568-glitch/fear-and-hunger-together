@@ -64,6 +64,18 @@
         _renderScene.call(this);
     };
 
+    // A tick that throws is caught here and drawn as the red screen. It never reaches the
+    // page's error listener, so the log and the bug report had no stack (11/22).
+    const _catchException = SceneManager.catchException;
+    SceneManager.catchException = function (e) {
+        const name = e instanceof Error ? e.name : 'UnknownError';
+        const message = e instanceof Error ? e.message : String(e);
+        const bits = (e instanceof Error && e.stack ? String(e.stack) : '').split(/\n/).map((s) => s.trim()).filter(Boolean).slice(0, 4);
+        const text = name + ': ' + message + (bits.length ? ' | ' + bits.join(' | ') : '');
+        if (window.Coop && Coop.note) Coop.note(Coop._scriptError = 'script error: ' + text);
+        _catchException.call(this, e);
+    };
+
     // A sound that will not load (one map's background loop is simply
     // missing from the game, and any link can hiccup) is not worth stopping
     // the game for. It is skipped and noted in the console.

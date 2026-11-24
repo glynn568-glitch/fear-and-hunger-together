@@ -140,7 +140,9 @@ Coop.connect = function () {
     if (Coop._ws && Coop._ws.readyState <= 1) return;
     const b = window.COOP_BUILD || {};
     const query = '?fp=' + encodeURIComponent(b.fp || '') + '&build=' + encodeURIComponent(b.build || '')
-        + '&mod=' + encodeURIComponent(b.mod || '') + '&v=' + encodeURIComponent(b.version || '') + (b.stale ? '&stale=1' : '');
+        + '&mod=' + encodeURIComponent(b.mod || '') + '&v=' + encodeURIComponent(b.version || '') + (b.stale ? '&stale=1' : '')
+        // The name, so a host on another version can say who it turned away (server.js 'turned').
+        + (Coop.loadName() ? '&name=' + encodeURIComponent(Coop.loadName()) : '');
     const ws = new WebSocket(scheme + location.host + '/coop/ws' + query);
     ws.binaryType = 'arraybuffer';
     Coop._ws = ws;
@@ -208,6 +210,10 @@ Coop._receive = function (msg) {
         break;
     case 'hello':
         Coop.relayOnly = !!msg.relayOnly;
+        // How far this page's clock sits from the host's. The hello is the host's room even for a
+        // friend (their server only passes it on). Missing on an older host: beds stay on this clock (11/22).
+        Coop.clockOffset = typeof msg.now === 'number' ? msg.now - Date.now() : 0;
+        Coop.now = () => Date.now() + (Coop.clockOffset || 0);
         // Whose game sets the run is this line's nameok to say. Not the last line's: a page that
         // hosted its own room and then joined a friend's would still be taken for the host.
         Coop.decides = null;
@@ -266,6 +272,7 @@ Coop._receive = function (msg) {
         Coop.refused = msg.game
             ? 'Your copy of Fear & Hunger is a different version from the host\'s (yours ' + msg.yours.build + ', theirs ' + msg.mine.build + '). Update both to the newest.'
             : 'Your co-op mod is not the same as the host\'s (yours ' + msg.yours.version + ', theirs ' + msg.mine.version + '). Use the same download.';
+        Coop.note(Coop.refused);
         Coop.emit('refused', { text: Coop.refused });
         break;
     case 'joinfail':
@@ -275,6 +282,10 @@ Coop._receive = function (msg) {
     case 'hostdown': // the joiner's own server: the host has gone silent
         Coop._sawHostDown = true;
         Coop.emit('hostdown', msg);
+        break;
+    case 'replaced': // this tab's token came back on another line; retrying would only push that one off (11/22)
+        Coop.refused = 'This game is open in another tab or window.';
+        Coop.emit('refused', { text: Coop.refused });
         break;
     default:
         Coop.emit(msg.t, msg);

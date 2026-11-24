@@ -1111,6 +1111,22 @@
         World._bounce = true;
     });
 
+    // The ask threw on the host. Saying nothing left this page "entering", in the dungeon, looking like co-op (11/22).
+    Coop.on('worldfail', function (msg) {
+        const why = String(msg && msg.why || 'something went wrong').slice(0, 180);
+        const text = 'Could not enter the shared world (' + why + '). You are back at the title.';
+        if (World.live) { try { Coop.send({ t: 'leftworld' }); } catch (e) { /* still leaving */ } }
+        World.live = false;
+        World._entering = false;
+        World._holdDue = false;
+        World.hostWait = '';
+        World.waiting = false;
+        World._bringBy = 0;
+        if (Coop.toast) Coop.toast(text, 9000);
+        Coop.note(text);
+        World._bounce = true;
+    });
+
     // The run the others were in has ended; a player who was shut out of it tries again.
     Coop.on('runover', function () {
         World.on = null;
@@ -1194,6 +1210,8 @@
         World.on = null; // in it now; nothing to be pointed at
         const server = msg.world;
         let changed = false;
+        // A character brought from another run: none of that run's world flags are this machine's doing here.
+        if (msg.other) World.mine.clear();
         // Whose flags they were was only a guess; what the run already has is the run's.
         if (World.mineGuessed && !msg.founded) for (const kind of ['sw', 'ss', 'fs']) for (const key in server[kind] || {}) World.mine.delete(mineKey(kind, key));
         World.mineGuessed = false;
@@ -1236,9 +1254,32 @@
         World.live = true;
         World.cut = false;
         if (changed && window.$gameMap) $gameMap.requestRefresh();
-        Coop.note((msg.founded ? 'founded the world' : 'joined the world') + ' (' + mine.length + ' facts contributed)');
+        Coop.note((msg.founded ? 'founded the world' : 'joined the world') + ' (' + mine.length + ' facts contributed)' + (msg.other ? ', brought from another run' : ''));
+        // Where they stood was in the other run's world: they come in beside the others (bringOver).
+        if (msg.other) {
+            World._bringBy = Date.now() + 15000;
+            if (Coop.toast) Coop.toast('You brought ' + ($gameParty.leader() ? $gameParty.leader().name() : 'your character') + ' from another run: level, gear and items came along. The world and story are this run\'s; that run\'s progress stays behind.', 12000);
+        }
         Coop.emit('entered', msg);
     });
+
+    // Someone who brought a character from another run is set down beside someone already in this one
+    // (the host first), as soon as there is somebody on a map to stand beside.
+    // No deadline: a fight longer than 15 seconds used to leave them on the other run's map (11/22).
+    World._bringBy = 0;
+    setInterval(function () {
+        if (!World._bringBy || !World.live) return;
+        const scene = SceneManager._scene;
+        if (!(scene instanceof Scene_Map) || !scene.isActive() || $gamePlayer.isTransferring() || $gameMessage.isBusy() || $gameMap.isEventRunning()) return;
+        // A fight still has a place on the map. Stand there, beside it.
+        const here = (p) => p.m > 0 && p.m !== 86 && ['map', 'event', 'menu', 'battle'].includes(p.st);
+        const others = Coop.others().filter(here);
+        const by = others.find((p) => p.id === (Coop.lobby && Coop.lobby.host)) || others[0];
+        if (!by) return;
+        World._bringBy = 0;
+        Coop.note('brought from another run: set down beside ' + by.name + ' on map ' + by.m);
+        Coop.transferTo(by, 2);
+    }, 250);
 
     Coop.on('online', function (msg) {
         if (msg) roomRules(msg.rules);
@@ -1255,7 +1296,11 @@
     });
 
     // Back, but not into this world: fights from here on are this player's own.
-    for (const t of ['worldbusy', 'worldclash', 'worldstale', 'worldwait', 'worldwhen', 'worldhost']) Coop.on(t, function () { World.cut = false; if (t !== 'worldhost') World.hostWait = ''; });
+    for (const t of ['worldbusy', 'worldclash', 'worldstale', 'worldwait', 'worldwhen', 'worldhost']) Coop.on(t, function (msg) {
+        World.cut = false;
+        if (t !== 'worldhost') World.hostWait = '';
+        if (t !== 'worldhost' && t !== 'worldwait') Coop.note('not let into the run: ' + t + (msg && msg.name ? ' (' + msg.name + ')' : ''));
+    });
 
     Coop.on('offline', function () {
         World.cut = World.live || !!World.cut;
@@ -1271,6 +1316,7 @@
         World.hostWait = '';
         World.otherRun = false;
         World.sameAs = '';
+        World._bringBy = 0; // left the run: nowhere left to be set down
         // A walk still in progress keeps the last tile it landed on, including
         // when this player leaves the run before the route finishes.
         if ($gameSystem) flushPending(true);
@@ -1370,6 +1416,11 @@
                 this.goto(Scene_Map);
                 $gameSystem.onAfterLoad();
             } else {
+                // The toast above already said this slot was loaded. It was not (11/22).
+                World._resumeNote = '';
+                const unread = 'Slot ' + slot + ' could not be read. Continue and pick it, or come in as someone new.';
+                if (Coop.toast) Coop.toast(unread, 9000);
+                Coop.note(unread);
                 this.goto(Scene_Title);
             }
         }

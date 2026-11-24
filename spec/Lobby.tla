@@ -8,6 +8,9 @@
    Mine: Start calls everyone ready in at once; while the host is called only the host's
    game founds the run; someone the lobby has called holds their character from the call
    on; an AI partner comes in after the people and never founds a run.
+   His ruling (11/21): the host's run takes priority, and nobody's save is blocked. A save of
+   another run comes into this one as that character (room.js 'world?' other). So the save a
+   person would load may be any character, and counts whatever the run (OtherRuns).
 
    What is modelled beside the lobby itself, because the holes are at the seams: a game
    begun with no lobby on screen (alone, the host away, or the line down), a line that
@@ -21,16 +24,19 @@
    while its line is down and its call held (back to the title, a game of its own) is as if the
    hold had ended first: the room cannot tell until the page is back, and then drops the hold
    (room.js 'name': not "called"); one page per name (another tab taking a held name ends
-   the hold, and the first page is then refused the name: room.js nametaken). *)
+   the hold, and the first page is then refused the name: room.js nametaken); someone who has
+   been in the run under way is never offered their save of it, only saves of other runs
+   (client/lobby.js otherSaves leaves this run's out; room.js worldstale would refuse it). *)
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS Host, Joiners, Partner, Chars, NoChar,
           HostSave, JoinerSave,   \* the character each one's own save of the run is
-          AnySave                 \* TRUE: a save may be any character (trace validation)
+          AnySave,                \* TRUE: a save may be any character (trace validation)
+          OtherRuns               \* TRUE: anyone may bring a save of another run, of any character
 
 People == {Host} \cup Joiners
 Actors == People \cup {Partner}
-SaveOpts(x) == IF AnySave THEN Chars ELSE {IF x = Host THEN HostSave ELSE JoinerSave}
+SaveOpts(x) == IF AnySave \/ OtherRuns THEN Chars ELSE {IF x = Host THEN HostSave ELSE JoinerSave}
 JoinerPerms == Permutations(Joiners)   \* the joiners are alike (safety runs only)
 
 VARIABLES conn,      \* actor -> its line to the room is up (the partner: its process runs)
@@ -54,8 +60,9 @@ In == {x \in Actors : at[x] = "in"}
 \* The run someone at the title would come into (room.js lobbyRun): whoever has been in the
 \* run under way cannot load their save into it, and comes in as someone new.
 KindFor(x) == IF founded /\ x \in entered THEN "new" ELSE run
-\* What someone would come in as (room.js lobbyChar): their pick, else their own save.
-CharOf(x) == IF pick[x] # NoChar THEN pick[x] ELSE IF KindFor(x) = "save" THEN has[x] ELSE NoChar
+\* What someone would come in as (room.js lobbyChar): their pick, else the save they would load
+\* (their own of the run, or one of another run: his ruling 11/21).
+CharOf(x) == IF pick[x] # NoChar THEN pick[x] ELSE has[x]
 \* Spoken for at the title: the host's character and every ready person's.
 Claimed(x) == {CharOf(y) : y \in {z \in Here \ {x} : z = Host \/ ready[z]}}
 \* Taken in the run (room.js lobbyBusy): whoever is in it, and whoever has been called.
@@ -157,9 +164,9 @@ ChooseRun(r, c) ==
     /\ has' = [x \in People |-> IF x = Host /\ r = "save" THEN c ELSE NoChar]
     /\ UNCHANGED <<conn, at, away, line, founded, body, entered>>
 
-\* A page tells the room which character its own save of the run is (room.js lobbySay
-\* 'has'). Ready given for the other one does not stand. The host carrying a save on is
-\* who the save they chose is.
+\* A page tells the room which character the save it would load is (room.js lobbySay 'has'): its
+\* own of the run, or one of another run chosen to bring. Ready given for the other one does not
+\* stand. The host carrying a save on is who the save they chose is.
 Has(x, c) ==
     /\ x \in People
     /\ conn[x]
@@ -253,7 +260,8 @@ BeginLoad(x) ==
     /\ UNCHANGED <<conn, ready, away, pick, has, run, line, founded, entered>>
 
 \* Called, and not coming after all: still at the title a while later (room.js 'p',
-\* LINE_TITLE), their save gone ('leave'), or back at the title of their own accord. The host
+\* LINE_TITLE), or playing a game of their own after a refusal for that long (the same branch,
+\* presence alone, 11/22), their save gone ('leave'), or back at the title of their own accord. The host
 \* giving up before the run exists calls the start off (room.js lobbyGone).
 GiveUp(x) ==
     /\ x \in line

@@ -149,7 +149,7 @@
             why.classList.remove('bad');
             why.textContent = text;
             p.then((s) => { busy = false; why.textContent = ''; show(s); if (after) after(s); })
-                .catch((e) => { busy = false; why.textContent = e.message; why.classList.add('bad'); });
+                .catch((e) => { busy = false; why.textContent = e.message; why.classList.add('bad'); Coop.note('Together: ' + e.message); });
         };
         if (what === 'online') {
             run('Going online... (the first time takes a little longer)', api('/online', { on: true, private: $('[data-do=private]').checked }), (s) => { if (s.ready) copy(s.link, 'Online. The link is copied: send it to your friends.'); else copyWhenReady = true; });
@@ -181,6 +181,42 @@
         } else if (what === 'close') close();
     }
 
+    // The four protagonists, by the switch the opening sets (the same list as the lobby).
+    const CHAR_AT = [[661, 'Cahara'], [662, "D'arce"], [663, 'Enki'], [664, 'Ragnvaldr']];
+    function characterOf(slot, info) {
+        try {
+            const json = StorageManager.load(slot);
+            if (json) {
+                const sw = JsonEx.parse(json).switches;
+                const data = sw && sw._data;
+                if (data) for (let i = 0; i < CHAR_AT.length; i++) if (data[CHAR_AT[i][0]]) return CHAR_AT[i][1];
+            }
+        } catch (e) { /* the slot is still listed */ }
+        const ch = info && info.characters && info.characters[0];
+        return (ch && ch[0]) || '';
+    }
+    function saveList() {
+        let info = [];
+        try { info = DataManager.loadGlobalInfo() || []; } catch (e) { return '(could not be read)'; }
+        const rows = [];
+        for (let slot = 1; slot < info.length; slot++) {
+            const i = info[slot];
+            if (!i) continue;
+            rows.push('slot ' + slot + ', run ' + (i.coopRun || '') + ', stamp ' + (i.coopStamp || 0) + ', character ' + characterOf(slot, i));
+        }
+        return rows.join('; ') || '(none)';
+    }
+    // What the page knows while the line is down: the close is not written into the log until the socket is back (11/22).
+    function gameStateLines() {
+        const w = Coop.world || {};
+        const d = Coop._drop;
+        const down = d && d.at ? ((Date.now() - d.at) / 1000).toFixed(1) : '0';
+        const connection = 'connection: refused ' + (Coop.refused ? String(Coop.refused) : 'no') + ', connected ' + (Coop.connected ? 'yes' : 'no')
+            + (d ? ', closed ' + (d.code || 0) + ', down ' + down + 's, hostdown ' + (d.hostdown ? 'yes' : 'no') : ', drop none');
+        const world = 'world: live ' + !!w.live + ', entering ' + !!w._entering + ', hostWait ' + (w.hostWait || 'none') + ', waiting ' + !!w.waiting + ', otherRun ' + !!w.otherRun;
+        return [connection, world, 'saves: ' + saveList(), 'last error: ' + (Coop._scriptError || 'none')].join('\n');
+    }
+
     // Versions, this PC's logs (from the server, keys taken out) and what the
     // game is doing, on the clipboard to paste into a bug report.
     function bugReport() {
@@ -189,14 +225,22 @@
             'scene: ' + (scene ? scene.constructor.name : '?') + (window.$gameMap && $gameMap.mapId() ? ', map ' + $gameMap.mapId() + ' at ' + $gamePlayer.x + ',' + $gamePlayer.y : ''),
             'this player: ' + (Coop.name || '(no name)') + (window.$gameParty && $gameParty._actors ? ', party ' + $gameParty._actors.join(',') : '') + (Coop.dead ? ', dead' : ''),
             'others: ' + Array.from(Coop.peers.values()).map((p) => p.name + ' (' + p.st + (p.m ? ' map ' + p.m : '') + ')').join(', '),
+            gameStateLines(),
             'browser: ' + navigator.userAgent,
             '', '--- this game (end) ---', Coop.log.slice(-120).join('\n'),
         ].join('\n');
-        return fetch('coop/app/report', { headers: { 'x-fh-app': '1' } }).then((r) => r.ok ? r.text() : '(the server log could not be read)', () => '(the server could not be reached)')
-            .then((server) => {
-                const text = server + '\n\n' + here.replace(/([?&]k=)[0-9a-zA-Z]+/g, '$1(key)');
-                return writeClipboard(text).then(() => 'Bug report copied. Paste it into your message about the bug.', () => 'Could not copy. The logs are in the app\\data folder.');
-            });
+        const unread = 'The server log could not be read. Send app\\data\\server-*.log and launcher.log.';
+        const finish = (server, said) => {
+            const text = (server + '\n\n' + here).replace(/([?&]k=)[0-9a-zA-Z]+/g, '$1(key)');
+            return writeClipboard(text).then(() => said, () => said === unread ? unread : 'Could not copy. The logs are in the app\\data folder.');
+        };
+        return fetch('coop/app/report', { headers: { 'x-fh-app': '1' } }).then((r) => {
+            if (!r.ok) throw new Error('unread');
+            return r.text();
+        }).then(
+            (server) => finish(server, 'Bug report copied. Paste it into your message about the bug.'),
+            () => finish('(the server log could not be read)', unread)
+        );
     }
     function writeClipboard(text) {
         if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(() => fallback());
@@ -251,7 +295,8 @@
             offered = s.offerAt;
             if (!onTitle()) { Coop.toast('A link to join a friend arrived. Go back to the title screen to join.', 8000); return; }
             if (s.mode === 'joined' && s.joined === s.offer) return;
-            open();
+            // Focus Join, not Host online: A or Enter would otherwise start hosting (11/22).
+            open(true);
             $('[data-field=join]').value = s.offer;
             why.textContent = 'Press Join to play in your friend\'s game.';
         }).catch(function () {});
@@ -264,13 +309,14 @@
         else { $('[data-field=link]').select(); document.execCommand('copy'); done(); }
     }
 
-    function open() {
+    function open(focusJoin) {
         why.textContent = '';
         box.classList.add('open');
         Input.clear();
         show(state); // the last known state at once, then the server's answer
         api('').then(show).catch(() => {});
-        setTimeout(() => { const b = box.querySelector('button.big:not([hidden])'); if (b) b.focus(); }, 0);
+        // A link that just arrived asks them to Join. The first big button is Host online (11/22).
+        setTimeout(() => { const joinBtn = $('[data-do=join]'); const b = focusJoin && joinBtn && !joinBtn.closest('[hidden]') ? joinBtn : box.querySelector('button.big:not([hidden])'); if (b) b.focus(); }, 0);
     }
     function close() {
         box.classList.remove('open');

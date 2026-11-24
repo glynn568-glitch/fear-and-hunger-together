@@ -46,10 +46,12 @@ async function step(p) {
     if (s.kind === 'opening') { const k = s.save ? 'Escape' : 'Enter'; await p.keyboard.down(k); await sleep(80); await p.keyboard.up(k); return ''; }
     if (s.kind !== 'title' || !s.active) return '';
     const has = (name) => s.lines.indexOf(name) >= 0;
-    // Join and Ready open the list of characters: the first one free (someone who left a run still being
-    // played comes back as a new character, room.js worldstale).
-    const free = s.lines.find((l) => /^(Cahara|D'arce|Enki|Ragnvaldr)$/.test(l));
-    const want = has('Back') ? (free || 'Back') : has('Join') ? 'Join' : has('Start') ? 'Start' : has('Ready') ? 'Ready' : has('Continue') ? 'Continue' : '';
+    const line = (re) => s.lines.find((l) => re.test(l));
+    // Join and As: open the list of characters: the first one free (someone who left a run still being
+    // played comes back as a new character, room.js worldstale). The host's Run: offers New run and Continue.
+    const free = line(/^(Cahara|D'arce|Enki|Ragnvaldr)$/);
+    const want = has('Back') ? (free || line(/^Bring /) || (has('New run') ? one(['New run', 'Continue']) : '') || 'Back')
+        : has('Join') ? 'Join' : line(/^Start$/) || line(/^As: choose/) || line(/^Run: choose/) || '';
     if (!want) return '';
     await choose(p, want).catch(() => {});
     return want;

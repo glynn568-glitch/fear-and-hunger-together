@@ -97,7 +97,14 @@ const SHELF = 119; // Map003 bookshel1, home 16,31, <Save Event Location>
             };
         }, SHELF);
         check('Bo joins the run from a fresh page, no script error', live && after.live && after.errors.length === 0, JSON.stringify(after));
-        check('the shelf stands at home on Bo\'s map, as in the run', made.home && after.map === 3 && after.at && after.at[0] === made.home[0] && after.at[1] === made.home[1] && !after.el && !after.saved, JSON.stringify({ home: made.home, after }));
+        // A solo save is another run's (11/21): Bo comes in next to Ann, and his slid shelf stays in his own game.
+        const annMap = await a.evaluate(() => $gameMap.mapId());
+        check('Bo comes in next to Ann, and the run keeps no slid shelf', after.map === annMap && !after.el && !after.saved, JSON.stringify({ annMap, after }));
+        await b.evaluate(() => $gamePlayer.reserveTransfer(3, 53, 45, 2, 0));
+        await waitFor(b, () => T.onMap() && $gameMap.mapId() === 3 && !$gamePlayer.isTransferring(), 30000, 'Bo walks to map 3').catch(() => {});
+        await sleep(500);
+        const at = await b.evaluate((shelf) => { const ev = $gameMap.mapId() === 3 && $gameMap.event(shelf); return ev ? [ev.x, ev.y] : null; }, SHELF);
+        check('the shelf stands at home on map 3, as in the run', made.home && at && at[0] === made.home[0] && at[1] === made.home[1], JSON.stringify({ home: made.home, at }));
         const onA = await a.evaluate((shelf) => Coop.world.el['3,' + shelf] || null, SHELF);
         check('Bo\'s solo slide never reaches Ann\'s world', !onA, JSON.stringify(onA));
         const seen = await a.evaluate(() => [...Coop.peers.values()].filter((p) => p.name === 'Bo').map((p) => p.st));

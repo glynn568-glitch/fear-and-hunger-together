@@ -17,6 +17,40 @@ for a in "$@"; do
     esac
 done
 
+# A second start while the server is up used to open another window, a second
+# player from one PC (11/22). Bring the one already open forward, or say so.
+hello=$(curl -fs -m 2 "http://127.0.0.1:$PORT/coop/hello" 2>/dev/null || true)
+case "$hello" in
+    *'"fh":"together'*|*'"fh": "together'*)
+        raised=0
+        if command -v wmctrl >/dev/null 2>&1; then
+            wmctrl -a 'Fear & Hunger' >/dev/null 2>&1 && raised=1 || true
+        fi
+        if [ "$raised" = 0 ] && command -v xdotool >/dev/null 2>&1; then
+            wid=$(xdotool search --name 'Fear & Hunger' 2>/dev/null | head -n 1 || true)
+            if [ -n "$wid" ]; then
+                xdotool windowactivate "$wid" >/dev/null 2>&1 && raised=1 || true
+            fi
+        fi
+        if [ "$raised" = 0 ] && [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+            osascript -e 'tell application "System Events" to set frontmost of (first process whose name contains "Fear") to true' >/dev/null 2>&1 && raised=1 || true
+        fi
+        if [ "$raised" = 1 ]; then
+            echo "Fear & Hunger Together is already running. Its window is in front."
+            exit 0
+        fi
+        echo "Fear & Hunger Together is already running. Switch to its window."
+        if command -v zenity >/dev/null 2>&1; then
+            zenity --info --title='Fear & Hunger: Together' --text='Fear & Hunger Together is already running. Switch to its window.' >/dev/null 2>&1 &
+        elif command -v kdialog >/dev/null 2>&1; then
+            kdialog --title 'Fear & Hunger: Together' --msgbox 'Fear & Hunger Together is already running. Switch to its window.' >/dev/null 2>&1 &
+        elif command -v osascript >/dev/null 2>&1; then
+            osascript -e 'display dialog "Fear & Hunger Together is already running. Switch to its window." buttons {"OK"} default button 1 with title "Fear & Hunger: Together"' >/dev/null 2>&1 &
+        fi
+        exit 0
+        ;;
+esac
+
 #--- Node.js: the one installed (18 or newer), or a private copy beside the mod ---
 NODE_VERSION=v24.12.0
 case "$(uname -s)-$(uname -m)" in

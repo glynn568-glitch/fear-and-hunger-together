@@ -28,7 +28,8 @@ function client(name, opts) {
     c.send = (msg) => ws.send(JSON.stringify(msg));
     c.say = (what, more) => c.send(Object.assign({ t: 'lobby', do: what }, more || {}));
     // 'up': not in the shared world yet, with a game running (the opening, a save loading).
-    c.presence = (st) => { c.st = st || c.st; const out = c.st === 'title' || c.st === 'up'; c.send({ t: 'p', st: out ? 'title' : c.st, up: c.st === 'up' ? 1 : 0, m: out ? 0 : 1, bot: !!o.bot }); };
+    // 'alone': refused into a game of their own (worldclash, another run); it runs, but they are not coming in.
+    c.presence = (st) => { c.st = st || c.st; const out = c.st === 'title' || c.st === 'up' || c.st === 'alone'; c.send({ t: 'p', st: out ? 'title' : c.st, up: c.st === 'up' || c.st === 'alone' ? 1 : 0, alone: c.st === 'alone' ? 1 : 0, m: out ? 0 : 1, bot: !!o.bot }); };
     c.count = (t) => c.got.filter((m) => m.t === t).length;
     c.last = (t) => c.got.filter((m) => m.t === t).pop() || null;
     c.enter = (ini, how) => c.send({ t: 'world?', runId: '', stamp: 0, how: how || 'new', ini: [ini] });
@@ -72,6 +73,10 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         A.say('start');
         await settle();
         check('no run chosen: nobody is ready, and Start does nothing', !row(B).ready && A.count('go') === 0 && B.count('go') === 0);
+        // 11/21: two "nothing works" moments were words the room dropped without a sound.
+        const whyB = B.last('lobbyno'), whyA = A.last('lobbyno');
+        check('a word the room does not take is answered with the reason', !!whyB && whyB.do === 'ready' && /not chosen the run/.test(whyB.why)
+            && !!whyA && whyA.do === 'start' && /Choose the run/.test(whyA.why), JSON.stringify([whyB, whyA]));
         B.say('run', { run: { kind: 'new' }, pick: PRIEST });
         await settle();
         check('only the host chooses the run', A.lobby.run === null);
@@ -91,6 +96,8 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         C.say('pick', { pick: PRIEST });
         await settle();
         check('a character someone here has picked cannot be picked again', row(A, B).pick === PRIEST && row(A, C).pick === 0, JSON.stringify(A.lobby.rows));
+        const whyC = C.last('lobbyno');
+        check('and the refusal says who has it', !!whyC && whyC.why === 'Enki is taken by Bo.', JSON.stringify(whyC));
         C.say('pick', { pick: OUTLANDER });
         B.say('ready', { on: true });
         await settle();
@@ -239,6 +246,29 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         await sleep(3200);
         check('the host called and still at the title: the start is off', B.lobby.line.length === 0 && B.lobby.run === null, JSON.stringify(B.lobby));
 
+        // Called in, then refused into a game of their own: their game runs (up), but they are not coming in,
+        // so they are not waited for either (11/22 review: the yard hounds waited on them for good).
+        B.presence('title'); // back from the case above
+        await settle();
+        A.say('run', { run: { kind: 'new' }, pick: MERC });
+        await settle();
+        B.say('pick', { pick: PRIEST });
+        C.say('pick', { pick: OUTLANDER });
+        await settle();
+        B.say('ready', { on: true });
+        C.say('ready', { on: true });
+        await settle();
+        A.say('start');
+        await settle();
+        A.presence('up');
+        B.presence('up');
+        C.presence('alone');
+        await sleep(3200);
+        check('called, then playing alone: dropped from the call, the others go on', A.lobby.line.slice().sort().join() === [A.id, B.id].sort().join() && A.lobby.run, JSON.stringify(A.lobby.line));
+        C.presence('title');
+        A.presence('title');
+        await sleep(3200);
+
         // A run founded by someone the lobby did not call (their game was running before the host
         // chose): what was said for the host's night does not carry into it.
         B.presence('title');
@@ -365,6 +395,13 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         check('never back: the call is dropped after a while', during === JSON.stringify([MERC]) && A.lobby.held.length === 0 && A.lobby.line.length === 0, during + ' ' + JSON.stringify(A.lobby.held));
 
         // Someone called who takes a held name as their own (Grok g15): the hold ends, their own call stays.
+        // Bo first: the room may take up to ten seconds to take him out of the run (he said title a moment ago),
+        // longer than this suite's 2.5 s hold, which then ended before the rename (11/24).
+        B.say('pick', { pick: KNIGHT });
+        await settle();
+        for (let i = 0; i < 50 && A.lobby.line.indexOf(B.id) < 0; i++) { B.say('join'); await settle(); }
+        B.presence('up');
+        await settle();
         const G = await join('Gus', { joiner: true });
         G.say('pick', { pick: MERC });
         await settle();
@@ -372,11 +409,6 @@ const row = (c, of) => (c.lobby && c.lobby.rows[(of || c).id]) || {};
         await settle();
         G.presence('up');
         G.ws.terminate();
-        B.say('pick', { pick: KNIGHT });
-        await settle();
-        // (Bo said title while in the run a moment ago: the room takes them out of it within ten seconds.)
-        for (let i = 0; i < 50 && A.lobby.line.indexOf(B.id) < 0; i++) { B.say('join'); await settle(); }
-        B.presence('up');
         await settle();
         const wasHeld = JSON.stringify([A.lobby.held, A.lobby.line.indexOf(B.id) >= 0]);
         B.send({ t: 'name', name: 'Gus', token: 't-Bo' });

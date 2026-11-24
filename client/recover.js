@@ -58,7 +58,7 @@
 
     const box = document.createElement('div');
     box.id = 'coop-resume';
-    box.style.cssText = 'position:fixed;left:50%;top:9%;transform:translateX(-50%);z-index:56;pointer-events:none;display:none;white-space:nowrap;'
+    box.style.cssText = 'position:fixed;left:50%;top:9%;transform:translateX(-50%);z-index:56;pointer-events:auto;cursor:pointer;display:none;white-space:nowrap;'
         + 'font:17px Georgia,"Times New Roman",serif;padding:6px 16px;border:1px solid #b08a3c;background:rgba(14,9,8,0.85);color:#f2d28a;';
     (document.body ? Promise.resolve() : new Promise((r) => window.addEventListener('DOMContentLoaded', r))).then(() => document.body.appendChild(box));
 
@@ -77,7 +77,7 @@
         const mins = Math.max(1, Math.round(offer.ageSec / 60));
         const scale = Math.max(1, Math.min(2.4, (Graphics._realScale || 1) * 0.75));
         box.style.fontSize = Math.round(17 * scale) + 'px';
-        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press ' + Coop.keyName('R') + ' to carry on from there.';
+        box.textContent = 'You dropped out ' + (offer.ageSec < 90 ? 'a moment' : mins + ' minutes') + ' ago. Press ' + Coop.keyName('R') + ' to carry on from there. Or click here.';
         box.style.display = '';
     }, 300);
 
@@ -94,17 +94,42 @@
         offer = null;
     };
 
+    let carryAsked = false;
+    function carryOn() {
+        if (!offer) return;
+        if (!(SceneManager._scene instanceof Scene_Title) || SceneManager.isSceneChanging()) return;
+        offer = null;
+        carryAsked = true;
+        box.style.display = 'none';
+        Coop.send({ t: 'park!' });
+    }
     document.addEventListener('keydown', function (e) {
         if (e.code !== 'KeyR' || e.repeat || e.ctrlKey || e.altKey || e.metaKey || !offer) return;
         if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
-        if (!(SceneManager._scene instanceof Scene_Title) || SceneManager.isSceneChanging()) return;
-        offer = null;
-        Coop.send({ t: 'park!' });
+        carryOn();
+    });
+    // The title takes a click. This line did not, so a mouse could only Continue the last bed (11/22).
+    box.addEventListener('click', carryOn);
+
+    // The park did not write. Said here, on this PC, not only in the host's log.
+    Coop.on('parkno', function (msg) {
+        const said = 'Your place could not be kept. The last bed save is the safe point.';
+        Coop.note(said + (msg && msg.why ? ' (' + msg.why + ')' : ''));
+        if (Coop.toast) Coop.toast(said, 9000);
     });
 
     Coop.on('parkdata', function (msg) {
         const scene = SceneManager._scene;
-        if (!(scene instanceof Scene_Title) || !msg.blob) return;
+        if (!(scene instanceof Scene_Title)) return;
+        if (!msg || !msg.blob) {
+            if (!carryAsked) return;
+            carryAsked = false;
+            const said = 'Nothing was kept from that drop. The last bed save is the safe point.';
+            Coop.note(said);
+            if (Coop.toast) Coop.toast(said, 8000);
+            return;
+        }
+        carryAsked = false;
         try {
             DataManager.createGameObjects();
             Coop.world._nextHow = 'park';

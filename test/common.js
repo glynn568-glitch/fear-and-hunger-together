@@ -11,20 +11,29 @@ async function twoPlayers(port, opts) {
     const browser = await launch();
     const a = await openPlayer(browser, `http://localhost:${port}/?name=Ann`, 'A');
     const b = await openPlayer(browser, `http://localhost:${joiner ? port + 100 : port}/?name=Bo`, 'B');
-    for (const p of [a, b]) {
-        await waitFor(p, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'title + connection');
-        await p.evaluate(install);
+    try {
+        for (const p of [a, b]) {
+            await waitFor(p, () => window.SceneManager && SceneManager._scene instanceof Scene_Title && window.Coop && Coop.connected, 90000, 'title + connection');
+            await p.evaluate(install);
+        }
+        await a.evaluate((act, x, y) => T.quickStart(act, x, y), o.actorA, o.ax, o.ay);
+        await waitFor(a, () => T.onMap(), 60000, 'A on map');
+        await a.evaluate(() => T.settle());
+        await a.evaluate(() => T.begin());
+        await waitFor(a, () => Coop.world.live, 10000, 'A live');
+        await b.evaluate((act, x, y) => T.quickStart(act, x, y), o.actorB, o.bx, o.by);
+        await waitFor(b, () => T.onMap(), 60000, 'B on map');
+        await b.evaluate(() => T.settle());
+        await b.evaluate(() => T.begin());
+        await waitFor(b, () => Coop.world.live, 10000, 'B live');
+    } catch (e) {
+        // The test never gets its pages to print: what each was saying, to see why without running it again.
+        for (const p of [a, b]) console.log(`--- ${p.label}, last lines\n` + p.logs.filter((l) => !/CanvasTextAlign|Lightmask|DisplayObjectContainer|groupEnd/.test(l)).slice(-20).map((l) => '  ' + l.slice(0, 240)).join('\n'));
+        await browser.close().catch(() => {});
+        server.kill();
+        if (joiner) joiner.kill();
+        throw e;
     }
-    await a.evaluate((act, x, y) => T.quickStart(act, x, y), o.actorA, o.ax, o.ay);
-    await waitFor(a, () => T.onMap(), 60000, 'A on map');
-    await a.evaluate(() => T.settle());
-    await a.evaluate(() => T.begin());
-    await waitFor(a, () => Coop.world.live, 10000, 'A live');
-    await b.evaluate((act, x, y) => T.quickStart(act, x, y), o.actorB, o.bx, o.by);
-    await waitFor(b, () => T.onMap(), 60000, 'B on map');
-    await b.evaluate(() => T.settle());
-    await b.evaluate(() => T.begin());
-    await waitFor(b, () => Coop.world.live, 10000, 'B live');
     await sleep(500);
     const idA = await a.evaluate(() => Coop.id), idB = await b.evaluate(() => Coop.id);
     return { server, joiner, browser, a, b, idA, idB, close: async () => { await browser.close(); server.kill(); if (joiner) joiner.kill(); } };
@@ -45,10 +54,11 @@ function checker() {
         }
         const failed = results.filter((r) => !r).length;
         // What each page was saying last, to see why without running it again.
-        // Failed requests are always shown; the base game's CanvasTextAlign warning never is.
+        // Failed requests and Chrome's word on its GPU process are always shown; the base game's
+        // CanvasTextAlign warning never is.
         if (failed) for (const p of pages || []) {
             const lines = p.logs.filter((l) => !/CanvasTextAlign/.test(l));
-            const shown = process.env.FH_TEST_LOGS ? lines : lines.filter((l) => /^\[(http|requestfailed)/.test(l)).slice(-10).concat(lines.slice(-15));
+            const shown = process.env.FH_TEST_LOGS ? lines : lines.filter((l) => /^\[(http|requestfailed|chrome)/.test(l)).slice(-10).concat(lines.slice(-15));
             console.log(`--- ${p.label}, last lines\n` + shown.map((l) => '  ' + l.slice(0, 240)).join('\n'));
         }
         console.log(failed ? `${failed} FAILED` : `all ${results.length} passed`);

@@ -29,7 +29,7 @@ if (ensureCensus(GAME, BUILD.fp)) console.log('This copy of the game is a differ
 let censusFp = '';
 try { censusFp = JSON.parse(fs.readFileSync(path.join(__dirname, 'client', 'census.json'), 'utf8')).fp || ''; } catch (e) { /* none */ }
 const CENSUS_STALE = censusFp !== BUILD.fp;
-const { Room } = require('./room'); // reads the census
+const { Room, writeWhy } = require('./room'); // reads the census
 const { Partners } = require('./partners');
 const { Tunnel } = require('./tools/tunnel');
 
@@ -236,7 +236,7 @@ function allowed(req, url) {
     return (req.headers.cookie || '').split(/;\s*/).includes('fhk=' + KEY);
 }
 
-// Each player's save files live on the host, under their name.
+// Each player's saves live on that player's own PC, under their name.
 function storeFile(pathname) {
     const m = /^\/coop\/store\/([\w \-']{1,16})\/(global|file\d{1,3})$/.exec(pathname);
     return m ? path.join(SAVES, 'players', m[1].trim().toLowerCase(), m[2] + '.rpgsave') : null;
@@ -253,11 +253,21 @@ function handleStore(req, res, file) {
         const chunks = [];
         let size = 0;
         req.on('data', (c) => { size += c.length; if (size > 64 * 1024 * 1024) req.destroy(); else chunks.push(c); });
+        // A throw here used to kill the process: nothing handles uncaughtException (11/22).
         req.on('end', () => {
-            fs.mkdirSync(path.dirname(file), { recursive: true });
-            fs.writeFileSync(file + '.tmp', Buffer.concat(chunks));
-            fs.renameSync(file + '.tmp', file);
-            res.writeHead(204); res.end();
+            let why = '';
+            try {
+                fs.mkdirSync(path.dirname(file), { recursive: true });
+                fs.writeFileSync(file + '.tmp', Buffer.concat(chunks));
+                fs.renameSync(file + '.tmp', file);
+            } catch (e) {
+                why = writeWhy(e);
+                console.error('could not write a save: ' + (e && e.message));
+            }
+            try {
+                if (why) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(why); }
+                else { res.writeHead(204); res.end(); }
+            } catch (e) { /* the browser went away */ }
         });
     } else if (req.method === 'DELETE') {
         fs.rm(file, { force: true }, () => { res.writeHead(204); res.end(); });
@@ -278,7 +288,7 @@ const server = http.createServer((req, res) => {
         return;
     }
     if (pathname === '/coop/app' || pathname.startsWith('/coop/app/')) { handleApp(req, res, pathname); return; }
-    // Joining: save files live on the host, as for every player.
+    // Joining: this PC's saves stay on this PC. The host is not where they are kept.
     if (JOIN && pathname.startsWith('/coop/store/')) { proxyStore(req, res); return; }
     // Hosting: the game itself is only for this PC. Everyone else plays from
     // their own copy and reaches this server only for the socket and saves.
@@ -376,10 +386,16 @@ wss.on('connection', (ws, req) => {
     // same release with data files that differ (a mod, a changed install) can:
     // the host's census then decides what is shared, on both sides.
     if (theirs.build !== BUILD.build || theirs.mod !== BUILD.mod) {
-        // Told once, then closed for good: the page does not retry.
-        console.log('turned away a player on another build: game ' + theirs.build + '/' + theirs.fp + ', mod ' + theirs.version + '/' + theirs.mod);
-        ws.send(JSON.stringify({ t: 'version', game: theirs.build !== BUILD.build, mine: { build: BUILD.build, version: BUILD.version }, yours: { build: theirs.build, version: theirs.version } }));
-        ws.close(4001, 'version');
+        // Told once, then closed for good: the page does not retry. The host's own page hears who and why (11/22).
+        const who = String(q.get('name') || '').replace(/[^\w \-']/g, '').trim().slice(0, 16);
+        const gameOff = theirs.build !== BUILD.build;
+        const text = (who || 'A player') + ' was turned away: ' + (gameOff
+            ? 'they have Fear & Hunger ' + theirs.build + ', you have ' + BUILD.build + '. Update both to the newest.'
+            : 'they have Together ' + theirs.version + ', you have ' + BUILD.version + '. Use the same download.');
+        console.log(text + ' (game ' + theirs.build + '/' + theirs.fp + ', mod ' + theirs.version + '/' + theirs.mod + ')');
+        try { ws.send(JSON.stringify({ t: 'version', game: gameOff, mine: { build: BUILD.build, version: BUILD.version }, yours: { build: theirs.build, version: theirs.version } })); } catch (e) { /* already gone */ }
+        for (const p of room.peers.values()) if (p.host && !room.isBot(p)) room.send(p, { t: 'turned', text });
+        try { ws.close(4001, 'version'); } catch (e) { /* already gone */ }
         return;
     }
     // A stale census on the host's own side is the census everyone shares by: only a joiner's counts.
@@ -522,7 +538,8 @@ async function handleApp(req, res, pathname) {
         let j;
         try { j = parseJoin(body.link); } catch (e) { reply(200, { error: 'That is not a link. It looks like https://some-words.trycloudflare.com/?k=...' }); return; }
         const why = await probeHost(j);
-        if (why) { reply(200, { error: why }); return; }
+        // Kept on this PC too: a friend who cannot join is the one whose log gets sent (11/22 review C9).
+        if (why) { console.log('could not join ' + j.origin + ': ' + why); reply(200, { error: why }); return; }
         tunnel.stop();
         online = false;
         KEY = process.env.FH_KEY || '';
@@ -571,12 +588,17 @@ const BEHIND = 1500000;
 // with a big message is not taken for a dead one.
 const PING_EVERY = 3000, DEAD_AFTER = 10000;
 function passOn(local, req) {
-    const target = JOIN.origin.replace(/^http/, 'ws') + '/coop/ws' + new URL(req.url, 'http://x').search;
+    const u = new URL(req.url, 'http://x');
+    // The host turns another build away before any name message. A name this PC already
+    // sent (this server is still up; the host's was restarted) is the one the host should say.
+    if (!u.searchParams.get('name') && notesKept.name) u.searchParams.set('name', notesKept.name);
+    const target = JOIN.origin.replace(/^http/, 'ws') + '/coop/ws' + u.search;
     // A dead line can swallow the handshake too: given up on, and tried again.
     const up = new WebSocket(target, { headers: joinHeaders(), maxPayload: 32 * 1024 * 1024, handshakeTimeout: 10000 });
     const waiting = [];
     let failed = false;
     local.on('message', (data, isBinary) => {
+        if (!isBinary) keepNotes(data);
         if (up.readyState === WebSocket.OPEN) {
             if (isBinary && up.bufferedAmount > BEHIND) return;
             up.send(data, { binary: isBinary });
@@ -633,6 +655,25 @@ function passOn(local, req) {
     local.on('error', () => up.terminate());
 }
 
+// The page's own notes (the lobby as it saw it, refusals, fights, script errors) go to the host's log, and
+// to this PC's too: on 11/21 a joiner's PC kept nothing past "joined" and the evidence sat on the host's Deck.
+const notesKept = { at: 0, n: 0, name: '' };
+function keepNotes(data) {
+    if (data.length < 12) return;
+    const head = data.toString('utf8', 0, 12);
+    if (head !== '{"t":"notes"' && head !== '{"t":"name",') return;
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) { return; }
+    if (msg.t === 'name') { notesKept.name = String(msg.name || '').slice(0, 16); return; }
+    if (!Array.isArray(msg.lines)) return;
+    // As the host's: at most 120 lines a minute, so a page throwing in a loop does not fill the disk.
+    if (Date.now() - notesKept.at >= 60000) { notesKept.at = Date.now(); notesKept.n = 0; }
+    for (const line of msg.lines.slice(0, 50)) {
+        if (typeof line !== 'string' || ++notesKept.n > 120) continue;
+        console.log('note ' + (notesKept.name || 'this PC') + ': ' + line.slice(0, 500));
+    }
+}
+
 // The run's world at a bed, as the host froze it: kept here as well, so this
 // player can host the run another night.
 function keepWorld(data) {
@@ -655,37 +696,26 @@ function keepWorld(data) {
 }
 
 // A joining player's saves live on their own PC, so whoever hosts another
-// night, everyone still has theirs. Saves made before 0.1.3 sit on the host
-// they were made with: read from there when this PC has none, and kept here.
+// night, everyone still has theirs. Files left on the host under the same
+// name are not listed or copied: before 0.1.3 every save was filed on the
+// host, and a new friend who typed a name used there before was handed that
+// person's files (11/22). Those files stay on the host's disk, untouched.
 function proxyStore(req, res) {
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch (e) { res.writeHead(400); res.end(); return; }
     const own = storeFile(pathname);
     const index = /^\/coop\/store\/([\w \-']{1,16})\/index$/.exec(pathname);
     if (!own && !index) { res.writeHead(404); res.end(); return; }
-    const fromHost = (method) => fetch(JOIN.origin + req.url, {
-        method, headers: Object.assign(req.headers['x-fh-token'] ? { 'x-fh-token': String(req.headers['x-fh-token']) } : {}, joinHeaders()),
-    });
     if (index) {
         const dir = path.join(SAVES, 'players', index[1].trim().toLowerCase());
-        const mine = fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.rpgsave')).map((n) => n.slice(0, -8)) : [];
-        fromHost('GET').then((r) => (r.ok ? r.json() : [])).catch(() => []).then((theirs) => {
-            res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify([...new Set(mine.concat(Array.isArray(theirs) ? theirs : []))]));
-        });
+        let mine = [];
+        try { if (fs.existsSync(dir)) mine = fs.readdirSync(dir).filter((n) => n.endsWith('.rpgsave')).map((n) => n.slice(0, -8)); }
+        catch (e) { console.error('could not list saves: ' + (e && e.message)); }
+        res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(mine));
         return;
     }
-    if (req.method === 'GET' && !fs.existsSync(own)) {
-        fromHost('GET').then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null).then((buf) => {
-            if (!buf) { res.writeHead(404); res.end(); return; }
-            try { fs.mkdirSync(path.dirname(own), { recursive: true }); fs.writeFileSync(own, Buffer.from(buf)); } catch (e) { console.error('could not keep an old save here: ' + e.message); }
-            res.writeHead(200, { 'Content-Type': MIME['.txt'], 'Cache-Control': 'no-store' });
-            res.end(Buffer.from(buf));
-        });
-        return;
-    }
-    // An old copy left on the host must not come back after a delete.
-    if (req.method === 'DELETE') fromHost('DELETE').catch(() => {});
+    // Missing on this PC means they have no save under that name. Do not copy one left on the host (11/22).
     handleStore(req, res, own);
 }
 

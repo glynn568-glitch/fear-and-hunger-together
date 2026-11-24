@@ -55,13 +55,15 @@ async function night(hostPort, hostSaves, joinSaves) {
         check("Bo's save is on Bo's own PC, not the host's (a name with a space too)", fs.existsSync(path.join(SB, 'players', BO, 'file1.rpgsave')) && fs.existsSync(path.join(SB, 'players', BO, 'global.rpgsave')) && !fs.existsSync(path.join(SA, 'players', BO)));
         check("the host's copy of the world is the same", fs.existsSync(path.join(SA, 'runs', String(run), `world@${stamp}.json`)) && fs.readFileSync(keptWorld, 'utf8') === fs.readFileSync(path.join(SA, 'runs', String(run), `world@${stamp}.json`), 'utf8'));
         check('the copy never reaches the page', !(await b.evaluate(() => Coop.log.some((l) => /worldcopy/.test(l)))));
-        // A save made before 0.1.3 sits on the host: Bo still finds it, and it comes home to his PC.
+        // A save under Bo's name sits on the host (made before 0.1.3): it is not offered to a page that types his
+        // name (B5, 11/22: anyone could type it). His saves are the ones on his own PC.
         fs.mkdirSync(path.join(SA, 'players', BO), { recursive: true });
         for (const name of ['file1.rpgsave', 'global.rpgsave']) fs.renameSync(path.join(SB, 'players', BO, name), path.join(SA, 'players', BO, name));
         await b.goto('http://localhost:8582/?name=Bo%20Rae', { waitUntil: 'domcontentloaded' });
         await waitFor(b, titleReady, 90000, 'Bo back at the title');
         const old = await b.evaluate(() => { const info = DataManager.loadGlobalInfo(); const ok = StorageManager.exists(1) && !!StorageManager.load(1); return { ok, stamp: info && info[1] && info[1].coopStamp }; });
-        check("a save left on the host by an older version is found, and copied to Bo's PC", old.ok && old.stamp === stamp && fs.existsSync(path.join(SB, 'players', BO, 'file1.rpgsave')) && fs.existsSync(path.join(SB, 'players', BO, 'global.rpgsave')), JSON.stringify(old));
+        check("a save under Bo's name on the host is not offered to his page, nor copied to his PC", !old.ok && !fs.existsSync(path.join(SB, 'players', BO, 'file1.rpgsave')), JSON.stringify(old));
+        for (const name of ['file1.rpgsave', 'global.rpgsave']) fs.renameSync(path.join(SA, 'players', BO, name), path.join(SB, 'players', BO, name));
         for (const p of pages) check(p.label + ' has no script errors', !p.errors.some((e) => !/physical_attack_animation|VideoFrame was garbage collected/.test(e)), p.errors.slice(0, 2).join(' || ').slice(0, 400));
         await n.close();
 
